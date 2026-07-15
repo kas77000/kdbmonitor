@@ -40,6 +40,10 @@ class Storage:
                 row_count INTEGER,
                 message TEXT
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
         self.conn.commit()
@@ -142,3 +146,23 @@ class Storage:
             "SELECT * FROM alert_runs WHERE alert_id=? ORDER BY id DESC LIMIT ?", (alert_id, limit)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def last_notified_at(self, alert_id: int) -> Optional[str]:
+        r = self.conn.execute(
+            "SELECT ts FROM alert_runs WHERE alert_id=? AND notified=1 ORDER BY id DESC LIMIT 1",
+            (alert_id,),
+        ).fetchone()
+        return r["ts"] if r else None
+
+    # --- settings ---
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        r = self.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        self.conn.commit()

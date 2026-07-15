@@ -78,3 +78,26 @@ def test_runs_record_and_latest():
     assert latest["status"] == "triggered" and latest["triggered"] == 1
     assert len(store.list_runs(aid)) == 2
     assert store.latest_run(9999) is None
+
+
+def test_last_notified_at():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    assert store.last_notified_at(aid) is None
+    store.record_run(aid, ts="2026-07-15T10:00:00", status="triggered", triggered=True,
+                     notified=True, row_count=3, message="hit")
+    store.record_run(aid, ts="2026-07-15T10:05:00", status="armed", triggered=False,
+                     notified=False, row_count=0, message="")
+    assert store.last_notified_at(aid) == "2026-07-15T10:00:00"
+
+
+def test_settings_get_set():
+    store = Storage(":memory:")
+    store.init_db()
+    assert store.get_setting("missing") is None
+    assert store.get_setting("missing", "dflt") == "dflt"
+    store.set_setting("smtp_host", "mail.example.com")
+    assert store.get_setting("smtp_host") == "mail.example.com"
+    store.set_setting("smtp_host", "mail2.example.com")
+    assert store.get_setting("smtp_host") == "mail2.example.com"

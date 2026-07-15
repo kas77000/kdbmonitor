@@ -25,7 +25,8 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
 
 
 def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
-                   prev_run: Optional[dict], now: datetime) -> EvalResult:
+                   prev_run: Optional[dict], now: datetime,
+                   last_notified_ts: Optional[str] = None) -> EvalResult:
     try:
         df = run_chain(alert, client_for)
     except Exception as exc:  # noqa: BLE001 - surface any query/connection error
@@ -34,10 +35,7 @@ def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
 
     triggered = eval_condition(alert.trigger, df)
     prev_triggered = bool(prev_run["triggered"]) if prev_run else False
-    prev_notified_at = None
-    if prev_run and prev_run.get("notified") and prev_run.get("ts"):
-        prev_notified_at = _parse_ts(prev_run["ts"])
-
+    prev_notified_at = _parse_ts(last_notified_ts) if last_notified_ts else None
     notify = should_notify(prev_triggered, prev_notified_at, triggered, alert.rearm, now)
     status = "triggered" if triggered else "armed"
     message = (f"{alert.name}: TRIGGERED ({len(df)} rows)" if triggered
