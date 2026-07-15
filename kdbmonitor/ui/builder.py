@@ -13,6 +13,13 @@ _COND_TYPES = ["no_rows", "has_rows", "row_count_gte", "any_row", "all_rows", "a
 _AGGS = ["max", "min", "avg", "sum"]
 
 
+def _safe_float(s, default: float = 0.0) -> float:
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
 def _server_names(store) -> list[str]:
     return [c.name for c in store.list_connections()]
 
@@ -44,7 +51,7 @@ def _step_editor(store, idx: int, servers: list[str]) -> Step:
             vtype = c4.selectbox("Type", _VALUE_TYPES, key=f"ftype_{idx}_{fi}")
             value = [v.strip() for v in raw_val.split(",")] if op == "in" else raw_val
             if vtype == "number":
-                value = [float(v) for v in value] if op == "in" else float(raw_val or 0)
+                value = [_safe_float(v) for v in value] if op == "in" else _safe_float(raw_val)
             filters.append(Filter(column=col, op=op, value=value, value_type=vtype))
     else:
         raw_qsql = st.text_area(
@@ -61,15 +68,22 @@ def _trigger_editor() -> TriggerCondition:
     ctype = st.selectbox("Condition", _COND_TYPES, key="cond_type")
     column = op = value = agg = None
     n = None
+    vtype = "number"
     if ctype == "row_count_gte":
         n = int(st.number_input("N (rows >=)", 1, 100000, 1, key="cond_n"))
     if ctype in ("any_row", "all_rows", "aggregate"):
         column = st.text_input("Column", key="cond_col")
+        vtype = "number"
         if ctype == "aggregate":
             agg = st.selectbox("Aggregate", _AGGS, key="cond_agg")
-        op = st.selectbox("Operator", ["=", "<>", "<", "<=", ">", ">="], key="cond_op")
-        value = float(st.number_input("Value", value=0.0, key="cond_val"))
-    return TriggerCondition(type=ctype, column=column, op=op, value=value, n=n, agg=agg)
+            op = st.selectbox("Operator", ["=", "<>", "<", "<=", ">", ">="], key="cond_op")
+            value = _safe_float(st.number_input("Value", value=0.0, key="cond_val"))
+        else:  # any_row / all_rows may compare symbols/strings too
+            op = st.selectbox("Operator", ["=", "<>", "<", "<=", ">", ">="], key="cond_op")
+            vtype = st.selectbox("Value type", ["number", "symbol", "string"], key="cond_vtype")
+            raw = st.text_input("Value", key="cond_val")
+            value = _safe_float(raw) if vtype == "number" else raw
+    return TriggerCondition(type=ctype, column=column, op=op, value=value, n=n, agg=agg, value_type=vtype)
 
 
 def _channels_editor() -> Channels:
