@@ -1,0 +1,16 @@
+I currently face the following situation:
+I work in the Algo trading account team, where sometimes one of our jobs is to monitor some particular orders that the sales trader or traders take care of in the trading platform. 
+The way for us to monitor these orders is just to perform some queries in the KDB database. 
+We have a KDP database for all the codes. The table is QATT to get, for a symbol and date for historical or just a symbol for real time, the current bid, ask, total volume, etc. 
+And we have another server and port that will gather all the tables related to an order, so you have:
+- table target
+- work order
+- target_state
+- etc.
+To be able to monitor more easily some targeted orders or some targeted scenario,
+I would like to consider an application that will alert me with a notification if one chain of KDB queries leads to certain results. 
+The result can be no information, or the result can be having rows, or the result can also be having at least one element with certain information, etc., etc., so I would like to be quite flexible with it. 
+And when I say chain of KDB queries, I mean one KDB query can lead to a result, and we can use some, maybe one or several, columns of this result to do another query. This query, for example, can trigger the alert or not. 
+For this, I would like to use Streamlit. I would like to use pykx because I have a list of port and host corresponding to this KDB database, and I think it will be the most suitable package. 
+I want it to be easy to use. I want to be capable, as an admin, to set up all the table ports that we want and have in place, a real alert builder that will help us to conceive a query as easily as possible. If we have a connection to the database, we can easily know the name of the tables and what the columns of the tables are. I want to use this to help the users to build the most easily possible queries to trigger to set up their alerts. 
+ 
