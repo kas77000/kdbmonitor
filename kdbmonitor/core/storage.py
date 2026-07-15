@@ -82,3 +82,63 @@ class Storage:
     def delete_connection(self, cid: int) -> None:
         self.conn.execute("DELETE FROM connections WHERE id=?", (cid,))
         self.conn.commit()
+
+    # --- alerts ---
+    def add_alert(self, a: Alert) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO alerts(name, enabled, alert_json) VALUES (?,?,?)",
+            (a.name, 1 if a.enabled else 0, alert_to_json(a)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _row_to_alert(self, r: sqlite3.Row) -> Alert:
+        a = alert_from_json(r["alert_json"])
+        a.id = r["id"]
+        a.enabled = bool(r["enabled"])
+        return a
+
+    def list_alerts(self) -> list[Alert]:
+        rows = self.conn.execute("SELECT * FROM alerts ORDER BY name").fetchall()
+        return [self._row_to_alert(r) for r in rows]
+
+    def get_alert(self, aid: int) -> Optional[Alert]:
+        r = self.conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+        return self._row_to_alert(r) if r else None
+
+    def update_alert(self, a: Alert) -> None:
+        self.conn.execute(
+            "UPDATE alerts SET name=?, enabled=?, alert_json=? WHERE id=?",
+            (a.name, 1 if a.enabled else 0, alert_to_json(a), a.id),
+        )
+        self.conn.commit()
+
+    def set_alert_enabled(self, aid: int, enabled: bool) -> None:
+        self.conn.execute("UPDATE alerts SET enabled=? WHERE id=?", (1 if enabled else 0, aid))
+        self.conn.commit()
+
+    def delete_alert(self, aid: int) -> None:
+        self.conn.execute("DELETE FROM alerts WHERE id=?", (aid,))
+        self.conn.commit()
+
+    # --- runs ---
+    def record_run(self, alert_id: int, ts: str, status: str, triggered: bool,
+                   notified: bool, row_count: Optional[int], message: str) -> None:
+        self.conn.execute(
+            "INSERT INTO alert_runs(alert_id, ts, status, triggered, notified, row_count, message)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (alert_id, ts, status, 1 if triggered else 0, 1 if notified else 0, row_count, message),
+        )
+        self.conn.commit()
+
+    def latest_run(self, alert_id: int) -> Optional[dict]:
+        r = self.conn.execute(
+            "SELECT * FROM alert_runs WHERE alert_id=? ORDER BY id DESC LIMIT 1", (alert_id,)
+        ).fetchone()
+        return dict(r) if r else None
+
+    def list_runs(self, alert_id: int, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM alert_runs WHERE alert_id=? ORDER BY id DESC LIMIT ?", (alert_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]

@@ -30,3 +30,51 @@ def test_connection_name_unique():
     import pytest
     with pytest.raises(Exception):
         store.add_connection(Connection(id=None, name="dup", host="h", port=2))
+
+
+def _sample_alert():
+    from kdbmonitor.core.models import (
+        Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels,
+    )
+    return Alert(
+        id=None, name="a1", enabled=True, poll_interval_secs=30,
+        steps=[Step(server="orders", table="target", mode="form",
+                    filters=[Filter("sym", "in", ["AAPL"], "symbol")],
+                    raw_qsql=None, output_name="step1")],
+        trigger=TriggerCondition(type="has_rows"),
+        channels=Channels(), rearm=RearmPolicy(),
+    )
+
+
+def test_alert_crud_and_toggle():
+    store = Storage(":memory:")
+    store.init_db()
+
+    aid = store.add_alert(_sample_alert())
+    got = store.get_alert(aid)
+    assert got.name == "a1" and got.id == aid and got.enabled is True
+
+    got.name = "a1-renamed"
+    store.update_alert(got)
+    assert store.get_alert(aid).name == "a1-renamed"
+
+    store.set_alert_enabled(aid, False)
+    assert store.get_alert(aid).enabled is False
+    assert store.list_alerts()[0].enabled is False
+
+    store.delete_alert(aid)
+    assert store.list_alerts() == []
+
+
+def test_runs_record_and_latest():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    store.record_run(aid, ts="2026-07-15T10:00:00", status="armed", triggered=False,
+                     notified=False, row_count=0, message="")
+    store.record_run(aid, ts="2026-07-15T10:00:30", status="triggered", triggered=True,
+                     notified=True, row_count=3, message="hit")
+    latest = store.latest_run(aid)
+    assert latest["status"] == "triggered" and latest["triggered"] == 1
+    assert len(store.list_runs(aid)) == 2
+    assert store.latest_run(9999) is None
