@@ -46,3 +46,32 @@ def test_substitute_missing_ref_raises():
     import pytest
     with pytest.raises(KeyError):
         substitute_refs("x {{nope.col}}", {})
+
+
+from kdbmonitor.core.models import Alert, TriggerCondition, RearmPolicy, Channels
+from kdbmonitor.core.client import FakeClient
+from kdbmonitor.core.chain import run_chain
+
+
+def test_run_chain_cross_server():
+    orders = FakeClient({"select from target where sym in `AAPL`MSFT":
+                         pd.DataFrame({"sym": ["AAPL", "MSFT"]})})
+    kdp = FakeClient({"select from QATT where sym in `AAPL`MSFT":
+                      pd.DataFrame({"sym": ["AAPL", "MSFT"], "bid": [101.0, 99.0]})})
+    clients = {"orders": orders, "kdp": kdp}
+
+    alert = Alert(
+        id=1, name="x", enabled=True, poll_interval_secs=30,
+        steps=[
+            Step(server="orders", table="target", mode="form",
+                 filters=[Filter("sym", "in", ["AAPL", "MSFT"], "symbol")], output_name="step1"),
+            Step(server="kdp", table="QATT", mode="raw", filters=[],
+                 raw_qsql="select from QATT where sym in {{step1.sym}}", output_name="step2"),
+        ],
+        trigger=TriggerCondition(type="has_rows"),
+        channels=Channels(), rearm=RearmPolicy(),
+    )
+
+    final = run_chain(alert, client_for=lambda name: clients[name])
+    assert list(final["bid"]) == [101.0, 99.0]
+    assert kdp.calls == ["select from QATT where sym in `AAPL`MSFT"]

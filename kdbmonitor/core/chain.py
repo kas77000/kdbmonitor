@@ -44,3 +44,17 @@ def substitute_refs(qsql: str, outputs: dict) -> str:
         return format_q_list(distinct, _infer_value_type(series))
 
     return _REF.sub(repl, qsql)
+
+
+from typing import Callable
+from kdbmonitor.core.models import Alert
+
+
+def run_chain(alert: Alert, client_for: Callable[[str], object]) -> pd.DataFrame:
+    outputs: dict[str, pd.DataFrame] = {}
+    final: pd.DataFrame = pd.DataFrame()
+    for step in alert.steps:
+        qsql = substitute_refs(build_step_qsql(step), outputs)
+        final = client_for(step.server).query(qsql)
+        outputs[step.output_name] = final
+    return final
