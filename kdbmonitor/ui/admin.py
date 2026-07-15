@@ -43,8 +43,12 @@ def render(store, mgr: ConnectionManager) -> None:
 
     st.subheader("Email (SMTP) settings")
     st.caption("Used by alerts that select the email channel.")
-    st.session_state.setdefault("smtp", {"host": "", "port": 25, "sender": ""})
-    smtp = st.session_state["smtp"]
-    smtp["host"] = st.text_input("SMTP host", value=smtp["host"])
-    smtp["port"] = int(st.number_input("SMTP port", min_value=1, value=int(smtp["port"])))
-    smtp["sender"] = st.text_input("From address", value=smtp["sender"])
+    host = st.text_input("SMTP host", value=store.get_setting("smtp_host", ""))
+    port = int(st.number_input("SMTP port", min_value=1,
+                               value=int(store.get_setting("smtp_port", "25"))))
+    sender = st.text_input("From address", value=store.get_setting("smtp_sender", ""))
+    if st.button("Save SMTP settings"):
+        store.set_setting("smtp_host", host)
+        store.set_setting("smtp_port", str(port))
+        store.set_setting("smtp_sender", sender)
+        st.success("Saved SMTP settings")
