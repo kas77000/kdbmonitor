@@ -44,13 +44,26 @@ class PyKxClient:
 
 
 class ConnectionManager:
-    """Caches one client per (host, port)."""
-    def __init__(self, client_factory: Callable[[str, int], object] = PyKxClient):
+    """Caches one client per (host, port).
+
+    Connections whose host is the sentinel ``"demo"`` are served by an
+    in-memory ``MockKdbClient`` instead of a real pykx connection, so the app
+    can be exercised end-to-end without any KDB server.
+    """
+    def __init__(self, client_factory: Callable[[str, int], object] = PyKxClient,
+                 mock_factory: Callable[[], object] | None = None):
         self._factory = client_factory
+        self._mock_factory = mock_factory
         self._cache: dict[tuple[str, int], object] = {}
 
     def get(self, conn: Connection):
         key = (conn.host, conn.port)
         if key not in self._cache:
-            self._cache[key] = self._factory(conn.host, conn.port)
+            if conn.host == "demo":
+                if self._mock_factory is None:
+                    from kdbmonitor.core.mock import MockKdbClient
+                    self._mock_factory = MockKdbClient
+                self._cache[key] = self._mock_factory()
+            else:
+                self._cache[key] = self._factory(conn.host, conn.port)
         return self._cache[key]
