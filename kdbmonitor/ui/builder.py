@@ -268,6 +268,12 @@ def _copy_step_state(src: int, dst: int) -> None:
         for p in ("fcol", "fop", "fval", "ftype"):
             if f"b_{p}_{src}_{j}" in st.session_state:
                 st.session_state[f"b_{p}_{dst}_{j}"] = st.session_state[f"b_{p}_{src}_{j}"]
+    # drop any surplus filter keys the previous occupant of `dst` left behind
+    j = nf
+    while any(f"b_{p}_{dst}_{j}" in st.session_state for p in ("fcol", "fop", "fval", "ftype")):
+        for p in ("fcol", "fop", "fval", "ftype"):
+            st.session_state.pop(f"b_{p}_{dst}_{j}", None)
+        j += 1
 
 
 def _delete_step_state(i: int) -> None:

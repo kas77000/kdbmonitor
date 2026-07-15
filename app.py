@@ -30,12 +30,24 @@ with st.sidebar:
     n_conns = len(store.list_connections())
     st.markdown(f":gray[{n_alerts} alert(s) · {n_conns} server(s)]")
 
+def monitor_page():
+    monitor.render(store, mgr)
+
+
+def builder_page():
+    builder.render(store)
+
+
+def admin_page():
+    admin.render(store, mgr)
+
+
 pages = [
-    st.Page(lambda: monitor.render(store, mgr), title="Monitor",
+    st.Page(monitor_page, title="Monitor", url_path="monitor",
             icon=":material/monitoring:", default=True),
-    st.Page(lambda: builder.render(store), title="Builder",
+    st.Page(builder_page, title="Builder", url_path="builder",
             icon=":material/build:"),
-    st.Page(lambda: admin.render(store, mgr), title="Admin",
+    st.Page(admin_page, title="Admin", url_path="admin",
             icon=":material/settings:"),
 ]
 st.navigation(pages).run()
