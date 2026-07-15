@@ -1,0 +1,48 @@
+# KdbMonitor — dark trading-desk theme.
+# Tinted-neutral dark surfaces (never pure black), one restrained blue accent,
+# semantic status colors reserved strictly for meaning.
+
+[theme]
+base = "dark"
+
+primaryColor = "#3b82f6"                 # restrained blue: primary buttons / active nav
+backgroundColor = "#0b0f14"              # near-black, blue-tinted (not #000)
+secondaryBackgroundColor = "#141b24"     # cards, widgets, sidebar
+textColor = "#dfe7ef"                    # high-contrast body text
+borderColor = "#26313d"
+linkColor = "#5b9dff"
+linkUnderline = false
+
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "6px"
+buttonRadius = "6px"
+
+# Semantic status palette (used by badges / metrics / markdown coloring)
+greenColor = "#3fb950"                   # armed / healthy
+redColor = "#f85149"                     # triggered / alert
+orangeColor = "#d29922"                  # error / warning
+yellowColor = "#d29922"
+blueColor = "#3b82f6"
+grayColor = "#8b98a5"                    # disabled / idle
+
+# Typography: Inter for UI, JetBrains Mono for qSQL and numerics
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+codeFontSize = "13px"
+headingFontSizes = ["26px", "21px", "18px", "15px", "14px", "13px"]
+headingFontWeights = [700, 600, 600, 600, 500, 500]
+
+dataframeBorderColor = "#26313d"
+dataframeHeaderBackgroundColor = "#141b24"
+
+chartCategoricalColors = ["#3b82f6", "#3fb950", "#d29922", "#f85149", "#a371f7", "#5b9dff", "#8b98a5"]
+
+[theme.sidebar]
+backgroundColor = "#0e141b"
+secondaryBackgroundColor = "#141b24"
+borderColor = "#26313d"
+textColor = "#dfe7ef"
+primaryColor = "#3b82f6"
