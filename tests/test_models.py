@@ -28,6 +28,20 @@ def test_alert_json_roundtrip():
     assert restored.trigger.value == 100.0
 
 
+def test_trigger_value_type_roundtrips():
+    alert = Alert(
+        id=None, name="sym check", enabled=True, poll_interval_secs=30,
+        steps=[Step(server="orders", table="target", mode="form", filters=[],
+                    raw_qsql=None, output_name="step1")],
+        trigger=TriggerCondition(type="any_row", column="sym", op="=",
+                                 value="AAPL", value_type="symbol"),
+        channels=Channels(), rearm=RearmPolicy(),
+    )
+    restored = alert_from_json(alert_to_json(alert))
+    assert restored.trigger.value_type == "symbol"
+    assert restored.trigger.value == "AAPL"
+
+
 def test_connection_defaults():
     c = Connection(id=None, name="orders", host="localhost", port=5010)
     assert c.schema == {}

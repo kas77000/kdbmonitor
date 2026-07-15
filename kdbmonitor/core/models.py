@@ -31,6 +31,7 @@ class TriggerCondition:
     value: Any = None
     n: Optional[int] = None      # for row_count_gte
     agg: Optional[str] = None    # max | min | avg | sum (for aggregate)
+    value_type: str = "number"   # number | symbol | string (for any_row/all_rows)
 
 
 @dataclass
