@@ -46,3 +46,27 @@ def test_connection_defaults():
     c = Connection(id=None, name="orders", host="localhost", port=5010)
     assert c.schema == {}
     assert c.last_introspected_at is None
+
+
+def _minimal_alert():
+    return Alert(
+        id=None, name="x", enabled=True, poll_interval_secs=30,
+        steps=[Step(server="kdp", table="QATT", mode="form", filters=[],
+                    raw_qsql=None, output_name="step1")],
+        trigger=TriggerCondition(type="has_rows"),
+        channels=Channels(), rearm=RearmPolicy(),
+    )
+
+
+def test_result_retention_defaults_and_roundtrips():
+    a = _minimal_alert()
+    assert a.result_retention == "latest"                      # default
+    a.result_retention = "snapshot"
+    assert alert_from_json(alert_to_json(a)).result_retention == "snapshot"
+
+
+def test_missing_result_retention_defaults_to_latest():
+    import json
+    raw = json.loads(alert_to_json(_minimal_alert()))
+    del raw["result_retention"]                                # simulate an older file
+    assert alert_from_json(json.dumps(raw)).result_retention == "latest"

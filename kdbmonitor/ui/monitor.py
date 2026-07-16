@@ -10,7 +10,7 @@ from kdbmonitor.core.evaluate import evaluate_alert
 from kdbmonitor.core.notifiers import InAppSink, dispatch, send_email, post_webhook
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, is_due, secs_until_due, humanize_secs,
-    condition_summary, make_client_for,
+    condition_summary, make_client_for, should_capture_result,
 )
 
 
@@ -70,10 +70,12 @@ def render(store, mgr: ConnectionManager) -> None:
                 store.record_run(a.id, ts=now.isoformat(), status=res.status,
                                  triggered=res.triggered, notified=res.notify,
                                  row_count=res.row_count, message=res.message)
-                if res.df is not None:
+                prev_trig = bool(latest["triggered"]) if latest else False
+                if res.df is not None and should_capture_result(
+                        a.result_retention, res.triggered, prev_trig):
                     st.session_state.setdefault("last_results", {})[a.id] = {
                         "df": res.df, "rows": res.row_count, "when": now,
-                        "triggered": res.triggered}
+                        "mode": a.result_retention}
                 if res.notify:
                     dispatch(a.channels, res.message, in_app_sink=sink,
                              email_fn=email_fn, webhook_fn=post_webhook)
@@ -135,8 +137,12 @@ def render(store, mgr: ConnectionManager) -> None:
                     when = stored["when"]
                     when_txt = (when.strftime("%H:%M:%S") if hasattr(when, "strftime")
                                 else str(when))
-                    st.caption(f"{stored['rows']} row(s) · checked {when_txt} UTC"
-                               + (" · triggered" if stored["triggered"] else ""))
+                    hdr = st.columns([4, 1], vertical_alignment="center")
+                    hdr[0].caption(f"{stored['rows']} row(s) · triggered at "
+                                   f"{when_txt} UTC · {stored.get('mode', 'latest')}")
+                    if hdr[1].button("Clear", key=f"clr_{a.id}"):
+                        del last_results[a.id]
+                        st.rerun()
                     st.dataframe(stored["df"], use_container_width=True,
                                  hide_index=True)
             else:

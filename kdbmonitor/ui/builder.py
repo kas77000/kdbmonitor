@@ -73,7 +73,7 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_ctype": "has_rows", "b_ccol": "", "b_cop": ">", "b_cvtype": "number",
         "b_cval": "", "b_cagg": "max", "b_cn": 1,
         "b_inapp": True, "b_sound": True, "b_email": "", "b_hooks": "",
-        "b_rmode": "transition", "b_rcd": 900,
+        "b_rmode": "transition", "b_rcd": 900, "b_retention": "latest",
     })
 
 
@@ -91,6 +91,7 @@ def _load_edit(alert: Alert) -> None:
         "b_email": ", ".join(alert.channels.email_to),
         "b_hooks": ", ".join(alert.channels.webhook_urls),
         "b_rmode": alert.rearm.mode, "b_rcd": alert.rearm.cooldown_secs or 900,
+        "b_retention": alert.result_retention,
     }
     for i, step in enumerate(alert.steps):
         s[f"b_srv_{i}"] = step.server
@@ -509,6 +510,13 @@ def render(store, mgr) -> None:
 
     trigger = _trigger_block()
     channels, rearm = _notify_block()
+    retention = st.selectbox(
+        "Keep result on trigger", ["latest", "snapshot"],
+        format_func=lambda m: {"latest": "Latest — refresh each triggered check",
+                               "snapshot": "Snapshot — freeze at the trigger moment"}[m],
+        key="b_retention",
+        help="What the Monitor's Result view keeps for this alert. Data is only "
+             "captured while the alert is triggered.")
     _preview_panel(store, mgr, steps, trigger)
 
     # Save
@@ -531,7 +539,7 @@ def render(store, mgr) -> None:
             alert = Alert(id=st.session_state.get("b_edit_id"), name=name.strip(),
                           enabled=st.session_state.get("b_edit_enabled", True),
                           poll_interval_secs=interval, steps=steps, trigger=trigger,
-                          channels=channels, rearm=rearm)
+                          channels=channels, rearm=rearm, result_retention=retention)
             if editing:
                 store.update_alert(alert)
                 st.toast(f"Updated '{name}'", icon=":material/check:")

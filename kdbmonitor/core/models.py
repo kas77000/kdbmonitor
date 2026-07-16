@@ -59,6 +59,7 @@ class Alert:
     trigger: TriggerCondition
     channels: Channels
     rearm: RearmPolicy
+    result_retention: str = "latest"   # latest | snapshot (Monitor Result view)
 
 
 @dataclass
@@ -92,6 +93,7 @@ def alert_from_dict(d: dict) -> Alert:
         trigger=TriggerCondition(**d["trigger"]),
         channels=Channels(**d["channels"]),
         rearm=RearmPolicy(**d["rearm"]),
+        result_retention=d.get("result_retention", "latest"),
     )
 
 

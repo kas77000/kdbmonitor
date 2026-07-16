@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from kdbmonitor.core.models import TriggerCondition, Step, Filter
 from kdbmonitor.ui.common import (
     is_due, secs_until_due, humanize_secs, condition_summary, step_summary,
+    should_capture_result,
 )
 
 NOW = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
@@ -42,6 +43,18 @@ def test_condition_summary():
     assert condition_summary(
         TriggerCondition(type="aggregate", agg="max", column="bid", op=">", value=100)
     ) == "max(bid) > 100"
+
+
+def test_should_capture_result():
+    # never capture on a non-triggered check (armed/error keep prior data)
+    assert should_capture_result("latest", False, False) is False
+    assert should_capture_result("snapshot", False, True) is False
+    # latest: capture on every triggered check
+    assert should_capture_result("latest", True, False) is True
+    assert should_capture_result("latest", True, True) is True
+    # snapshot: only on the rising edge (was not triggered before)
+    assert should_capture_result("snapshot", True, False) is True
+    assert should_capture_result("snapshot", True, True) is False
 
 
 def test_step_summary():

@@ -25,6 +25,21 @@ INTERVAL_PRESETS: dict[str, int] = {
 }
 
 
+def should_capture_result(retention: str, triggered: bool, prev_triggered: bool) -> bool:
+    """Whether the Monitor should (over)write the stored result this check.
+
+    Data is captured only on a triggered check; armed/error checks keep whatever
+    was last captured. In 'snapshot' mode we freeze at the trigger moment (the
+    rising edge), so a sustained trigger isn't overwritten each tick; in 'latest'
+    mode every triggered check refreshes the stored rows.
+    """
+    if not triggered:
+        return False
+    if retention == "snapshot":
+        return not prev_triggered
+    return True
+
+
 def make_client_for(store, mgr):
     """Return a resolver: server name -> KDB client, via the connection store."""
     def resolve(server_name: str):
