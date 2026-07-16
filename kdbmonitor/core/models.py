@@ -71,12 +71,11 @@ class Connection:
     last_introspected_at: Optional[str] = None
 
 
-def alert_to_json(alert: Alert) -> str:
-    return json.dumps(asdict(alert))
+def alert_to_dict(alert: Alert) -> dict:
+    return asdict(alert)
 
 
-def alert_from_json(raw: str) -> Alert:
-    d = json.loads(raw)
+def alert_from_dict(d: dict) -> Alert:
     return Alert(
         id=d["id"],
         name=d["name"],
@@ -94,3 +93,11 @@ def alert_from_json(raw: str) -> Alert:
         channels=Channels(**d["channels"]),
         rearm=RearmPolicy(**d["rearm"]),
     )
+
+
+def alert_to_json(alert: Alert) -> str:
+    return json.dumps(alert_to_dict(alert))
+
+
+def alert_from_json(raw: str) -> Alert:
+    return alert_from_dict(json.loads(raw))
