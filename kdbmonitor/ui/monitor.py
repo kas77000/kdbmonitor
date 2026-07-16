@@ -119,7 +119,10 @@ def render(store, mgr: ConnectionManager) -> None:
                                 "checked": None, "next": None})
                 continue
 
-            due = is_due(latest["ts"] if latest else None, a.poll_interval_secs, now)
+            # only evaluate / record / notify while monitoring is live; otherwise
+            # just display the last known status (a page rerun must not fire alerts)
+            due = running and is_due(latest["ts"] if latest else None,
+                                     a.poll_interval_secs, now)
             if due:
                 res = evaluate_alert(a, resolve, prev_run=latest, now=now,
                                      last_notified_ts=store.last_notified_at(a.id))

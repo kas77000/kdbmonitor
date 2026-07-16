@@ -58,6 +58,7 @@ def _builder_script():
 
 
 def _monitor_script():
+    import streamlit as st
     from kdbmonitor.ui import monitor
     from kdbmonitor.core.storage import Storage as _S
     from kdbmonitor.core.client import ConnectionManager as _CM
@@ -76,6 +77,7 @@ def _monitor_script():
                    filters=[_F("sym", "in", ["AAPL"], "symbol")], output_name="step1")],
         trigger=_T(type="has_rows"), channels=_C(), rearm=_R(),
     ))
+    st.session_state["mon_running"] = True   # exercise the live evaluate/notify path
     monitor.render(store, _CM())
 
 
