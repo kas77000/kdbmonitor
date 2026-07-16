@@ -52,7 +52,17 @@ def test_bundle_roundtrip():
     conns, alerts = _sample_conns(), _sample_alerts()
     r_conns, r_alerts = import_bundle_json(export_bundle_json(conns, alerts))
     assert r_alerts == alerts          # like/negated filters + cross-server chain survive
-    assert r_conns == conns            # host, port, schema, last_introspected_at survive
+    # connections keep identity but NOT the cached schema (re-fetch via Introspect)
+    assert [(c.name, c.host, c.port) for c in r_conns] == \
+        [(c.name, c.host, c.port) for c in conns]
+    assert all(c.schema == {} and c.last_introspected_at is None for c in r_conns)
+
+
+def test_export_omits_cached_schema():
+    conns = _sample_conns()  # kdp carries a schema + last_introspected_at
+    doc = json.loads(export_bundle_json(conns, []))
+    assert all(c["schema"] == {} for c in doc["connections"])
+    assert all(c["last_introspected_at"] is None for c in doc["connections"])
 
 
 def test_export_strips_ids():

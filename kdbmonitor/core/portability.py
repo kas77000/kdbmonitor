@@ -10,7 +10,9 @@ The document is a small versioned envelope so imports can be validated:
       "alerts":      [ <alert dict>, ... ]
     }
 
-IDs are dropped on export so importing always creates fresh rows. Alert names
+IDs are dropped on export so importing always creates fresh rows. A connection's
+cached schema (and its last-introspected time) are NOT exported: they are
+derived data the user re-fetches with Introspect after importing. Alert names
 travel in the bundle and are used to detect collisions on import; connections
 are matched by name (the caller decides how to handle name clashes).
 
@@ -37,7 +39,8 @@ def export_bundle_json(connections: Iterable[Connection], alerts: Iterable[Alert
         "kind": EXPORT_KIND,
         "version": EXPORT_VERSION,
         "exported_at": exported_at,
-        "connections": [{**connection_to_dict(c), "id": None} for c in connections],
+        "connections": [{**connection_to_dict(c), "id": None, "schema": {},
+                         "last_introspected_at": None} for c in connections],
         "alerts": [{**alert_to_dict(a), "id": None} for a in alerts],
     }
     return json.dumps(payload, indent=2)

@@ -385,6 +385,8 @@ def _import_export(store) -> None:
                 note = f"{len(new_conns)} new connection(s)"
                 if skipped:
                     note += f" · {skipped} already exist (keeping yours)"
+                if new_conns:
+                    note += " · run Introspect in Admin to load their schema"
                 st.caption(note)
                 if st.button(f"Import {len(inc_alerts)} alert(s)", type="primary",
                              icon=":material/upload:", key="io_import_btn"):
