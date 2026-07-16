@@ -3,9 +3,21 @@ import json
 import pytest
 
 from kdbmonitor.core.models import (
-    Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels,
+    Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels, Connection,
+    alert_to_dict,
 )
-from kdbmonitor.core.portability import export_alerts_json, import_alerts_json
+from kdbmonitor.core.portability import (
+    export_bundle_json, import_bundle_json, conflicting_alert_names,
+)
+
+
+def _sample_conns():
+    return [
+        Connection(id=None, name="kdp", host="localhost", port=5010,
+                   schema={"QATT": ["sym", "bid", "ask"]},
+                   last_introspected_at="2026-07-17T10:00:00"),
+        Connection(id=None, name="orders", host="10.0.0.5", port=5020),
+    ]
 
 
 def _sample_alerts():
@@ -36,66 +48,96 @@ def _sample_alerts():
     return [a1, a2]
 
 
-def test_export_import_roundtrip():
-    alerts = _sample_alerts()
-    restored = import_alerts_json(export_alerts_json(alerts))
-    assert restored == alerts  # negated/like filters, cross-server chain all survive
+def test_bundle_roundtrip():
+    conns, alerts = _sample_conns(), _sample_alerts()
+    r_conns, r_alerts = import_bundle_json(export_bundle_json(conns, alerts))
+    assert r_alerts == alerts          # like/negated filters + cross-server chain survive
+    assert r_conns == conns            # host, port, schema, last_introspected_at survive
 
 
 def test_export_strips_ids():
-    alerts = _sample_alerts()
-    alerts[0].id = 5
-    alerts[1].id = 9
-    doc = json.loads(export_alerts_json(alerts))
-    assert doc["kind"] == "kdbmonitor-alerts" and doc["version"] == 1
+    conns, alerts = _sample_conns(), _sample_alerts()
+    conns[0].id, alerts[0].id = 3, 5
+    doc = json.loads(export_bundle_json(conns, alerts))
+    assert doc["kind"] == "kdbmonitor-export" and doc["version"] == 2
+    assert all(c["id"] is None for c in doc["connections"])
     assert all(a["id"] is None for a in doc["alerts"])
-    restored = import_alerts_json(export_alerts_json(alerts))
-    assert all(a.id is None for a in restored)
+    r_conns, r_alerts = import_bundle_json(export_bundle_json(conns, alerts))
+    assert all(c.id is None for c in r_conns)
+    assert all(a.id is None for a in r_alerts)
 
 
 def test_exported_at_included():
-    doc = json.loads(export_alerts_json([], exported_at="2026-07-17T10:00:00+00:00"))
+    doc = json.loads(export_bundle_json([], [], exported_at="2026-07-17T10:00:00+00:00"))
     assert doc["exported_at"] == "2026-07-17T10:00:00+00:00"
-    assert doc["alerts"] == []
+    assert doc["alerts"] == [] and doc["connections"] == []
+
+
+def test_conflicting_alert_names():
+    alerts = _sample_alerts()
+    assert conflicting_alert_names({"bid breakout"}, alerts) == ["bid breakout"]
+    assert conflicting_alert_names(set(), alerts) == []
+    assert conflicting_alert_names({"nope"}, alerts) == []
+    # order-preserving + deduped
+    both = conflicting_alert_names({"bid breakout", "orders -> quotes"}, alerts * 2)
+    assert both == ["bid breakout", "orders -> quotes"]
+
+
+def test_legacy_alert_only_file_imports():
+    doc = json.dumps({"kind": "kdbmonitor-alerts", "version": 1,
+                      "alerts": [alert_to_dict(_sample_alerts()[0])]})
+    conns, alerts = import_bundle_json(doc)
+    assert conns == []
+    assert len(alerts) == 1 and alerts[0].name == "bid breakout"
 
 
 def test_import_rejects_bad_json():
     with pytest.raises(ValueError, match="Not valid JSON"):
-        import_alerts_json("{not json")
+        import_bundle_json("{not json")
 
 
 def test_import_rejects_wrong_kind():
-    with pytest.raises(ValueError, match="KdbMonitor alerts export"):
-        import_alerts_json(json.dumps({"kind": "something-else", "alerts": []}))
+    with pytest.raises(ValueError, match="KdbMonitor export"):
+        import_bundle_json(json.dumps({"kind": "something-else", "alerts": []}))
 
 
 def test_import_rejects_missing_alerts_list():
     with pytest.raises(ValueError, match="no 'alerts' list"):
-        import_alerts_json(json.dumps({"kind": "kdbmonitor-alerts", "version": 1}))
+        import_bundle_json(json.dumps({"kind": "kdbmonitor-export", "version": 2}))
 
 
 def test_import_rejects_malformed_alert():
-    bad = {"kind": "kdbmonitor-alerts", "version": 1, "alerts": [{"name": "x"}]}
-    with pytest.raises(ValueError, match="malformed"):
-        import_alerts_json(json.dumps(bad))
+    bad = {"kind": "kdbmonitor-export", "version": 2, "connections": [],
+           "alerts": [{"name": "x"}]}
+    with pytest.raises(ValueError, match="Alert #1 is malformed"):
+        import_bundle_json(json.dumps(bad))
 
 
-def test_store_export_import_roundtrip():
+def test_import_rejects_malformed_connection():
+    bad = {"kind": "kdbmonitor-export", "version": 2,
+           "connections": [{"host": "h"}], "alerts": []}
+    with pytest.raises(ValueError, match="Connection #1 is malformed"):
+        import_bundle_json(json.dumps(bad))
+
+
+def test_store_bundle_roundtrip():
     from kdbmonitor.core.storage import Storage
     src = Storage(":memory:")
     src.init_db()
+    for c in _sample_conns():
+        src.add_connection(c)
     for a in _sample_alerts():
         src.add_alert(a)
 
-    doc = export_alerts_json(src.list_alerts())
+    doc = export_bundle_json(src.list_connections(), src.list_alerts())
 
     dst = Storage(":memory:")
     dst.init_db()
-    for a in import_alerts_json(doc):
+    conns, alerts = import_bundle_json(doc)
+    for c in conns:
+        dst.add_connection(c)
+    for a in alerts:
         dst.add_alert(a)
 
-    src_alerts, dst_alerts = src.list_alerts(), dst.list_alerts()
-    assert [a.name for a in dst_alerts] == [a.name for a in src_alerts]
-    for s, d in zip(src_alerts, dst_alerts):
-        s.id = d.id = None
-        assert s == d
+    assert [c.name for c in dst.list_connections()] == [c.name for c in src.list_connections()]
+    assert [a.name for a in dst.list_alerts()] == [a.name for a in src.list_alerts()]

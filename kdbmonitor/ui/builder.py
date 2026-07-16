@@ -7,7 +7,9 @@ from kdbmonitor.core.models import (
     Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels,
 )
 from kdbmonitor.core.chain import build_step_qsql
-from kdbmonitor.core.portability import export_alerts_json, import_alerts_json
+from kdbmonitor.core.portability import (
+    export_bundle_json, import_bundle_json, conflicting_alert_names,
+)
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs,
 )
@@ -334,7 +336,9 @@ def _manage_alerts(store) -> None:
 
 def _import_export(store) -> None:
     alerts = store.list_alerts()
-    with st.expander("Import / export alerts", icon=":material/import_export:"):
+    conns = store.list_connections()
+    with st.expander("Import / export (alerts & connections)",
+                     icon=":material/import_export:"):
         exp, imp = st.columns(2)
         with exp:
             st.markdown("**Export**")
@@ -344,10 +348,12 @@ def _import_export(store) -> None:
                 names = [a.name for a in alerts]
                 chosen = st.multiselect("Alerts to export", names, default=names)
                 selected = [a for a in alerts if a.name in chosen]
+                st.caption(f"Includes all {len(conns)} connection(s) and "
+                           f"{len(selected)} alert(s).")
                 st.download_button(
                     "Download JSON", icon=":material/download:",
-                    data=export_alerts_json(selected),
-                    file_name="kdbmonitor-alerts.json", mime="application/json",
+                    data=export_bundle_json(conns, selected),
+                    file_name="kdbmonitor-export.json", mime="application/json",
                     disabled=not selected)
         with imp:
             st.markdown("**Import**")
@@ -356,22 +362,40 @@ def _import_export(store) -> None:
                                   key=f"io_import_file_{nonce}")
             if up is not None:
                 try:
-                    incoming = import_alerts_json(up.getvalue().decode("utf-8"))
+                    inc_conns, inc_alerts = import_bundle_json(
+                        up.getvalue().decode("utf-8"))
                 except ValueError as exc:
                     st.error(str(exc), icon=":material/error:")
-                else:
-                    preview = ", ".join(a.name for a in incoming[:8])
-                    if len(incoming) > 8:
-                        preview += " …"
-                    st.caption(f"{len(incoming)} alert(s): {preview}")
-                    if st.button(f"Import {len(incoming)} alert(s)", type="primary",
-                                 icon=":material/upload:", key="io_import_btn"):
-                        for a in incoming:
-                            store.add_alert(a)
-                        st.session_state["io_import_nonce"] = nonce + 1
-                        st.toast(f"Imported {len(incoming)} alert(s)",
-                                 icon=":material/check:")
-                        st.rerun()
+                    return
+                conflicts = conflicting_alert_names({a.name for a in alerts}, inc_alerts)
+                if conflicts:
+                    st.error(
+                        "Import aborted — you already have alert(s) named: "
+                        + ", ".join(conflicts)
+                        + ". Rename or delete them first.",
+                        icon=":material/error:")
+                    return
+                existing_conn_names = {c.name for c in conns}
+                new_conns = [c for c in inc_conns if c.name not in existing_conn_names]
+                skipped = len(inc_conns) - len(new_conns)
+                preview = ", ".join(a.name for a in inc_alerts[:8])
+                if len(inc_alerts) > 8:
+                    preview += " …"
+                st.caption(f"{len(inc_alerts)} alert(s): {preview}")
+                note = f"{len(new_conns)} new connection(s)"
+                if skipped:
+                    note += f" · {skipped} already exist (keeping yours)"
+                st.caption(note)
+                if st.button(f"Import {len(inc_alerts)} alert(s)", type="primary",
+                             icon=":material/upload:", key="io_import_btn"):
+                    for c in new_conns:
+                        store.add_connection(c)
+                    for a in inc_alerts:
+                        store.add_alert(a)
+                    st.session_state["io_import_nonce"] = nonce + 1
+                    st.toast(f"Imported {len(inc_alerts)} alert(s), "
+                             f"{len(new_conns)} connection(s)", icon=":material/check:")
+                    st.rerun()
 
 
 # --------------------------------------------------------------------------- #

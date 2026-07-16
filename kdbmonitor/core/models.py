@@ -101,3 +101,18 @@ def alert_to_json(alert: Alert) -> str:
 
 def alert_from_json(raw: str) -> Alert:
     return alert_from_dict(json.loads(raw))
+
+
+def connection_to_dict(conn: Connection) -> dict:
+    return asdict(conn)
+
+
+def connection_from_dict(d: dict) -> Connection:
+    return Connection(
+        id=d.get("id"),
+        name=d["name"],
+        host=d["host"],
+        port=d["port"],
+        schema=d.get("schema", {}),
+        last_introspected_at=d.get("last_introspected_at"),
+    )
