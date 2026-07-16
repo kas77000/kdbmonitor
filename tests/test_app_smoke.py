@@ -92,3 +92,37 @@ def test_builder_page_renders_with_demo():
 def test_monitor_page_renders_and_evaluates_demo_alert():
     at = AppTest.from_function(_monitor_script, default_timeout=30).run()
     assert not at.exception
+
+
+def _result_script():
+    from datetime import datetime, timezone
+    import pandas as pd
+    import streamlit as st
+    from kdbmonitor.ui import result
+    from kdbmonitor.core.storage import Storage as _S
+    store = _S(":memory:")
+    store.init_db()
+    st.session_state["result_alert_id"] = 1
+    st.session_state["last_results"] = {1: {
+        "df": pd.DataFrame({"sym": ["AAPL", "MSFT"], "bid": [101.0, 99.5]}),
+        "rows": 2, "when": datetime(2026, 7, 17, 10, 0, 0, tzinfo=timezone.utc),
+        "mode": "latest"}}
+    result.render(store)
+
+
+def _result_empty_script():
+    from kdbmonitor.ui import result
+    from kdbmonitor.core.storage import Storage as _S
+    store = _S(":memory:")
+    store.init_db()
+    result.render(store)   # no result selected -> info + early return
+
+
+def test_result_page_renders_with_data():
+    at = AppTest.from_function(_result_script, default_timeout=30).run()
+    assert not at.exception
+
+
+def test_result_page_renders_when_empty():
+    at = AppTest.from_function(_result_empty_script, default_timeout=30).run()
+    assert not at.exception

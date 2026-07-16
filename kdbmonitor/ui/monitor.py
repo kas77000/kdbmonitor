@@ -1,9 +1,11 @@
 # kdbmonitor/ui/monitor.py
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.evaluate import evaluate_alert
@@ -25,7 +27,61 @@ def _email_fn(store):
     )
 
 
+# Browser (OS-level) notifications that show even when the tab is minimized.
+# Requires a one-time permission grant (a user gesture), so an Enable button is
+# shown until granted. Each payload is deduped by key via localStorage.
+_NOTIFY_HTML = """
+<div id="kdbn" style="font:13px sans-serif;color:#8b98a5;padding:2px 0"></div>
+<script>
+(function(){
+  var payloads = __PAYLOADS__;
+  var box = document.getElementById('kdbn');
+  function beep(){ try{
+    var c = new (window.AudioContext||window.webkitAudioContext)();
+    var o = c.createOscillator(), g = c.createGain();
+    o.connect(g); g.connect(c.destination); o.frequency.value = 880;
+    g.gain.setValueAtTime(0.15, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.3);
+    o.start(); o.stop(c.currentTime + 0.3);
+  } catch(e){} }
+  function fire(){
+    var done = JSON.parse(localStorage.getItem('kdbmon_fired') || '[]');
+    var played = false;
+    payloads.forEach(function(p){
+      if(done.indexOf(p.key) === -1){
+        try{ new Notification(p.title, {body: p.body, tag: p.key}); } catch(e){}
+        if(p.sound && !played){ beep(); played = true; }
+        done.push(p.key);
+      }
+    });
+    localStorage.setItem('kdbmon_fired', JSON.stringify(done.slice(-200)));
+  }
+  if(!('Notification' in window)){ box.textContent = 'Browser notifications not supported'; return; }
+  if(Notification.permission === 'granted'){ box.innerHTML = '🔔 Alert notifications on'; fire(); }
+  else if(Notification.permission === 'denied'){ box.innerHTML = '🔕 Notifications blocked — enable them in your browser site settings'; }
+  else {
+    var b = document.createElement('button');
+    b.textContent = '🔔 Enable alert notifications';
+    b.style.cssText = 'padding:4px 10px;border-radius:6px;border:1px solid #3b82f6;background:#141b24;color:#dfe7ef;cursor:pointer';
+    b.onclick = function(){ Notification.requestPermission().then(function(perm){
+      if(perm === 'granted'){ box.innerHTML = '🔔 Alert notifications on'; fire(); }
+      else if(perm === 'denied'){ box.innerHTML = '🔕 Notifications blocked'; }
+    }); };
+    box.appendChild(b);
+  }
+})();
+</script>
+"""
+
+
+def _browser_notify(payloads: list[dict]) -> None:
+    components.html(_NOTIFY_HTML.replace("__PAYLOADS__", json.dumps(payloads)),
+                    height=44)
+
+
 def render(store, mgr: ConnectionManager) -> None:
+    if st.session_state.pop("_open_result", False) and "_nav_pages" in st.session_state:
+        st.switch_page(st.session_state["_nav_pages"]["result"])
     resolve = make_client_for(store, mgr)
     sink: InAppSink = st.session_state.setdefault("in_app_sink", InAppSink())
 
@@ -53,7 +109,7 @@ def render(store, mgr: ConnectionManager) -> None:
     def _tick() -> None:
         now = datetime.now(timezone.utc)
         email_fn = _email_fn(store)
-        new_sound = False
+        notify_payloads = []
         display = []
 
         for a in store.list_alerts():
@@ -79,8 +135,11 @@ def render(store, mgr: ConnectionManager) -> None:
                 if res.notify:
                     dispatch(a.channels, res.message, in_app_sink=sink,
                              email_fn=email_fn, webhook_fn=post_webhook)
-                    if a.channels.in_app and a.channels.sound:
-                        new_sound = True
+                    if a.channels.in_app:
+                        notify_payloads.append({
+                            "key": f"{a.id}-{now.isoformat()}",
+                            "title": a.name, "body": res.message,
+                            "sound": bool(a.channels.sound)})
                 display.append({"a": a, "status": res.status, "rows": res.row_count,
                                 "checked": now, "next": a.poll_interval_secs})
             else:
@@ -106,11 +165,9 @@ def render(store, mgr: ConnectionManager) -> None:
             if d["status"] == "triggered":
                 st.error(f"**{d['a'].name}** — {condition_summary(d['a'].trigger)}  "
                          f"·  {d['rows']} row(s)", icon=":material/notifications_active:")
-        if new_sound:
-            st.markdown(
-                "<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg'></audio>",
-                unsafe_allow_html=True,
-            )
+
+        # Browser notifications (fire on new triggers; also shows the enable button)
+        _browser_notify(notify_payloads)
 
         # Per-alert status rows
         last_results = st.session_state.get("last_results", {})
@@ -133,18 +190,12 @@ def render(store, mgr: ConnectionManager) -> None:
 
             stored = last_results.get(a.id)
             if stored is not None and stored.get("df") is not None:
-                with row[4].popover("Result", icon=":material/table:"):
-                    when = stored["when"]
-                    when_txt = (when.strftime("%H:%M:%S") if hasattr(when, "strftime")
-                                else str(when))
-                    hdr = st.columns([4, 1], vertical_alignment="center")
-                    hdr[0].caption(f"{stored['rows']} row(s) · triggered at "
-                                   f"{when_txt} UTC · {stored.get('mode', 'latest')}")
-                    if hdr[1].button("Clear", key=f"clr_{a.id}"):
-                        del last_results[a.id]
-                        st.rerun()
-                    st.dataframe(stored["df"], use_container_width=True,
-                                 hide_index=True)
+                if row[4].button("View", key=f"view_{a.id}",
+                                 icon=":material/open_in_full:",
+                                 help="Open the full result table"):
+                    st.session_state["result_alert_id"] = a.id
+                    st.session_state["_open_result"] = True
+                    st.rerun()
             else:
                 row[4].caption("—")
 

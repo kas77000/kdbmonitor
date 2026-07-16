@@ -3,7 +3,7 @@ import streamlit as st
 
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.core.client import ConnectionManager
-from kdbmonitor.ui import admin, builder, monitor
+from kdbmonitor.ui import admin, builder, monitor, result
 
 st.set_page_config(page_title="KdbMonitor", page_icon=":material/radar:", layout="wide")
 
@@ -42,12 +42,20 @@ def admin_page():
     admin.render(store, mgr)
 
 
-pages = [
-    st.Page(monitor_page, title="Monitor", url_path="monitor",
-            icon=":material/monitoring:", default=True),
-    st.Page(builder_page, title="Builder", url_path="builder",
-            icon=":material/build:"),
-    st.Page(admin_page, title="Admin", url_path="admin",
-            icon=":material/settings:"),
-]
-st.navigation(pages).run()
+def result_page():
+    result.render(store)
+
+
+monitor_pg = st.Page(monitor_page, title="Monitor", url_path="monitor",
+                     icon=":material/monitoring:", default=True)
+builder_pg = st.Page(builder_page, title="Builder", url_path="builder",
+                     icon=":material/build:")
+admin_pg = st.Page(admin_page, title="Admin", url_path="admin",
+                   icon=":material/settings:")
+result_pg = st.Page(result_page, title="Result", url_path="result",
+                    icon=":material/table_view:")
+
+# expose pages so other views can navigate programmatically (Monitor -> Result)
+st.session_state["_nav_pages"] = {"monitor": monitor_pg, "result": result_pg}
+
+st.navigation([monitor_pg, builder_pg, admin_pg, result_pg]).run()
