@@ -70,3 +70,12 @@ def test_evaluate_error_on_query_failure():
     res = evaluate_alert(alert, boom, prev_run=None, now=datetime(2026, 7, 15, 10, 0, 0))
     assert res.status == "error" and res.notify is False
     assert "connection refused" in res.message
+    assert res.df is None
+
+
+def test_evaluate_returns_result_df():
+    df = pd.DataFrame({"sym": ["AAPL"], "bid": [101.0]})
+    res = evaluate_alert(_alert(TriggerCondition(type="has_rows")), _client_for(df),
+                         prev_run=None, now=datetime(2026, 7, 15, 10, 0, 0))
+    assert res.df is not None and len(res.df) == 1
+    assert list(res.df["bid"]) == [101.0]

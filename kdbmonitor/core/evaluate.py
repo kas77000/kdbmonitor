@@ -18,6 +18,7 @@ class EvalResult:
     notify: bool
     row_count: Optional[int]
     message: str
+    df: Optional[object] = None   # final result rows (pandas DataFrame), None on error
 
 
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -41,4 +42,4 @@ def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
     message = (f"{alert.name}: TRIGGERED ({len(df)} rows)" if triggered
                else f"{alert.name}: armed ({len(df)} rows)")
     return EvalResult(status=status, triggered=triggered, notify=notify,
-                      row_count=len(df), message=message)
+                      row_count=len(df), message=message, df=df)

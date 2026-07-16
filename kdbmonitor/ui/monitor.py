@@ -70,6 +70,10 @@ def render(store, mgr: ConnectionManager) -> None:
                 store.record_run(a.id, ts=now.isoformat(), status=res.status,
                                  triggered=res.triggered, notified=res.notify,
                                  row_count=res.row_count, message=res.message)
+                if res.df is not None:
+                    st.session_state.setdefault("last_results", {})[a.id] = {
+                        "df": res.df, "rows": res.row_count, "when": now,
+                        "triggered": res.triggered}
                 if res.notify:
                     dispatch(a.channels, res.message, in_app_sink=sink,
                              email_fn=email_fn, webhook_fn=post_webhook)
@@ -107,10 +111,11 @@ def render(store, mgr: ConnectionManager) -> None:
             )
 
         # Per-alert status rows
+        last_results = st.session_state.get("last_results", {})
         for d in display:
             a = d["a"]
             label, color, icon = STATUS_META[d["status"]]
-            row = st.columns([1.5, 4, 1.2, 2.3], vertical_alignment="center")
+            row = st.columns([1.4, 3.4, 1, 2.1, 1.1], vertical_alignment="center")
             row[0].badge(label, icon=icon, color=color)
             row[1].markdown(f"**{a.name}**  \n:gray[Triggers when {condition_summary(a.trigger)}]")
             rows_txt = "—" if d["rows"] is None else str(d["rows"])
@@ -123,6 +128,19 @@ def render(store, mgr: ConnectionManager) -> None:
                 nxt = d["next"] if isinstance(d["next"], int) else a.poll_interval_secs
                 row[3].caption(f":material/schedule: next check in {humanize_secs(nxt)} "
                                f"· every {humanize_secs(a.poll_interval_secs)}")
+
+            stored = last_results.get(a.id)
+            if stored is not None and stored.get("df") is not None:
+                with row[4].popover("Result", icon=":material/table:"):
+                    when = stored["when"]
+                    when_txt = (when.strftime("%H:%M:%S") if hasattr(when, "strftime")
+                                else str(when))
+                    st.caption(f"{stored['rows']} row(s) · checked {when_txt} UTC"
+                               + (" · triggered" if stored["triggered"] else ""))
+                    st.dataframe(stored["df"], use_container_width=True,
+                                 hide_index=True)
+            else:
+                row[4].caption("—")
 
         st.caption(f"Last loop: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                    + ("" if running else " · monitoring paused"))
