@@ -35,7 +35,7 @@ def monitor_page():
 
 
 def builder_page():
-    builder.render(store)
+    builder.render(store, mgr)
 
 
 def admin_page():

@@ -25,6 +25,16 @@ INTERVAL_PRESETS: dict[str, int] = {
 }
 
 
+def make_client_for(store, mgr):
+    """Return a resolver: server name -> KDB client, via the connection store."""
+    def resolve(server_name: str):
+        conn = store.get_connection_by_name(server_name)
+        if conn is None:
+            raise RuntimeError(f"unknown server '{server_name}'")
+        return mgr.get(conn)
+    return resolve
+
+
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 

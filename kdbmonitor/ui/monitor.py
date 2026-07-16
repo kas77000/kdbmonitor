@@ -10,17 +10,8 @@ from kdbmonitor.core.evaluate import evaluate_alert
 from kdbmonitor.core.notifiers import InAppSink, dispatch, send_email, post_webhook
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, is_due, secs_until_due, humanize_secs,
-    condition_summary,
+    condition_summary, make_client_for,
 )
-
-
-def _client_for(store, mgr: ConnectionManager):
-    def resolve(server_name: str):
-        conn = store.get_connection_by_name(server_name)
-        if conn is None:
-            raise RuntimeError(f"unknown server '{server_name}'")
-        return mgr.get(conn)
-    return resolve
 
 
 def _email_fn(store):
@@ -35,7 +26,7 @@ def _email_fn(store):
 
 
 def render(store, mgr: ConnectionManager) -> None:
-    resolve = _client_for(store, mgr)
+    resolve = make_client_for(store, mgr)
     sink: InAppSink = st.session_state.setdefault("in_app_sink", InAppSink())
 
     st.subheader(":material/monitoring: Live monitor")

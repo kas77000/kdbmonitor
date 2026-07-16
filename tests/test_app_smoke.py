@@ -48,12 +48,13 @@ def _admin_script():
 def _builder_script():
     from kdbmonitor.ui import builder
     from kdbmonitor.core.storage import Storage as _S
+    from kdbmonitor.core.client import ConnectionManager as _CM
     from kdbmonitor.core.mock import demo_connection_specs as _specs
     store = _S(":memory:")
     store.init_db()
     for spec in _specs():
         store.add_connection(spec)
-    builder.render(store)
+    builder.render(store, _CM())
 
 
 def _monitor_script():

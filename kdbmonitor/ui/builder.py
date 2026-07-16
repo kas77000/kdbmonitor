@@ -1,17 +1,20 @@
 # kdbmonitor/ui/builder.py
 from __future__ import annotations
 
+from datetime import datetime
+
 import streamlit as st
 
 from kdbmonitor.core.models import (
     Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels,
 )
-from kdbmonitor.core.chain import build_step_qsql
+from kdbmonitor.core.chain import build_step_qsql, preview_chain
+from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.portability import (
     export_bundle_json, import_bundle_json, conflicting_alert_names,
 )
 from kdbmonitor.ui.common import (
-    STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs,
+    STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs, make_client_for,
 )
 
 _OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
@@ -403,7 +406,73 @@ def _import_export(store) -> None:
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
-def render(store) -> None:
+def _run_preview(store, mgr, steps: list[Step], trigger: TriggerCondition) -> None:
+    alert = Alert(id=None, name="(preview)", enabled=True, poll_interval_secs=30,
+                  steps=steps, trigger=trigger, channels=Channels(), rearm=RearmPolicy())
+    results = preview_chain(alert, make_client_for(store, mgr))
+    step_states = [{"index": r.index, "server": r.server, "qsql": r.qsql,
+                    "error": r.error, "df": r.df,
+                    "rows": None if r.df is None else len(r.df)}
+                   for r in results]
+
+    final = results[-1] if results else None
+    triggered = None
+    final_rows = None
+    if final is not None and final.error is None:
+        final_rows = len(final.df)
+        try:
+            triggered = bool(eval_condition(trigger, final.df))
+        except Exception as exc:  # noqa: BLE001 - surface condition errors inline
+            step_states.append({"index": len(results), "server": "", "qsql": "",
+                                "error": f"condition error: {exc}", "df": None, "rows": None})
+
+    st.session_state["b_preview"] = {
+        "steps": step_states, "triggered": triggered,
+        "summary": condition_summary(trigger), "final_rows": final_rows,
+        "when": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
+def _render_preview() -> None:
+    p = st.session_state["b_preview"]
+    v = st.columns([5, 1], vertical_alignment="center")
+    v[0].caption(f":material/schedule: snapshot at {p['when']}")
+    if v[1].button("Clear", key="b_preview_clear"):
+        del st.session_state["b_preview"]
+        st.rerun()
+
+    if p["triggered"] is True:
+        st.error(f"Would TRIGGER now — {p['summary']} · {p['final_rows']} row(s)",
+                 icon=":material/notifications_active:")
+    elif p["triggered"] is False:
+        st.success(f"Would not trigger — condition not met ({p['summary']})",
+                   icon=":material/check_circle:")
+
+    for s in p["steps"]:
+        title = f"Step {s['index'] + 1} · {s['server']}" if s["server"] else "Condition"
+        if s["rows"] is not None:
+            title += f" · {s['rows']} row(s)"
+        with st.expander(title, expanded=s["error"] is not None):
+            if s["qsql"]:
+                st.code(s["qsql"], language="sql")
+            if s["error"]:
+                st.error(s["error"], icon=":material/error:")
+            elif s["df"] is not None:
+                st.dataframe(s["df"], use_container_width=True, hide_index=True)
+
+
+def _preview_panel(store, mgr, steps: list[Step], trigger: TriggerCondition) -> None:
+    with st.container(border=True):
+        head = st.columns([5, 1.4], vertical_alignment="center")
+        head[0].markdown("**Check result** — run these queries now against the live "
+                         "data (nothing is saved, no notification sent)")
+        if head[1].button("Run now", icon=":material/play_arrow:", key="b_preview_run"):
+            _run_preview(store, mgr, steps, trigger)
+        if "b_preview" in st.session_state:
+            _render_preview()
+
+
+def render(store, mgr) -> None:
     st.subheader(":material/build: Alert builder")
     _manage_alerts(store)
     _import_export(store)
@@ -440,6 +509,7 @@ def render(store) -> None:
 
     trigger = _trigger_block()
     channels, rearm = _notify_block()
+    _preview_panel(store, mgr, steps, trigger)
 
     # Save
     errors = []
