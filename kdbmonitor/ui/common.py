@@ -77,6 +77,7 @@ def step_summary(step: Step) -> str:
         return f"{step.server} · raw qSQL"
     if step.filters:
         where = " where " + ", ".join(
-            f"{f.column} {f.op} {f.value}" for f in step.filters
+            f"{'not ' if f.negated else ''}{f.column} {f.op} {f.value}"
+            for f in step.filters
         )
     return f"{step.server} · {step.table}{where}"

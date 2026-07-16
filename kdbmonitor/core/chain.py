@@ -7,8 +7,12 @@ from kdbmonitor.core.qfmt import format_q_value, format_q_list
 
 def _filter_clause(f) -> str:
     if f.op == "in":
-        return f"{f.column} in {format_q_list(f.value, f.value_type)}"
-    return f"{f.column}{f.op}{format_q_value(f.value, f.value_type)}"
+        clause = f"{f.column} in {format_q_list(f.value, f.value_type)}"
+    elif f.op == "like":
+        clause = f"{f.column} like {format_q_value(f.value, 'string')}"
+    else:
+        clause = f"{f.column}{f.op}{format_q_value(f.value, f.value_type)}"
+    return f"not {clause}" if f.negated else clause
 
 
 def build_step_qsql(step: Step) -> str:

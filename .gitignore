@@ -7,3 +7,6 @@ venv/
 *.sqlite3
 .streamlit/secrets.toml
 .env
+
+# reference photos, not part of the app
+pics/

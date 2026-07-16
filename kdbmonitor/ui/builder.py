@@ -11,7 +11,7 @@ from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs,
 )
 
-_OPS = ["=", "<>", "<", "<=", ">", ">=", "in"]
+_OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 _CMP_OPS = ["=", "<>", "<", "<=", ">", ">="]
 _VALUE_TYPES = ["symbol", "number", "string"]
 _COND_LABELS = {
@@ -93,6 +93,7 @@ def _load_edit(alert: Alert) -> None:
         s[f"b_raw_{i}"] = step.raw_qsql or ""
         s[f"b_nf_{i}"] = len(step.filters)
         for j, f in enumerate(step.filters):
+            s[f"b_fnot_{i}_{j}"] = f.negated
             s[f"b_fcol_{i}_{j}"] = f.column
             s[f"b_fop_{i}_{j}"] = f.op
             s[f"b_fval_{i}_{j}"] = (", ".join(map(str, f.value))
@@ -132,13 +133,23 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
             cols = schema.get(table, [])
             nf = int(st.session_state.get(f"b_nf_{i}", 0))
             for j in range(nf):
-                fc = st.columns([3, 2, 3, 2, 1], vertical_alignment="bottom")
-                col = _safe_select(fc[0], "Column", cols or ["<col>"], key=f"b_fcol_{i}_{j}")
-                op = fc[1].selectbox("Op", _OPS, key=f"b_fop_{i}_{j}")
-                raw_val = fc[2].text_input("Value(s)", key=f"b_fval_{i}_{j}",
-                                           help="Comma-separated for the 'in' operator.")
-                vtype = fc[3].selectbox("Type", _VALUE_TYPES, key=f"b_ftype_{i}_{j}")
-                if fc[4].button("", key=f"b_rmf_{i}_{j}", icon=":material/delete:",
+                fc = st.columns([0.8, 3, 2, 3, 2, 1], vertical_alignment="bottom")
+                negated = fc[0].checkbox("Not", key=f"b_fnot_{i}_{j}",
+                                         help="Prefix this condition with q 'not'.")
+                col = _safe_select(fc[1], "Column", cols or ["<col>"], key=f"b_fcol_{i}_{j}")
+                op = fc[2].selectbox("Op", _OPS, key=f"b_fop_{i}_{j}")
+                raw_val = fc[3].text_input(
+                    "Value(s)", key=f"b_fval_{i}_{j}",
+                    help="Comma-separated for 'in'. Use q like patterns such as "
+                         "A* or *USD* for 'like'.")
+                if op == "like":
+                    vtype = "string"
+                    fc[4].text_input("Type", value="string", disabled=True,
+                                     key=f"b_ftype_display_{i}_{j}",
+                                     help="The right-hand side of q 'like' is a string pattern.")
+                else:
+                    vtype = fc[4].selectbox("Type", _VALUE_TYPES, key=f"b_ftype_{i}_{j}")
+                if fc[5].button("", key=f"b_rmf_{i}_{j}", icon=":material/delete:",
                                 help="Remove filter"):
                     _remove_filter(i, j)
                     st.rerun()
@@ -146,7 +157,8 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
                 if vtype == "number":
                     value = ([_safe_float(v) for v in value] if op == "in"
                              else _safe_float(raw_val))
-                filters.append(Filter(column=col, op=op, value=value, value_type=vtype))
+                filters.append(Filter(column=col, op=op, value=value,
+                                      value_type=vtype, negated=negated))
             if st.button("Add filter", key=f"b_addf_{i}", icon=":material/add:"):
                 st.session_state[f"b_nf_{i}"] = nf + 1
                 st.rerun()
@@ -250,11 +262,11 @@ def _remove_step(i: int) -> None:
 def _remove_filter(i: int, j: int) -> None:
     nf = int(st.session_state.get(f"b_nf_{i}", 0))
     for k in range(j, nf - 1):
-        for p in ("fcol", "fop", "fval", "ftype"):
+        for p in ("fnot", "fcol", "fop", "fval", "ftype"):
             src, dst = f"b_{p}_{i}_{k + 1}", f"b_{p}_{i}_{k}"
             if src in st.session_state:
                 st.session_state[dst] = st.session_state[src]
-    for p in ("fcol", "fop", "fval", "ftype"):
+    for p in ("fnot", "fcol", "fop", "fval", "ftype"):
         st.session_state.pop(f"b_{p}_{i}_{nf - 1}", None)
     st.session_state[f"b_nf_{i}"] = max(0, nf - 1)
 
@@ -265,13 +277,13 @@ def _copy_step_state(src: int, dst: int) -> None:
             st.session_state[f"b_{p}_{dst}"] = st.session_state[f"b_{p}_{src}"]
     nf = int(st.session_state.get(f"b_nf_{src}", 0))
     for j in range(nf):
-        for p in ("fcol", "fop", "fval", "ftype"):
+        for p in ("fnot", "fcol", "fop", "fval", "ftype"):
             if f"b_{p}_{src}_{j}" in st.session_state:
                 st.session_state[f"b_{p}_{dst}_{j}"] = st.session_state[f"b_{p}_{src}_{j}"]
     # drop any surplus filter keys the previous occupant of `dst` left behind
     j = nf
-    while any(f"b_{p}_{dst}_{j}" in st.session_state for p in ("fcol", "fop", "fval", "ftype")):
-        for p in ("fcol", "fop", "fval", "ftype"):
+    while any(f"b_{p}_{dst}_{j}" in st.session_state for p in ("fnot", "fcol", "fop", "fval", "ftype")):
+        for p in ("fnot", "fcol", "fop", "fval", "ftype"):
             st.session_state.pop(f"b_{p}_{dst}_{j}", None)
         j += 1
 

@@ -8,9 +8,10 @@ from typing import Any, Optional
 @dataclass
 class Filter:
     column: str
-    op: str                      # = <> < <= > >= in
+    op: str                      # = <> < <= > >= in like
     value: Any                   # scalar, or list for op == "in"
     value_type: str              # symbol | number | string
+    negated: bool = False        # prefix the expression with q 'not'
 
 
 @dataclass

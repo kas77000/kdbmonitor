@@ -50,3 +50,6 @@ def test_step_summary():
     form = Step(server="orders", table="target", mode="form",
                filters=[Filter("sym", "in", ["AAPL"], "symbol")])
     assert step_summary(form) == "orders · target where sym in ['AAPL']"
+    neg = Step(server="orders", table="target", mode="form",
+               filters=[Filter("sym", "in", ["AAPL"], "symbol", negated=True)])
+    assert step_summary(neg) == "orders · target where not sym in ['AAPL']"

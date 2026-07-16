@@ -26,6 +26,19 @@ def test_build_raw_mode_returns_raw():
     assert build_step_qsql(step) == "select from x where a=1"
 
 
+def test_build_like_operator():
+    step = Step(server="s", table="t", mode="form",
+                filters=[Filter("sym", "like", "A*", "string")], output_name="step1")
+    assert build_step_qsql(step) == 'select from t where sym like "A*"'
+
+
+def test_build_negated_filter():
+    step = Step(server="s", table="t", mode="form",
+                filters=[Filter("state", "=", "done", "symbol", negated=True)],
+                output_name="step1")
+    assert build_step_qsql(step) == "select from t where not state=`done"
+
+
 import pandas as pd
 from kdbmonitor.core.chain import substitute_refs
 
