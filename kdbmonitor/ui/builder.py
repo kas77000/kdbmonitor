@@ -238,11 +238,14 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
         hooks_raw = st.text_input("Teams / Slack webhook URLs", key="b_hooks",
                                   help="Comma-separated incoming webhook URLs.")
         rc = st.columns([2, 2], vertical_alignment="bottom")
-        mode = rc[0].selectbox("Re-arm", ["transition", "cooldown", "every_tick"],
+        mode = rc[0].selectbox("Re-arm",
+                               ["transition", "cooldown", "every_tick", "on_change"],
                                key="b_rmode",
                                help="transition: notify once per rising edge. "
                                     "cooldown: at most every N seconds. "
-                                    "every_tick: every check while triggered.")
+                                    "every_tick: every check while triggered. "
+                                    "on_change: only when the result data differs "
+                                    "from the last notification.")
         cooldown = 0
         if mode == "cooldown":
             cooldown = int(rc[1].number_input("Cooldown (seconds)", 1, 86400, key="b_rcd"))
@@ -540,11 +543,17 @@ def render(store, mgr) -> None:
                           enabled=st.session_state.get("b_edit_enabled", True),
                           poll_interval_secs=interval, steps=steps, trigger=trigger,
                           channels=channels, rearm=rearm, result_retention=retention)
-            if editing:
-                store.update_alert(alert)
-                st.toast(f"Updated '{name}'", icon=":material/check:")
+            try:
+                if editing:
+                    store.update_alert(alert)
+                    st.toast(f"Updated '{name}'", icon=":material/check:")
+                else:
+                    store.add_alert(alert)
+                    st.toast(f"Saved '{name}'", icon=":material/check:")
+            except ValueError as exc:
+                st.error(str(exc), icon=":material/error:")
+            except Exception as exc:  # storage/DB failure — don't crash the page
+                st.error(f"Could not save alert: {exc}", icon=":material/error:")
             else:
-                store.add_alert(alert)
-                st.toast(f"Saved '{name}'", icon=":material/check:")
-            _clear_builder()
-            st.rerun()
+                _clear_builder()
+                st.rerun()

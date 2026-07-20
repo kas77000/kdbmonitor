@@ -8,7 +8,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from kdbmonitor.core.models import Step, TriggerCondition
+# Re-exported from core so the UI keeps a single import site; the definitions
+# live in core.summaries because the report builder needs them too.
+from kdbmonitor.core.summaries import condition_summary, step_summary  # noqa: F401
 
 # status key -> (label, streamlit badge color, material icon)
 STATUS_META: dict[str, tuple[str, str, str]] = {
@@ -77,32 +79,3 @@ def humanize_secs(secs: int) -> str:
     return f"{minutes}m" if seconds == 0 else f"{minutes}m {seconds}s"
 
 
-def condition_summary(trigger: TriggerCondition) -> str:
-    """Plain-English description of when a trigger fires."""
-    t = trigger.type
-    if t == "no_rows":
-        return "the final query returns no rows"
-    if t == "has_rows":
-        return "the final query returns at least one row"
-    if t == "row_count_gte":
-        return f"the final query returns at least {trigger.n} rows"
-    if t == "any_row":
-        return f"at least one row has {trigger.column} {trigger.op} {trigger.value}"
-    if t == "all_rows":
-        return f"every row has {trigger.column} {trigger.op} {trigger.value}"
-    if t == "aggregate":
-        return f"{trigger.agg}({trigger.column}) {trigger.op} {trigger.value}"
-    return t
-
-
-def step_summary(step: Step) -> str:
-    """One-line description of a single chain step."""
-    where = ""
-    if step.mode == "raw":
-        return f"{step.server} · raw qSQL"
-    if step.filters:
-        where = " where " + ", ".join(
-            f"{'not ' if f.negated else ''}{f.column} {f.op} {f.value}"
-            for f in step.filters
-        )
-    return f"{step.server} · {step.table}{where}"

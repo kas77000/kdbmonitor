@@ -22,3 +22,10 @@ def test_format_list_number():
 def test_format_list_string():
     assert format_q_list(["a", "b"], "string") == '("a";"b")'
     assert format_q_list(["a"], "string") == 'enlist "a"'
+
+
+def test_format_list_empty_is_valid_q():
+    # Empty upstream results must still produce parseable `x in ...` clauses.
+    assert format_q_list([], "symbol") == "`$()"
+    assert format_q_list([], "number") == "0#0"
+    assert format_q_list([], "string") == "()"

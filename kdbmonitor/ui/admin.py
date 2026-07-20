@@ -56,9 +56,18 @@ def render(store, mgr: ConnectionManager) -> None:
         submitted = f[3].form_submit_button("Add", icon=":material/add:",
                                             use_container_width=True)
         if submitted and name:
-            store.add_connection(Connection(id=None, name=name, host=host, port=int(port)))
-            st.toast(f"Added '{name}'", icon=":material/check:")
-            st.rerun()
+            try:
+                store.add_connection(Connection(id=None, name=name.strip(),
+                                                host=host.strip(), port=int(port)))
+            except ValueError as exc:
+                st.error(str(exc), icon=":material/error:")
+            except Exception as exc:  # noqa: BLE001 — DB failure shouldn't crash the page
+                st.error(f"Could not add connection: {exc}", icon=":material/error:")
+            else:
+                st.toast(f"Added '{name}'", icon=":material/check:")
+                st.rerun()
+        elif submitted and not name:
+            st.error("Connection needs a name.", icon=":material/error:")
 
     # ---- Registered servers ---------------------------------------------- #
     st.markdown("**Registered servers**")
@@ -106,3 +115,21 @@ def render(store, mgr: ConnectionManager) -> None:
             store.set_setting("smtp_port", str(port))
             store.set_setting("smtp_sender", sender)
             st.toast("Saved SMTP settings", icon=":material/check:")
+
+    # ---- Result snapshots (reports) -------------------------------------- #
+    st.markdown("**Result snapshots (for reports)**")
+    with st.container(border=True):
+        st.caption("Triggered results are stored per alert per day so they appear in "
+                   "reports. Older days are pruned; large results are capped.")
+        r = st.columns([1.4, 1.4, 2], vertical_alignment="bottom")
+        days = int(r[0].number_input("Keep days", 1, 3650,
+                                     store.get_result_retention_days(),
+                                     help="Snapshots older than this are deleted."))
+        rows = int(r[1].number_input("Max rows per snapshot", 1, 1_000_000,
+                                     store.get_result_max_rows(), step=100,
+                                     help="Rows beyond this are dropped; the true "
+                                          "count is still recorded and reports flag it."))
+        if r[2].button("Save snapshot settings", icon=":material/save:"):
+            store.set_result_retention_days(days)   # also prunes existing to the new window
+            store.set_result_max_rows(rows)
+            st.toast("Saved snapshot settings", icon=":material/check:")

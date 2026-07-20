@@ -31,3 +31,16 @@ def test_cooldown():
     assert should_notify(False, None, True, p, t0) is True    # first trigger
     assert should_notify(True, t0, True, p, t_soon) is False  # within cooldown
     assert should_notify(True, t0, True, p, t_late) is True   # cooldown elapsed
+
+
+def test_on_change_notifies_only_when_result_differs():
+    p = RearmPolicy("on_change")
+    now = datetime(2026, 7, 15, 10, 0, 0)
+    # first-ever notification (no prior hash) fires
+    assert should_notify(False, None, True, p, now, curr_hash="a", prev_notified_hash=None) is True
+    # same data as last notification -> suppressed
+    assert should_notify(True, now, True, p, now, curr_hash="a", prev_notified_hash="a") is False
+    # data changed -> fires again
+    assert should_notify(True, now, True, p, now, curr_hash="b", prev_notified_hash="a") is True
+    # not triggered -> never
+    assert should_notify(True, now, False, p, now, curr_hash="b", prev_notified_hash="a") is False

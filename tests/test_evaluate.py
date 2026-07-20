@@ -79,3 +79,20 @@ def test_evaluate_returns_result_df():
                          prev_run=None, now=datetime(2026, 7, 15, 10, 0, 0))
     assert res.df is not None and len(res.df) == 1
     assert list(res.df["bid"]) == [101.0]
+
+
+def test_evaluate_on_change_suppresses_same_data_and_fires_on_change():
+    from kdbmonitor.core.fingerprint import result_fingerprint
+    df = pd.DataFrame({"sym": ["AAPL"], "bid": [101.0]})
+    alert = _alert(TriggerCondition(type="has_rows"))
+    alert.rearm = RearmPolicy("on_change")
+    now = datetime(2026, 7, 15, 10, 0, 0)
+    prev = {"triggered": 1, "notified": 1, "ts": now.isoformat()}
+    same = result_fingerprint(df)
+
+    dup = evaluate_alert(alert, _client_for(df), prev_run=prev, now=now, last_notified_hash=same)
+    assert dup.triggered is True and dup.notify is False        # identical data -> no re-notify
+
+    changed = evaluate_alert(alert, _client_for(df), prev_run=prev, now=now,
+                             last_notified_hash="different-hash")
+    assert changed.notify is True                               # data differs -> notify

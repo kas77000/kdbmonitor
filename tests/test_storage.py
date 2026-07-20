@@ -101,3 +101,91 @@ def test_settings_get_set():
     assert store.get_setting("smtp_host") == "mail.example.com"
     store.set_setting("smtp_host", "mail2.example.com")
     assert store.get_setting("smtp_host") == "mail2.example.com"
+
+
+def test_add_alert_duplicate_name_raises():
+    import pytest
+    store = Storage(":memory:")
+    store.init_db()
+    store.add_alert(_sample_alert())
+    with pytest.raises(ValueError, match="already exists"):
+        store.add_alert(_sample_alert())          # same name "a1"
+    assert len(store.list_alerts()) == 1
+
+
+def test_update_alert_keeping_same_name_ok():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    got = store.get_alert(aid)
+    got.enabled = False                            # rename-less update must not trip the check
+    store.update_alert(got)
+    assert store.get_alert(aid).enabled is False
+
+
+def test_update_alert_rename_onto_existing_raises():
+    import pytest
+    store = Storage(":memory:")
+    store.init_db()
+    a1 = _sample_alert()
+    store.add_alert(a1)
+    a2 = _sample_alert(); a2.name = "a2"
+    aid2 = store.add_alert(a2)
+    dup = store.get_alert(aid2); dup.name = "a1"    # collide with the first alert
+    with pytest.raises(ValueError, match="already exists"):
+        store.update_alert(dup)
+
+
+def test_save_and_get_result_upserts_latest_per_day():
+    import pandas as pd
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    store.save_result(aid, "2026-07-20T10:00:00+00:00", pd.DataFrame([{"sym": "AAPL"}]))
+    store.save_result(aid, "2026-07-20T11:30:00+00:00",
+                      pd.DataFrame([{"sym": "AAPL"}, {"sym": "MSFT"}]))
+    snap = store.get_result(aid, "2026-07-20")
+    assert snap["row_count"] == 2                      # upsert kept the latest that day
+    assert snap["ts"].startswith("2026-07-20T11:30")
+    assert store.result_days(aid) == ["2026-07-20"]    # still one row for the day
+
+
+def test_result_retention_prunes_days_beyond_20():
+    import pandas as pd
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    df = pd.DataFrame([{"sym": "AAPL"}])
+    store.save_result(aid, "2026-06-01T10:00:00+00:00", df)
+    store.save_result(aid, "2026-06-26T10:00:00+00:00", df)   # 25 days later -> prunes 06-01
+    days = store.result_days(aid)
+    assert "2026-06-01" not in days
+    assert "2026-06-26" in days
+
+
+def test_result_retention_setting_configurable_and_prunes_on_change():
+    import pandas as pd
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    df = pd.DataFrame([{"sym": "AAPL"}])
+    assert store.get_result_retention_days() == 20        # default when unset
+    for d in ("2026-07-01", "2026-07-10", "2026-07-15"):
+        store.save_result(aid, f"{d}T10:00:00+00:00", df)
+    store.set_result_retention_days(7)                    # anchor = latest day 07-15 -> keep >= 07-09
+    days = store.result_days(aid)
+    assert "2026-07-01" not in days and "2026-07-10" in days and "2026-07-15" in days
+
+
+def test_huge_snapshot_is_capped_but_true_count_kept():
+    import pandas as pd
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    store.set_result_max_rows(10)
+    big = pd.DataFrame({"sym": [f"S{i}" for i in range(5000)]})
+    store.save_result(aid, "2026-07-20T10:00:00+00:00", big)
+    snap = store.get_result(aid, "2026-07-20")
+    assert snap["row_count"] == 5000                      # true size preserved
+    assert snap["truncated"] is True
+    assert len(snap["rows"]) == 10                        # only the cap was serialized

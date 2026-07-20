@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from kdbmonitor.core.models import Alert
 from kdbmonitor.core.chain import run_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
+from kdbmonitor.core.fingerprint import result_fingerprint
 from kdbmonitor.core.rearm import should_notify
 
 
@@ -19,6 +20,7 @@ class EvalResult:
     row_count: Optional[int]
     message: str
     df: Optional[object] = None   # final result rows (pandas DataFrame), None on error
+    result_hash: str = ""         # content fingerprint (for the 'on_change' re-arm)
 
 
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -27,7 +29,8 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
 
 def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
                    prev_run: Optional[dict], now: datetime,
-                   last_notified_ts: Optional[str] = None) -> EvalResult:
+                   last_notified_ts: Optional[str] = None,
+                   last_notified_hash: Optional[str] = None) -> EvalResult:
     try:
         df = run_chain(alert, client_for)
     except Exception as exc:  # noqa: BLE001 - surface any query/connection error
@@ -35,11 +38,13 @@ def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
                           row_count=None, message=f"{alert.name}: error - {exc}")
 
     triggered = eval_condition(alert.trigger, df)
+    curr_hash = result_fingerprint(df)
     prev_triggered = bool(prev_run["triggered"]) if prev_run else False
     prev_notified_at = _parse_ts(last_notified_ts) if last_notified_ts else None
-    notify = should_notify(prev_triggered, prev_notified_at, triggered, alert.rearm, now)
+    notify = should_notify(prev_triggered, prev_notified_at, triggered, alert.rearm, now,
+                           curr_hash=curr_hash, prev_notified_hash=last_notified_hash)
     status = "triggered" if triggered else "armed"
     message = (f"{alert.name}: TRIGGERED ({len(df)} rows)" if triggered
                else f"{alert.name}: armed ({len(df)} rows)")
     return EvalResult(status=status, triggered=triggered, notify=notify,
-                      row_count=len(df), message=message, df=df)
+                      row_count=len(df), message=message, df=df, result_hash=curr_hash)
