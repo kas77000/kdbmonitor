@@ -1,0 +1,52 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": "2026-07-21T00:00:00+00:00",
+  "connections": [],
+  "alerts": [
+    {
+      "id": null,
+      "name": "Algo holding a limit up/down stock",
+      "enabled": true,
+      "poll_interval_secs": 30,
+      "steps": [
+        {
+          "server": "kdp_demo",
+          "table": "QATT",
+          "mode": "raw",
+          "filters": [],
+          "raw_qsql": "select sym, dir, n, lastPrice, pctChange from\n (select n:count i,\n         upAll:  all (qask=0)&qbid>0,\n         downAll:all (qbid=0)&qask>0,\n         lockAll:all (qbid=qask)&qbid>0,\n         dir:?[all (qask=0)&qbid>0;`up;?[all (qbid=0)&qask>0;`down;`locked]],\n         lastPrice:last lastPrice, pctChange:last pctChange\n    by sym from\n      select time,sym,qbid,qask,lastPrice,pctChange from QATT\n        where time within (.z.T-00:05:00;.z.T),\n              any sym like/:(\"*.IN\";\"*.JP\";\"*.C1\";\"*.C2\";\"*.CH\";\"*.TT\"))\n where n>=5, upAll or downAll or lockAll",
+          "output_name": "lim"
+        },
+        {
+          "server": "orders_demo",
+          "table": "target",
+          "mode": "raw",
+          "filters": [],
+          "raw_qsql": "select oes_oid, sym, side, size, limit_price, algo, trader, basket, t_start, t_end\n  from target\n  where sym in {{lim.sym}}, not null algo",
+          "output_name": "hits"
+        }
+      ],
+      "trigger": {
+        "type": "has_rows",
+        "column": null,
+        "op": null,
+        "value": null,
+        "n": null,
+        "agg": null,
+        "value_type": "number"
+      },
+      "channels": {
+        "in_app": true,
+        "sound": true,
+        "email_to": [],
+        "webhook_urls": []
+      },
+      "rearm": {
+        "mode": "on_change",
+        "cooldown_secs": 0
+      },
+      "result_retention": "snapshot"
+    }
+  ]
+}
