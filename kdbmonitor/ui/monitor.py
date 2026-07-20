@@ -126,7 +126,7 @@ def render(store, mgr: ConnectionManager) -> None:
             if due:
                 res = evaluate_alert(a, resolve, prev_run=latest, now=now,
                                      last_notified_ts=store.last_notified_at(a.id),
-                                     last_notified_hash=store.last_notified_hash(a.id))
+                                     last_triggered_hash=store.last_triggered_hash(a.id))
                 store.record_run(a.id, ts=now.isoformat(), status=res.status,
                                  triggered=res.triggered, notified=res.notify,
                                  row_count=res.row_count, message=res.message,

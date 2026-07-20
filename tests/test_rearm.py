@@ -33,14 +33,11 @@ def test_cooldown():
     assert should_notify(True, t0, True, p, t_late) is True   # cooldown elapsed
 
 
-def test_on_change_notifies_only_when_result_differs():
+def test_on_change_notifies_whenever_triggered():
+    # De-dup lives at the trigger level (see evaluate); a trigger that reaches
+    # should_notify in on_change mode is already new, so it notifies.
     p = RearmPolicy("on_change")
     now = datetime(2026, 7, 15, 10, 0, 0)
-    # first-ever notification (no prior hash) fires
-    assert should_notify(False, None, True, p, now, curr_hash="a", prev_notified_hash=None) is True
-    # same data as last notification -> suppressed
-    assert should_notify(True, now, True, p, now, curr_hash="a", prev_notified_hash="a") is False
-    # data changed -> fires again
-    assert should_notify(True, now, True, p, now, curr_hash="b", prev_notified_hash="a") is True
-    # not triggered -> never
-    assert should_notify(True, now, False, p, now, curr_hash="b", prev_notified_hash="a") is False
+    assert should_notify(False, None, True, p, now) is True
+    assert should_notify(True, now, True, p, now) is True
+    assert should_notify(True, now, False, p, now) is False   # not triggered -> never

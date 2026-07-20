@@ -81,7 +81,7 @@ def test_evaluate_returns_result_df():
     assert list(res.df["bid"]) == [101.0]
 
 
-def test_evaluate_on_change_suppresses_same_data_and_fires_on_change():
+def test_evaluate_on_change_gates_trigger_by_snapshot():
     from kdbmonitor.core.fingerprint import result_fingerprint
     df = pd.DataFrame({"sym": ["AAPL"], "bid": [101.0]})
     alert = _alert(TriggerCondition(type="has_rows"))
@@ -90,9 +90,17 @@ def test_evaluate_on_change_suppresses_same_data_and_fires_on_change():
     prev = {"triggered": 1, "notified": 1, "ts": now.isoformat()}
     same = result_fingerprint(df)
 
-    dup = evaluate_alert(alert, _client_for(df), prev_run=prev, now=now, last_notified_hash=same)
-    assert dup.triggered is True and dup.notify is False        # identical data -> no re-notify
+    # same as the previous triggered snapshot -> NOT triggered (stays armed), no notify
+    dup = evaluate_alert(alert, _client_for(df), prev_run=prev, now=now, last_triggered_hash=same)
+    assert dup.triggered is False and dup.notify is False and dup.status == "armed"
+    assert "unchanged" in dup.message
 
+    # different snapshot -> triggered + notify
     changed = evaluate_alert(alert, _client_for(df), prev_run=prev, now=now,
-                             last_notified_hash="different-hash")
-    assert changed.notify is True                               # data differs -> notify
+                             last_triggered_hash="different-hash")
+    assert changed.triggered is True and changed.notify is True
+
+    # first ever (no prior trigger) -> triggered + notify
+    first = evaluate_alert(alert, _client_for(df), prev_run=None, now=now,
+                           last_triggered_hash=None)
+    assert first.triggered is True and first.notify is True

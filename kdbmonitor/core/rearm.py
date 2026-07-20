@@ -8,9 +8,7 @@ from kdbmonitor.core.models import RearmPolicy
 
 
 def should_notify(prev_triggered: bool, prev_notified_at: Optional[datetime],
-                  curr_triggered: bool, policy: RearmPolicy, now: datetime,
-                  curr_hash: Optional[str] = None,
-                  prev_notified_hash: Optional[str] = None) -> bool:
+                  curr_triggered: bool, policy: RearmPolicy, now: datetime) -> bool:
     if not curr_triggered:
         return False
     if policy.mode == "every_tick":
@@ -22,7 +20,7 @@ def should_notify(prev_triggered: bool, prev_notified_at: Optional[datetime],
             return True
         return (now - prev_notified_at).total_seconds() >= policy.cooldown_secs
     if policy.mode == "on_change":
-        # Notify only when the result content differs from the last notification
-        # (first-ever notification always fires: prev_notified_hash is None).
-        return curr_hash != prev_notified_hash
+        # 'triggered' is already gated to new/changed snapshots in evaluate, so a
+        # trigger here is genuinely new and always worth notifying.
+        return True
     raise ValueError(f"unknown rearm mode: {policy.mode}")

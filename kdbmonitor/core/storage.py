@@ -314,10 +314,10 @@ class Storage:
         ).fetchone()
         return r["ts"] if r else None
 
-    def last_notified_hash(self, alert_id: int) -> Optional[str]:
-        """Result fingerprint of the most recent notification (for 'on_change' re-arm)."""
+    def last_triggered_hash(self, alert_id: int) -> Optional[str]:
+        """Result fingerprint of the most recent *triggered* run (for 'on_change')."""
         r = self.conn.execute(
-            "SELECT result_hash FROM alert_runs WHERE alert_id=? AND notified=1"
+            "SELECT result_hash FROM alert_runs WHERE alert_id=? AND triggered=1"
             " ORDER BY id DESC LIMIT 1", (alert_id,),
         ).fetchone()
         return r["result_hash"] if r else None

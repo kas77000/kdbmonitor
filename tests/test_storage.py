@@ -189,3 +189,15 @@ def test_huge_snapshot_is_capped_but_true_count_kept():
     assert snap["row_count"] == 5000                      # true size preserved
     assert snap["truncated"] is True
     assert len(snap["rows"]) == 10                        # only the cap was serialized
+
+
+def test_last_triggered_hash_returns_latest_triggered_run_hash():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    assert store.last_triggered_hash(aid) is None                 # none yet
+    store.record_run(aid, "2026-07-21T10:00:00+00:00", "triggered", True, True, 1, "m", result_hash="A")
+    store.record_run(aid, "2026-07-21T10:01:00+00:00", "armed", False, False, 0, "m", result_hash="Z")
+    assert store.last_triggered_hash(aid) == "A"                  # ignores the later armed run
+    store.record_run(aid, "2026-07-21T10:02:00+00:00", "triggered", True, True, 2, "m", result_hash="B")
+    assert store.last_triggered_hash(aid) == "B"

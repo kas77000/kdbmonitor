@@ -37,7 +37,7 @@ class TriggerCondition:
 
 @dataclass
 class RearmPolicy:
-    mode: str = "transition"     # transition | cooldown | every_tick
+    mode: str = "transition"     # transition | cooldown | every_tick | on_change
     cooldown_secs: int = 0
 
 

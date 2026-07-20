@@ -30,21 +30,34 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
 def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
                    prev_run: Optional[dict], now: datetime,
                    last_notified_ts: Optional[str] = None,
-                   last_notified_hash: Optional[str] = None) -> EvalResult:
+                   last_triggered_hash: Optional[str] = None) -> EvalResult:
     try:
         df = run_chain(alert, client_for)
     except Exception as exc:  # noqa: BLE001 - surface any query/connection error
         return EvalResult(status="error", triggered=False, notify=False,
                           row_count=None, message=f"{alert.name}: error - {exc}")
 
-    triggered = eval_condition(alert.trigger, df)
+    condition_met = eval_condition(alert.trigger, df)
     curr_hash = result_fingerprint(df)
+
+    # 'on_change': treat as triggered only on the first trigger, or when this
+    # snapshot differs from the previous *triggered* snapshot. Identical repeat
+    # results stay armed and don't re-fire.
+    if alert.rearm.mode == "on_change":
+        is_new = (last_triggered_hash is None) or (curr_hash != last_triggered_hash)
+        triggered = condition_met and is_new
+    else:
+        triggered = condition_met
+
     prev_triggered = bool(prev_run["triggered"]) if prev_run else False
     prev_notified_at = _parse_ts(last_notified_ts) if last_notified_ts else None
-    notify = should_notify(prev_triggered, prev_notified_at, triggered, alert.rearm, now,
-                           curr_hash=curr_hash, prev_notified_hash=last_notified_hash)
+    notify = should_notify(prev_triggered, prev_notified_at, triggered, alert.rearm, now)
     status = "triggered" if triggered else "armed"
-    message = (f"{alert.name}: TRIGGERED ({len(df)} rows)" if triggered
-               else f"{alert.name}: armed ({len(df)} rows)")
+    if triggered:
+        message = f"{alert.name}: TRIGGERED ({len(df)} rows)"
+    elif condition_met and alert.rearm.mode == "on_change":
+        message = f"{alert.name}: unchanged ({len(df)} rows)"
+    else:
+        message = f"{alert.name}: armed ({len(df)} rows)"
     return EvalResult(status=status, triggered=triggered, notify=notify,
                       row_count=len(df), message=message, df=df, result_hash=curr_hash)

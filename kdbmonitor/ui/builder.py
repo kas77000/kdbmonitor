@@ -244,8 +244,9 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
                                help="transition: notify once per rising edge. "
                                     "cooldown: at most every N seconds. "
                                     "every_tick: every check while triggered. "
-                                    "on_change: only when the result data differs "
-                                    "from the last notification.")
+                                    "on_change: trigger only when the result data "
+                                    "differs from the previous triggered snapshot "
+                                    "(first trigger always fires).")
         cooldown = 0
         if mode == "cooldown":
             cooldown = int(rc[1].number_input("Cooldown (seconds)", 1, 86400, key="b_rcd"))
