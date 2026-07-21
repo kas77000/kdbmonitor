@@ -13,7 +13,18 @@ from kdbmonitor.core.notifiers import InAppSink, dispatch, send_email, post_webh
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, is_due, secs_until_due, humanize_secs,
     condition_summary, make_client_for, should_capture_result,
+    group_label, sort_group_names, pluralize,
 )
+
+
+def _kpi(col, label: str, value: int, color: str | None = None) -> None:
+    """Metric-style tile whose number turns `color` when it's non-zero."""
+    with col.container(border=True):
+        st.caption(label)
+        if color and value:
+            st.markdown(f"### :{color}[{value}]")
+        else:
+            st.markdown(f"### {value}")
 
 
 def _email_fn(store):
@@ -158,54 +169,89 @@ def render(store, mgr: ConnectionManager) -> None:
                                 "rows": latest["row_count"] if latest else None,
                                 "checked": latest["ts"] if latest else None, "next": nxt})
 
-        # KPI row
+        # KPI row (Triggered/Errors light up when non-zero)
         n_trig = sum(1 for d in display if d["status"] == "triggered")
         n_err = sum(1 for d in display if d["status"] == "error")
         n_armed = sum(1 for d in display if d["status"] == "armed")
         k = st.columns(4)
-        k[0].metric("Alerts", len(display), border=True)
-        k[1].metric("Armed", n_armed, border=True)
-        k[2].metric("Triggered", n_trig, border=True)
-        k[3].metric("Errors", n_err, border=True)
+        _kpi(k[0], "Alerts", len(display))
+        _kpi(k[1], "Armed", n_armed, color="green")
+        _kpi(k[2], "Triggered", n_trig, color="red")
+        _kpi(k[3], "Errors", n_err, color="orange")
 
         # Active triggers surfaced first
         for d in display:
             if d["status"] == "triggered":
                 st.error(f"**{d['a'].name}** — {condition_summary(d['a'].trigger)}  "
-                         f"·  {d['rows']} row(s)", icon=":material/notifications_active:")
+                         f"·  {pluralize(d['rows'], 'row')}",
+                         icon=":material/notifications_active:")
 
         # Browser notifications (fire on new triggers; also shows the enable button)
         _browser_notify(notify_payloads)
 
-        # Per-alert status rows
+        # Per-alert status rows, bucketed by group
         last_results = st.session_state.get("last_results", {})
-        for d in display:
+
+        def _render_row(d) -> None:
             a = d["a"]
             label, color, icon = STATUS_META[d["status"]]
-            row = st.columns([1.4, 3.4, 1, 2.1, 1.1], vertical_alignment="center")
-            row[0].badge(label, icon=icon, color=color)
-            row[1].markdown(f"**{a.name}**  \n:gray[Triggers when {condition_summary(a.trigger)}]")
-            rows_txt = "—" if d["rows"] is None else str(d["rows"])
-            row[2].markdown(f"`{rows_txt}` rows")
-            if d["status"] == "disabled":
-                row[3].caption("disabled")
-            elif d["status"] == "pending":
-                row[3].caption("awaiting first check")
-            else:
-                nxt = d["next"] if isinstance(d["next"], int) else a.poll_interval_secs
-                row[3].caption(f":material/schedule: next check in {humanize_secs(nxt)} "
-                               f"· every {humanize_secs(a.poll_interval_secs)}")
+            with st.container(border=True):
+                row = st.columns([1.4, 3.4, 1, 2.1, 1.1], vertical_alignment="center")
+                row[0].badge(label, icon=icon, color=color)
+                row[1].markdown(
+                    f"**{a.name}**  \n:gray[Triggers when {condition_summary(a.trigger)}]")
+                if d["rows"] is None:
+                    row[2].markdown(":gray[—]")
+                else:
+                    row[2].markdown(f"`{d['rows']}` rows")
+                if d["status"] == "disabled":
+                    row[3].caption("disabled")
+                elif d["status"] == "pending":
+                    row[3].caption("awaiting first check")
+                else:
+                    nxt = d["next"] if isinstance(d["next"], int) else a.poll_interval_secs
+                    row[3].caption(f":material/schedule: next check in {humanize_secs(nxt)} "
+                                   f"· every {humanize_secs(a.poll_interval_secs)}")
 
-            stored = last_results.get(a.id)
-            if stored is not None and stored.get("df") is not None:
-                if row[4].button("View", key=f"view_{a.id}",
-                                 icon=":material/open_in_full:",
-                                 help="Open the full result table"):
-                    st.session_state["result_alert_id"] = a.id
-                    st.session_state["_open_result"] = True
-                    st.rerun()
-            else:
-                row[4].caption("—")
+                stored = last_results.get(a.id)
+                if stored is not None and stored.get("df") is not None:
+                    if row[4].button("View", key=f"view_{a.id}",
+                                     icon=":material/open_in_full:",
+                                     help="Open the full result table"):
+                        st.session_state["result_alert_id"] = a.id
+                        st.session_state["_open_result"] = True
+                        st.rerun()
+                else:
+                    row[4].caption("—")
+
+        buckets: dict[str, list] = {}
+        for d in display:
+            buckets.setdefault(group_label(d["a"]), []).append(d)
+        ordered = sort_group_names(buckets.keys())
+        grouped_view = len(buckets) > 1 or set(buckets) != {"Ungrouped"}
+
+        if grouped_view:
+            chosen = st.multiselect(
+                "Filter groups", ordered, default=ordered, key="mon_group_filter",
+                help="Show only the chosen groups. Collapse a group with its ▸ header.")
+            visible = chosen or ordered            # empty selection = show all
+            for gname in ordered:
+                if gname not in visible:
+                    continue
+                items = buckets[gname]
+                n_t = sum(1 for d in items if d["status"] == "triggered")
+                n_e = sum(1 for d in items if d["status"] == "error")
+                lbl = f"**{gname}** · {len(items)}"
+                if n_t:
+                    lbl += f" · :red[{n_t} triggered]"
+                if n_e:
+                    lbl += f" · :orange[{n_e} error]"
+                with st.expander(lbl, expanded=True, icon=":material/folder:"):
+                    for d in items:
+                        _render_row(d)
+        else:
+            for d in display:
+                _render_row(d)
 
         st.caption(f"Last loop: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                    + ("" if running else " · monitoring paused"))

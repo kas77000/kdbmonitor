@@ -26,6 +26,32 @@ INTERVAL_PRESETS: dict[str, int] = {
     "5s": 5, "15s": 15, "30s": 30, "1m": 60, "5m": 300, "15m": 900,
 }
 
+# Label shown for alerts that have no group assigned.
+UNGROUPED = "Ungrouped"
+
+
+def group_label(alert) -> str:
+    """Display group name for an alert ('Ungrouped' when unset)."""
+    return (getattr(alert, "group", "") or "").strip() or UNGROUPED
+
+
+def sort_group_names(names) -> list[str]:
+    """Group names alphabetically, with 'Ungrouped' always last."""
+    named = sorted(n for n in set(names) if n != UNGROUPED)
+    return named + ([UNGROUPED] if UNGROUPED in names else [])
+
+
+def group_alerts(alerts) -> list[tuple[str, list]]:
+    """Bucket alerts by their group label, ordered by :func:`sort_group_names`.
+
+    Order within each bucket follows the input order (callers pass alerts
+    already sorted by name).
+    """
+    buckets: dict[str, list] = {}
+    for a in alerts:
+        buckets.setdefault(group_label(a), []).append(a)
+    return [(g, buckets[g]) for g in sort_group_names(buckets.keys())]
+
 
 def should_capture_result(retention: str, triggered: bool, prev_triggered: bool) -> bool:
     """Whether the Monitor should (over)write the stored result this check.
@@ -69,6 +95,11 @@ def secs_until_due(last_ts: Optional[str], interval_secs: int, now: datetime) ->
         return 0
     remaining = interval_secs - (now - _parse(last_ts)).total_seconds()
     return max(0, int(remaining))
+
+
+def pluralize(n: int, word: str) -> str:
+    """'1 step' / '3 steps' — count plus correctly pluralized noun."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
 def humanize_secs(secs: int) -> str:

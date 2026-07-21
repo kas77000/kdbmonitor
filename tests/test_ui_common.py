@@ -1,10 +1,46 @@
 from datetime import datetime, timezone
 
-from kdbmonitor.core.models import TriggerCondition, Step, Filter
+from kdbmonitor.core.models import (
+    TriggerCondition, Step, Filter, Alert, Channels, RearmPolicy,
+)
 from kdbmonitor.ui.common import (
     is_due, secs_until_due, humanize_secs, condition_summary, step_summary,
-    should_capture_result,
+    should_capture_result, group_label, sort_group_names, group_alerts, pluralize,
 )
+
+
+def test_pluralize():
+    assert pluralize(1, "step") == "1 step"
+    assert pluralize(0, "step") == "0 steps"
+    assert pluralize(3, "row") == "3 rows"
+
+
+def _alert(name, group=""):
+    return Alert(id=None, name=name, enabled=True, poll_interval_secs=30,
+                 steps=[Step(server="kdp", table="QATT", mode="form")],
+                 trigger=TriggerCondition(type="has_rows"),
+                 channels=Channels(), rearm=RearmPolicy(), group=group)
+
+
+def test_group_label():
+    assert group_label(_alert("a", "Equities")) == "Equities"
+    assert group_label(_alert("a", "  ")) == "Ungrouped"       # blank -> Ungrouped
+    assert group_label(_alert("a", "")) == "Ungrouped"
+
+
+def test_sort_group_names_ungrouped_last():
+    assert sort_group_names(["Fx", "Ungrouped", "Equities"]) == \
+        ["Equities", "Fx", "Ungrouped"]
+    assert sort_group_names(["Ungrouped"]) == ["Ungrouped"]
+    assert sort_group_names(["b", "a"]) == ["a", "b"]
+
+
+def test_group_alerts_buckets_and_order():
+    alerts = [_alert("a1", "Fx"), _alert("a2"), _alert("a3", "Equities"),
+              _alert("a4", "Fx")]
+    grouped = group_alerts(alerts)
+    assert [g for g, _ in grouped] == ["Equities", "Fx", "Ungrouped"]
+    assert [a.name for a in dict(grouped)["Fx"]] == ["a1", "a4"]   # input order kept
 
 NOW = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
 

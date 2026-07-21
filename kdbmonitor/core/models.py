@@ -60,6 +60,7 @@ class Alert:
     channels: Channels
     rearm: RearmPolicy
     result_retention: str = "latest"   # latest | snapshot (Monitor Result view)
+    group: str = ""                    # optional grouping label ("" = Ungrouped)
 
 
 @dataclass
@@ -94,6 +95,7 @@ def alert_from_dict(d: dict) -> Alert:
         channels=Channels(**d["channels"]),
         rearm=RearmPolicy(**d["rearm"]),
         result_retention=d.get("result_retention", "latest"),
+        group=d.get("group", ""),
     )
 
 

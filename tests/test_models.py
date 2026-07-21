@@ -70,3 +70,17 @@ def test_missing_result_retention_defaults_to_latest():
     raw = json.loads(alert_to_json(_minimal_alert()))
     del raw["result_retention"]                                # simulate an older file
     assert alert_from_json(json.dumps(raw)).result_retention == "latest"
+
+
+def test_group_defaults_and_roundtrips():
+    a = _minimal_alert()
+    assert a.group == ""                                        # default: ungrouped
+    a.group = "Equities"
+    assert alert_from_json(alert_to_json(a)).group == "Equities"
+
+
+def test_missing_group_defaults_to_empty():
+    import json
+    raw = json.loads(alert_to_json(_minimal_alert()))
+    del raw["group"]                                            # simulate an older file
+    assert alert_from_json(json.dumps(raw)).group == ""

@@ -15,7 +15,11 @@ from kdbmonitor.core.portability import (
 )
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs, make_client_for,
+    group_label, group_alerts, pluralize,
 )
+
+_NO_GROUP = "(no group)"
+_NEW_GROUP = "➕ New group…"
 
 _OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 _CMP_OPS = ["=", "<>", "<", "<=", ">", ">="]
@@ -55,6 +59,29 @@ def _servers(store) -> list[str]:
     return [c.name for c in store.list_connections()]
 
 
+def _existing_groups(store) -> list[str]:
+    return sorted({a.group.strip() for a in store.list_alerts() if a.group.strip()})
+
+
+def _group_selector(container, store) -> str:
+    """Pick an existing group or create a new one. Returns the group name ('' = none)."""
+    groups = _existing_groups(store)
+    # keep the edit-loaded group selectable even before any alert uses it elsewhere
+    saved = st.session_state.get("b_groupsel")
+    if saved and saved not in (_NO_GROUP, _NEW_GROUP) and saved not in groups:
+        groups = sorted(set(groups) | {saved})
+    options = [_NO_GROUP] + groups + [_NEW_GROUP]
+    choice = _safe_select(container, "Group", options, key="b_groupsel",
+                          help="Bucket related alerts together on the Monitor.")
+    if choice == _NEW_GROUP:
+        new = container.text_input("New group name", key="b_groupnew",
+                                   placeholder="e.g. Equities").strip()
+        return new
+    if choice == _NO_GROUP:
+        return ""
+    return choice
+
+
 def _schema_for(store, server: str) -> dict[str, list[str]]:
     c = store.get_connection_by_name(server)
     return c.schema if c else {}
@@ -74,6 +101,7 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_cval": "", "b_cagg": "max", "b_cn": 1,
         "b_inapp": True, "b_sound": True, "b_email": "", "b_hooks": "",
         "b_rmode": "transition", "b_rcd": 900, "b_retention": "latest",
+        "b_groupsel": _NO_GROUP, "b_groupnew": "",
     })
 
 
@@ -92,6 +120,8 @@ def _load_edit(alert: Alert) -> None:
         "b_hooks": ", ".join(alert.channels.webhook_urls),
         "b_rmode": alert.rearm.mode, "b_rcd": alert.rearm.cooldown_secs or 900,
         "b_retention": alert.result_retention,
+        "b_groupsel": alert.group.strip() if alert.group.strip() else _NO_GROUP,
+        "b_groupnew": "",
     }
     for i, step in enumerate(alert.steps):
         s[f"b_srv_{i}"] = step.server
@@ -197,7 +227,8 @@ def _raw_ref_helper(i: int) -> None:
 
 def _trigger_block() -> TriggerCondition:
     with st.container(border=True):
-        st.markdown("**Trigger** — fire the alert when the final result matches")
+        st.markdown("**:material/bolt: Trigger** — fire the alert when the final "
+                    "result matches")
         ctype = st.selectbox("Condition", list(_COND_LABELS.keys()),
                              format_func=lambda k: _COND_LABELS[k], key="b_ctype")
         column = op = value = agg = None
@@ -229,7 +260,7 @@ def _trigger_block() -> TriggerCondition:
 
 def _notify_block() -> tuple[Channels, RearmPolicy]:
     with st.container(border=True):
-        st.markdown("**Notify** — chosen per alert")
+        st.markdown("**:material/notifications: Notify & re-arm** — chosen per alert")
         cc = st.columns(2)
         in_app = cc[0].checkbox("In-app banner", key="b_inapp")
         sound = cc[1].checkbox("Sound", key="b_sound")
@@ -312,33 +343,103 @@ def _delete_step_state(i: int) -> None:
 # --------------------------------------------------------------------------- #
 def _manage_alerts(store) -> None:
     alerts = store.list_alerts()
+    grouped = group_alerts(alerts)
     with st.expander(f"Your alerts ({len(alerts)})", expanded=bool(alerts),
                      icon=":material/list:"):
         if not alerts:
             st.caption("No alerts yet. Build one below.")
-        for a in alerts:
+        for gname, galerts in grouped:
+            if len(grouped) > 1 or gname != "Ungrouped":
+                st.markdown(f":gray[:material/folder: **{gname}** · {len(galerts)}]")
+            for a in galerts:
+                with st.container(border=True):
+                    c = st.columns([1.2, 3.4, 0.9, 1.2, 1, 1.2],
+                                   vertical_alignment="center")
+                    lbl, color, icon = (STATUS_META["armed"] if a.enabled
+                                        else STATUS_META["disabled"])
+                    c[0].badge("Enabled" if a.enabled else "Disabled",
+                               icon=icon, color=color)
+                    c[1].markdown(
+                        f"**{a.name}**  \n:gray[:material/folder: {group_label(a)} · "
+                        f"{pluralize(len(a.steps), 'step')} · every "
+                        f"{humanize_secs(a.poll_interval_secs)} · triggers when "
+                        f"{condition_summary(a.trigger)}]")
+                    new_en = c[2].toggle("On", value=a.enabled, key=f"mg_en_{a.id}")
+                    if new_en != a.enabled:
+                        store.set_alert_enabled(a.id, new_en)
+                        st.rerun()
+                    with c[3].popover("Move", icon=":material/drive_file_move:",
+                                      help="Move this alert to another group"):
+                        _move_to_group(store, a)
+                    if c[4].button("Edit", key=f"mg_edit_{a.id}", icon=":material/edit:"):
+                        _load_edit(a)
+                        st.rerun()
+                    with c[5].popover("Delete", icon=":material/delete:"):
+                        st.warning(f"Delete '{a.name}'?")
+                        if st.button("Confirm delete", key=f"mg_del_{a.id}",
+                                     type="primary"):
+                            store.delete_alert(a.id)
+                            st.rerun()
+
+
+def _move_to_group(store, alert) -> None:
+    """Popover body: reassign a single alert's group without opening the editor."""
+    st.caption(f"Move **{alert.name}** to")
+    groups = _existing_groups(store)
+    cur = alert.group.strip()
+    opts = [_NO_GROUP] + groups + [_NEW_GROUP]
+    idx = opts.index(cur) if cur in groups else 0
+    sel = st.selectbox("Group", opts, index=idx, key=f"mv_sel_{alert.id}",
+                       label_visibility="collapsed")
+    if sel == _NEW_GROUP:
+        target = st.text_input("New group name", key=f"mv_new_{alert.id}",
+                               placeholder="e.g. Equities").strip()
+    elif sel == _NO_GROUP:
+        target = ""
+    else:
+        target = sel
+    if st.button("Move", key=f"mv_go_{alert.id}", type="primary",
+                 icon=":material/check:"):
+        if target != cur:
+            store.set_alert_group(alert.id, target)
+        st.rerun()
+
+
+def _manage_groups(store) -> None:
+    """Rename or dissolve whole groups (bulk operations across their alerts)."""
+    alerts = store.list_alerts()
+    counts: dict[str, int] = {}
+    for a in alerts:
+        g = a.group.strip()
+        if g:
+            counts[g] = counts.get(g, 0) + 1
+    if not counts:
+        return
+    groups = sorted(counts)
+    with st.expander(f"Manage groups ({len(groups)})",
+                     icon=":material/folder_managed:"):
+        st.caption("Rename a group to re-label every alert in it, or dissolve it to "
+                   "send its alerts back to Ungrouped. Renaming onto an existing "
+                   "group merges them.")
+        for g in groups:
             with st.container(border=True):
-                c = st.columns([1.3, 4, 1.1, 1, 1.2], vertical_alignment="center")
-                lbl, color, icon = (STATUS_META["armed"] if a.enabled
-                                    else STATUS_META["disabled"])
-                c[0].badge("Enabled" if a.enabled else "Disabled",
-                           icon=icon, color=color)
-                c[1].markdown(
-                    f"**{a.name}**  \n:gray[{len(a.steps)} step(s) · every "
-                    f"{humanize_secs(a.poll_interval_secs)} · triggers when "
-                    f"{condition_summary(a.trigger)}]")
-                new_en = c[2].toggle("On", value=a.enabled, key=f"mg_en_{a.id}")
-                if new_en != a.enabled:
-                    store.set_alert_enabled(a.id, new_en)
+                gc = st.columns([3, 1.2, 1.1, 1.3], vertical_alignment="bottom")
+                new_name = gc[0].text_input("Group name", value=g, key=f"grp_ren_{g}")
+                gc[1].markdown(f":gray[{pluralize(counts[g], 'alert')}]")
+                if gc[2].button("Rename", key=f"grp_renbtn_{g}",
+                                icon=":material/edit:",
+                                disabled=not new_name.strip() or new_name.strip() == g):
+                    n = store.rename_group(g, new_name.strip())
+                    st.toast(f"Renamed '{g}' → '{new_name.strip()}' ({n} alert(s))",
+                             icon=":material/check:")
                     st.rerun()
-                if c[3].button("Edit", key=f"mg_edit_{a.id}", icon=":material/edit:"):
-                    _load_edit(a)
-                    st.rerun()
-                with c[4].popover("Delete", icon=":material/delete:"):
-                    st.warning(f"Delete '{a.name}'?")
-                    if st.button("Confirm delete", key=f"mg_del_{a.id}",
+                with gc[3].popover("Dissolve", icon=":material/folder_off:"):
+                    st.warning(f"Dissolve '{g}'? Its {pluralize(counts[g], 'alert')} "
+                               "will become Ungrouped.")
+                    if st.button("Confirm dissolve", key=f"grp_dis_{g}",
                                  type="primary"):
-                        store.delete_alert(a.id)
+                        store.rename_group(g, "")
+                        st.toast(f"Dissolved '{g}'", icon=":material/check:")
                         st.rerun()
 
 
@@ -480,6 +581,7 @@ def _preview_panel(store, mgr, steps: list[Step], trigger: TriggerCondition) -> 
 def render(store, mgr) -> None:
     st.subheader(":material/build: Alert builder")
     _manage_alerts(store)
+    _manage_groups(store)
     _import_export(store)
 
     servers = _servers(store)
@@ -490,37 +592,63 @@ def render(store, mgr) -> None:
     _ensure_init(store, servers)
 
     editing = st.session_state.get("b_edit_id") is not None
-    head = st.columns([5, 1.4], vertical_alignment="center")
-    head[0].markdown(f"### {'Edit alert' if editing else 'New alert'}")
-    if editing and head[1].button("New alert", icon=":material/add:"):
+
+    st.divider()
+    hdr = st.columns([6, 1.7], vertical_alignment="center")
+    hdr[0].markdown(
+        f"### :material/{'edit_note' if editing else 'add_circle'}: "
+        f"{'Edit alert' if editing else 'Create a new alert'}")
+    if editing and hdr[1].button("Start new", icon=":material/add:",
+                                 use_container_width=True):
         _clear_builder()
         st.rerun()
+    st.caption("Name it and pick a group, build the query chain, set the trigger, "
+               "then choose how you're notified.")
 
-    top = st.columns([3, 2], vertical_alignment="bottom")
-    name = top[0].text_input("Alert name", key="b_name", placeholder="e.g. AAPL bid breakout")
-    interval = int(top[1].number_input(
-        "Check interval (seconds)", 5, 3600, key="b_interval",
-        help="How often this alert runs. Presets: "
-             + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
-    st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while monitoring is on.")
+    # 1 · Basics — name, group, cadence
+    with st.container(border=True):
+        st.markdown("**:material/tune: Basics**")
+        top = st.columns([3, 2, 2], vertical_alignment="top")
+        name = top[0].text_input("Alert name", key="b_name",
+                                 placeholder="e.g. AAPL bid breakout")
+        group = _group_selector(top[1], store)
+        interval = int(top[2].number_input(
+            "Check interval (seconds)", 5, 3600, key="b_interval",
+            help="How often this alert runs. Presets: "
+                 + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
+        st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while "
+                   "monitoring is on.  ·  :material/folder: Group buckets this alert "
+                   "on the Monitor.")
 
-    nsteps = int(st.session_state["b_nsteps"])
-    steps = [_step_block(store, i, servers) for i in range(nsteps)]
-    sc = st.columns([1, 5])
-    if nsteps < 8 and sc[0].button("Add step", icon=":material/add:"):
-        st.session_state[f"b_nf_{nsteps}"] = 0
-        st.session_state["b_nsteps"] = nsteps + 1
-        st.rerun()
+    # 2 · Query steps — the chain
+    with st.container(border=True):
+        st.markdown("**:material/account_tree: Query steps**")
+        st.caption("Each step queries a server; later steps can reference earlier "
+                   "outputs with `{{stepN.col}}`.")
+        nsteps = int(st.session_state["b_nsteps"])
+        steps = [_step_block(store, i, servers) for i in range(nsteps)]
+        sc = st.columns([1.4, 5])
+        if nsteps < 8 and sc[0].button("Add step", icon=":material/add:",
+                                       use_container_width=True):
+            st.session_state[f"b_nf_{nsteps}"] = 0
+            st.session_state["b_nsteps"] = nsteps + 1
+            st.rerun()
 
+    # 3 · Trigger   4 · Notify & re-arm
     trigger = _trigger_block()
     channels, rearm = _notify_block()
-    retention = st.selectbox(
-        "Keep result on trigger", ["latest", "snapshot"],
-        format_func=lambda m: {"latest": "Latest — refresh each triggered check",
-                               "snapshot": "Snapshot — freeze at the trigger moment"}[m],
-        key="b_retention",
-        help="What the Monitor's Result view keeps for this alert. Data is only "
-             "captured while the alert is triggered.")
+
+    # 5 · Result capture
+    with st.container(border=True):
+        st.markdown("**:material/table_view: Result capture**")
+        retention = st.selectbox(
+            "Keep result on trigger", ["latest", "snapshot"],
+            format_func=lambda m: {"latest": "Latest — refresh each triggered check",
+                                   "snapshot": "Snapshot — freeze at the trigger moment"}[m],
+            key="b_retention",
+            help="What the Monitor's Result view keeps for this alert. Data is only "
+                 "captured while the alert is triggered.")
+
     _preview_panel(store, mgr, steps, trigger)
 
     # Save
@@ -533,8 +661,15 @@ def render(store, mgr) -> None:
         if s.mode == "form" and not s.table:
             errors.append(f"Step {idx + 1}: no table selected (introspect the server).")
 
-    save = st.button("Save alert" if not editing else "Update alert",
-                     type="primary", icon=":material/save:")
+    st.divider()
+    foot = st.columns([2, 4], vertical_alignment="center")
+    save = foot[0].button("Save alert" if not editing else "Update alert",
+                          type="primary", icon=":material/save:",
+                          use_container_width=True)
+    if editing:
+        foot[1].caption(":material/edit: Editing an existing alert — Update overwrites it.")
+    elif errors:
+        foot[1].caption(f":material/error: {len(errors)} thing(s) to fix before saving.")
     if save:
         if errors:
             for e in errors:
@@ -543,7 +678,8 @@ def render(store, mgr) -> None:
             alert = Alert(id=st.session_state.get("b_edit_id"), name=name.strip(),
                           enabled=st.session_state.get("b_edit_enabled", True),
                           poll_interval_secs=interval, steps=steps, trigger=trigger,
-                          channels=channels, rearm=rearm, result_retention=retention)
+                          channels=channels, rearm=rearm, result_retention=retention,
+                          group=group.strip())
             try:
                 if editing:
                     store.update_alert(alert)

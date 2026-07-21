@@ -66,6 +66,56 @@ def test_alert_crud_and_toggle():
     assert store.list_alerts() == []
 
 
+def _named_alert(name, group=""):
+    a = _sample_alert()
+    a.name = name
+    a.group = group
+    return a
+
+
+def test_set_alert_group():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_named_alert("a1", group="Equities"))
+    store.set_alert_group(aid, "Orders")
+    assert store.get_alert(aid).group == "Orders"
+    store.set_alert_group(aid, "")            # back to Ungrouped
+    assert store.get_alert(aid).group == ""
+    store.set_alert_group(aid, "  Fx  ")      # trimmed
+    assert store.get_alert(aid).group == "Fx"
+    store.set_alert_group(9999, "x")          # unknown id is a no-op, no crash
+
+
+def test_rename_group():
+    store = Storage(":memory:")
+    store.init_db()
+    store.add_alert(_named_alert("a1", group="Equities"))
+    store.add_alert(_named_alert("a2", group="Equities"))
+    store.add_alert(_named_alert("a3", group="Orders"))
+
+    assert store.rename_group("Equities", "US Equities") == 2
+    groups = {a.name: a.group for a in store.list_alerts()}
+    assert groups == {"a1": "US Equities", "a2": "US Equities", "a3": "Orders"}
+
+    # dissolve: blank target sends alerts to Ungrouped
+    assert store.rename_group("Orders", "") == 1
+    assert store.get_alert(store.list_alerts()[-1].id).group == ""
+
+    # renaming onto an existing group merges
+    assert store.rename_group("US Equities", "") == 2   # dissolve first
+    assert store.rename_group("nope", "x") == 0          # no members -> 0
+    assert store.rename_group("A", "A") == 0             # same name -> no-op
+
+
+def test_rename_group_merges():
+    store = Storage(":memory:")
+    store.init_db()
+    store.add_alert(_named_alert("a1", group="Fx"))
+    store.add_alert(_named_alert("a2", group="Rates"))
+    store.rename_group("Fx", "Rates")                    # merge Fx into Rates
+    assert {a.group for a in store.list_alerts()} == {"Rates"}
+
+
 def test_runs_record_and_latest():
     store = Storage(":memory:")
     store.init_db()

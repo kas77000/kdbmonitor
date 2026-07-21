@@ -186,6 +186,31 @@ class Storage:
         self.conn.execute("DELETE FROM alerts WHERE id=?", (aid,))
         self.conn.commit()
 
+    # --- groups (a group is just the `group` label carried on each alert) ---
+    def set_alert_group(self, aid: int, group: str) -> None:
+        """Move a single alert into ``group`` ('' = Ungrouped)."""
+        a = self.get_alert(aid)
+        if a is None:
+            return
+        a.group = (group or "").strip()
+        self.update_alert(a)
+
+    def rename_group(self, old: str, new: str) -> int:
+        """Re-label every alert whose group is ``old`` to ``new`` (blank = dissolve
+        into Ungrouped). Returns how many alerts were changed. Renaming onto an
+        existing name merges the two groups."""
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if old == new:
+            return 0
+        changed = 0
+        for a in self.list_alerts():
+            if (a.group or "").strip() == old:
+                a.group = new
+                self.update_alert(a)
+                changed += 1
+        return changed
+
     # --- runs ---
     def record_run(self, alert_id: int, ts: str, status: str, triggered: bool,
                    notified: bool, row_count: Optional[int], message: str,
