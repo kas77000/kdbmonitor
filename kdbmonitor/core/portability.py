@@ -46,6 +46,17 @@ def export_bundle_json(connections: Iterable[Connection], alerts: Iterable[Alert
     return json.dumps(payload, indent=2)
 
 
+def export_connections_json(connections: Iterable[Connection],
+                            exported_at: Optional[str] = None) -> str:
+    """A bundle carrying only KDB connections (no alerts).
+
+    Uses the same envelope as :func:`export_bundle_json`, so it re-imports
+    through :func:`import_bundle_json` unchanged (it just adds 0 alerts). Cached
+    schema and IDs are dropped exactly as in the full bundle.
+    """
+    return export_bundle_json(connections, [], exported_at=exported_at)
+
+
 def import_bundle_json(raw: str) -> tuple[list[Connection], list[Alert]]:
     """Parse an export document into (connections, alerts), each with id=None.
 

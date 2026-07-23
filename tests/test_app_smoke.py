@@ -77,12 +77,43 @@ def _monitor_script():
                    filters=[_F("sym", "in", ["AAPL"], "symbol")], output_name="step1")],
         trigger=_T(type="has_rows"), channels=_C(), rearm=_R(),
     ))
-    st.session_state["mon_running"] = True   # exercise the live evaluate/notify path
+    store.set_setting("mon_running", "1")    # monitoring on -> shows live/Today KPIs
     monitor.render(store, _CM())
+
+
+def _engine_script():
+    """Drive the app-shell monitoring engine directly: with monitoring on it must
+    evaluate the due alert and persist a run (the loop no longer lives on a page)."""
+    from kdbmonitor.ui import engine
+    from kdbmonitor.core.storage import Storage as _S
+    from kdbmonitor.core.client import ConnectionManager as _CM
+    from kdbmonitor.core.mock import demo_connection_specs as _specs
+    from kdbmonitor.core.models import (
+        Alert as _A, Step as _St, Filter as _F, TriggerCondition as _T,
+        RearmPolicy as _R, Channels as _C,
+    )
+    store = _S(":memory:")
+    store.init_db()
+    for spec in _specs():
+        store.add_connection(spec)
+    aid = store.add_alert(_A(
+        id=None, name="demo bid", enabled=True, poll_interval_secs=30,
+        steps=[_St(server="kdp_demo", table="QATT", mode="form",
+                   filters=[_F("sym", "in", ["AAPL"], "symbol")], output_name="step1")],
+        trigger=_T(type="has_rows"), channels=_C(), rearm=_R(),
+    ))
+    engine.set_monitoring(store, True)
+    engine.run_tick(store, _CM())
+    assert store.latest_run(aid) is not None      # a run was evaluated and persisted
 
 
 def test_admin_page_renders_with_demo():
     at = AppTest.from_function(_admin_script, default_timeout=30).run()
+    assert not at.exception
+
+
+def test_engine_tick_evaluates_and_persists():
+    at = AppTest.from_function(_engine_script, default_timeout=30).run()
     assert not at.exception
 
 

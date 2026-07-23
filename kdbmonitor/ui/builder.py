@@ -11,7 +11,8 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.chain import build_step_qsql, preview_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.portability import (
-    export_bundle_json, import_bundle_json, conflicting_alert_names,
+    export_bundle_json, export_connections_json, import_bundle_json,
+    conflicting_alert_names,
 )
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs, make_client_for,
@@ -137,6 +138,27 @@ def _load_edit(alert: Alert) -> None:
                                     if f.op == "in" else str(f.value))
             s[f"b_ftype_{i}_{j}"] = f.value_type
     st.session_state.update(s)
+
+
+def _copy_name(store, base: str) -> str:
+    """A unique '<base> (copy)' name for a cloned alert."""
+    existing = {a.name for a in store.list_alerts()}
+    cand = f"{base} (copy)"
+    i = 2
+    while cand in existing:
+        cand = f"{base} (copy {i})"
+        i += 1
+    return cand
+
+
+def _load_clone(store, alert: Alert) -> None:
+    """Load an alert into the builder as a brand-new draft (not an edit): same
+    steps/trigger/channels, but a fresh copy name and no id, so Save creates a
+    new alert the user can tweak first."""
+    _load_edit(alert)
+    st.session_state["b_edit_id"] = None            # a new alert, not an overwrite
+    st.session_state["b_edit_enabled"] = True
+    st.session_state["b_name"] = _copy_name(store, alert.name)
 
 
 # --------------------------------------------------------------------------- #
@@ -353,7 +375,7 @@ def _manage_alerts(store) -> None:
                 st.markdown(f":gray[:material/folder: **{gname}** · {len(galerts)}]")
             for a in galerts:
                 with st.container(border=True):
-                    c = st.columns([1.2, 3.4, 0.9, 1.2, 1, 1.2],
+                    c = st.columns([1.1, 3.0, 0.85, 1.05, 1.0, 1.05, 1.1],
                                    vertical_alignment="center")
                     lbl, color, icon = (STATUS_META["armed"] if a.enabled
                                         else STATUS_META["disabled"])
@@ -374,7 +396,13 @@ def _manage_alerts(store) -> None:
                     if c[4].button("Edit", key=f"mg_edit_{a.id}", icon=":material/edit:"):
                         _load_edit(a)
                         st.rerun()
-                    with c[5].popover("Delete", icon=":material/delete:"):
+                    if c[5].button("Clone", key=f"mg_clone_{a.id}",
+                                   icon=":material/content_copy:",
+                                   help="Copy this alert into the builder as a new "
+                                        "draft — tweak the query, then Save."):
+                        _load_clone(store, a)
+                        st.rerun()
+                    with c[6].popover("Delete", icon=":material/delete:"):
                         st.warning(f"Delete '{a.name}'?")
                         if st.button("Confirm delete", key=f"mg_del_{a.id}",
                                      type="primary"):
@@ -451,6 +479,20 @@ def _import_export(store) -> None:
         exp, imp = st.columns(2)
         with exp:
             st.markdown("**Export**")
+
+            # Connections only — just the KDB servers (host/port), no alerts.
+            st.markdown(":gray[Connections]")
+            st.download_button(
+                "Export connections", icon=":material/database:",
+                data=export_connections_json(conns),
+                file_name="kdbmonitor-connections.json", mime="application/json",
+                disabled=not conns,
+                help=f"{len(conns)} KDB connection(s), no alerts.")
+
+            st.divider()
+
+            # Alerts (bundled with the connections they need, to import cleanly).
+            st.markdown(":gray[Alerts]")
             if not alerts:
                 st.caption("No alerts to export yet.")
             else:
@@ -460,7 +502,7 @@ def _import_export(store) -> None:
                 st.caption(f"Includes all {len(conns)} connection(s) and "
                            f"{len(selected)} alert(s).")
                 st.download_button(
-                    "Download JSON", icon=":material/download:",
+                    "Export alerts", icon=":material/download:",
                     data=export_bundle_json(conns, selected),
                     file_name="kdbmonitor-export.json", mime="application/json",
                     disabled=not selected)

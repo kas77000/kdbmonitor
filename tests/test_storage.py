@@ -241,6 +241,52 @@ def test_huge_snapshot_is_capped_but_true_count_kept():
     assert len(snap["rows"]) == 10                        # only the cap was serialized
 
 
+def test_daily_stats_counts_events_and_distinct_alerts():
+    store = Storage(":memory:")
+    store.init_db()
+    a1 = store.add_alert(_named_alert("a1"))
+    a2 = store.add_alert(_named_alert("a2"))
+    # a1: two triggered (one notified) + one error; a2: one armed. All on 07-23.
+    store.record_run(a1, "2026-07-23T10:00:00+00:00", "triggered", True, True, 3, "m")
+    store.record_run(a1, "2026-07-23T10:01:00+00:00", "triggered", True, False, 4, "m")
+    store.record_run(a1, "2026-07-23T10:02:00+00:00", "error", False, False, None, "m")
+    store.record_run(a2, "2026-07-23T10:03:00+00:00", "armed", False, False, 0, "m")
+    # a different day must not leak in
+    store.record_run(a2, "2026-07-24T09:00:00+00:00", "triggered", True, True, 1, "m")
+
+    d = store.daily_stats("2026-07-23")
+    assert d["triggered_events"] == 2 and d["triggered_alerts"] == 1
+    assert d["armed_events"] == 1 and d["armed_alerts"] == 1
+    assert d["error_events"] == 1 and d["error_alerts"] == 1
+    assert d["notifications"] == 1
+    assert d["total_checks"] == 4
+    # empty day -> all zeros, no crash
+    assert store.daily_stats("2000-01-01")["triggered_events"] == 0
+
+
+def test_daily_stats_history_newest_first():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    for day in ("2026-07-20", "2026-07-21", "2026-07-23"):
+        store.record_run(aid, f"{day}T10:00:00+00:00", "armed", False, False, 0, "m")
+    hist = store.daily_stats_history(days=2)
+    assert [h["day"] for h in hist] == ["2026-07-23", "2026-07-21"]   # newest 2 only
+
+
+def test_unseen_trigger_badge_lifecycle():
+    store = Storage(":memory:")
+    store.init_db()
+    aid = store.add_alert(_sample_alert())
+    assert store.has_unseen_trigger(aid) is False          # no trigger yet
+    store.record_run(aid, "2026-07-23T10:00:00+00:00", "triggered", True, True, 1, "m")
+    assert store.has_unseen_trigger(aid) is True           # fired, not yet viewed
+    store.mark_triggers_seen(aid)                          # user pressed View
+    assert store.has_unseen_trigger(aid) is False
+    store.record_run(aid, "2026-07-23T10:05:00+00:00", "triggered", True, True, 2, "m")
+    assert store.has_unseen_trigger(aid) is True           # a newer trigger re-flags it
+
+
 def test_last_triggered_hash_returns_latest_triggered_run_hash():
     store = Storage(":memory:")
     store.init_db()

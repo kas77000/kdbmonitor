@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+import pandas as pd
 import streamlit as st
 
 from kdbmonitor.core.exporting import (
@@ -17,6 +18,21 @@ def _slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "result"
 
 
+def _snapshot_from_store(store, aid: int):
+    """Rebuild a result from the newest persisted daily snapshot, or None.
+
+    The in-session result is cleared on restart; the daily snapshot in the DB
+    is not, so this keeps View working (and lets it clear the NEW flag) later.
+    """
+    for day in store.result_days(aid):
+        snap = store.get_result(aid, day)
+        if snap is not None:
+            df = pd.DataFrame(snap["rows"], columns=snap["columns"])
+            return {"df": df, "when": snap["ts"], "mode": "snapshot",
+                    "truncated": snap["truncated"], "row_count": snap["row_count"]}
+    return None
+
+
 def render(store) -> None:
     st.subheader(":material/table_view: Alert result")
 
@@ -27,6 +43,8 @@ def render(store) -> None:
     aid = st.session_state.get("result_alert_id")
     last_results = st.session_state.get("last_results", {})
     stored = last_results.get(aid) if aid is not None else None
+    if (stored is None or stored.get("df") is None) and aid is not None:
+        stored = _snapshot_from_store(store, aid)   # fall back to the DB snapshot
     if stored is None or stored.get("df") is None:
         st.info("No result yet. Open one from the Monitor with the View button that "
                 "appears once an alert captures a triggered result.",
@@ -40,8 +58,11 @@ def render(store) -> None:
     when_txt = (when.strftime("%H:%M:%S") if hasattr(when, "strftime") else str(when))
 
     st.markdown(f"**{name}**")
-    st.caption(f"`{len(df)}` rows · `{len(df.columns)}` cols · captured {when_txt} UTC "
-               f"· {stored.get('mode', 'latest')} retention")
+    cap = (f"`{len(df)}` rows · `{len(df.columns)}` cols · captured {when_txt} UTC "
+           f"· {stored.get('mode', 'latest')} retention")
+    if stored.get("truncated"):
+        cap += f" · showing {len(df)} of {stored.get('row_count', len(df))} (capped)"
+    st.caption(cap)
 
     st.dataframe(df, use_container_width=True, height=480)
 

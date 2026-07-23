@@ -5,7 +5,7 @@ import streamlit as st
 
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.core.client import ConnectionManager
-from kdbmonitor.ui import admin, builder, monitor, result, reports
+from kdbmonitor.ui import admin, builder, monitor, result, reports, engine
 
 st.set_page_config(page_title="KdbMonitor", page_icon=":material/radar:", layout="wide")
 
@@ -33,6 +33,21 @@ with st.sidebar:
     n_alerts = len(store.list_alerts())
     n_conns = len(store.list_connections())
     st.markdown(f":gray[{n_alerts} alert(s) · {n_conns} server(s)]")
+
+    # The monitoring loop runs here in the shell (not on the Monitor page) so
+    # checks keep firing on every tab and after a restart. run_every is fixed at
+    # definition time; toggling monitoring triggers a full rerun that redefines
+    # this fragment with the right cadence.
+    _mon_on = engine.monitoring_on(store)
+    _tick = engine.tick_secs(store)
+    st.markdown(":green-badge[:material/sensors: Monitoring on]" if _mon_on
+                else ":gray-badge[:material/sensors_off: Monitoring paused]")
+
+    @st.fragment(run_every=_tick if _mon_on else None)
+    def _background_monitor():
+        engine.run_tick(store, mgr)
+
+    _background_monitor()
 
 def monitor_page():
     monitor.render(store, mgr)

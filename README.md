@@ -10,12 +10,15 @@ Built with [Streamlit](https://streamlit.io/) and [PyKX](https://code.kx.com/pyk
 
 - **Connect** to one or more KDB servers (just host + port).
 - **Build alerts** as a chain of query steps. Each step runs a query; a later step can reuse an earlier step's result (see [The alert builder](#the-alert-builder)). The final step's result is checked against a **trigger condition**.
-- **Monitor** alerts live. While monitoring is on, each alert runs on its own interval. When one triggers you get an in-app banner, an optional sound, a **browser notification that shows even when the window is minimized**, and optionally an email or a Teams/Slack message.
+- **Clone** an existing alert as a starting point when you need a near-duplicate with a small query change.
+- **Monitor** alerts live. Once monitoring is on it **keeps running on every tab and auto-resumes after a restart** (the on/off state is saved), so alerts keep arming and triggering all day without babysitting the Monitor tab. Each alert runs on its own interval. When one triggers you get an in-app banner, an optional sound, a **browser notification that shows even when the window is minimized**, and optionally an email or a Teams/Slack message.
+- **Track the day** with durable per-day counters (triggered / armed / errors / notifications) that are derived from the persisted run log, so **they don't reset when you restart the app**.
+- **Never miss a trigger**: an alert that has fired keeps a red **NEW** badge until you open it with **View**.
 - **Investigate** results: preview an alert's output while building it, and open a full **Result page** for a triggered alert to view, export (Excel/CSV) or copy the data.
-- **Share** whole setups (connections + alerts) with teammates via a JSON export/import.
+- **Share** whole setups with teammates via JSON export/import — export **alerts** (bundled with their connections) or **connections on their own**.
 - **Try it with no KDB at all** using the built-in **demo mock**.
 
-> Note on scope: checks run **only while the app is open** in a browser and monitoring is toggled on. There is no always-on background daemon (by design, for now). The core logic is written to make adding one later straightforward.
+> Note on scope: checks run **only while the app is open** in a browser and monitoring is toggled on — but they run on **whichever tab you're on**, not only the Monitor page, and monitoring resumes automatically when you reopen the app. There is no always-on background daemon (by design, for now). The core logic is written to make adding one later straightforward.
 
 ---
 
@@ -63,7 +66,7 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 | View | Purpose |
 |------|---------|
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
-| **Builder** | Create, edit, delete, enable/disable alerts. Import/export. Preview an alert's result before saving. |
+| **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export. Preview an alert's result before saving. |
 | **Admin** | Register KDB connections (host + port), introspect their tables/columns, load the demo servers, and set SMTP for email alerts. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
@@ -188,7 +191,11 @@ Controls what the Monitor's **Result** view keeps for this alert. Data is only e
 ### 7. Check result (preview) and Save
 
 - **Run now** executes the whole chain immediately against live data (nothing is saved, no notification sent). You see each step's resolved query and rows, and whether it *would* trigger. Use this to validate an alert before saving.
-- **Save alert** stores it. Existing alerts are listed under **Your alerts** where you can toggle, edit, or delete them.
+- **Save alert** stores it. Existing alerts are listed under **Your alerts** where you can toggle, edit, **clone**, or delete them.
+
+### Cloning an alert
+
+When you need an alert that's almost identical to an existing one (say, the same chain but a different symbol filter or threshold), click **Clone** on it under **Your alerts**. It loads into the builder as a **new draft** named *"… (copy)"* with all its steps, trigger, channels and timing pre-filled — tweak whatever you need and **Save**. The original is untouched; cloning never overwrites it.
 
 ---
 
@@ -196,16 +203,20 @@ Controls what the Monitor's **Result** view keeps for this alert. Data is only e
 
 On the **Monitor** view:
 
-- **Monitoring** toggle — checks (and notifications) run **only while this is on**. Turning it off, or just interacting with the page, never fires alerts.
+- **Monitoring** toggle — checks (and notifications) run **only while this is on**. Turning it off, or just interacting with the page, never fires alerts. Once on, monitoring **keeps running while you're on any other tab** (Builder / Admin / Reports), and the on/off choice is **saved to the database**, so it **automatically resumes the next time you open the app**.
 - **Check granularity** — how often the loop wakes (5s–15m). Each alert still only runs when its own interval has elapsed. Set the granularity at or below your fastest alert's interval.
-- A KPI row (Alerts / Armed / Triggered / Errors), a banner per currently-triggered alert, and one row per alert with a status badge, row count, and next-check countdown.
+- **Today** — a durable per-day summary (Triggered / Armed / Errors / Notifications, with the number of distinct alerts behind each). These come from the persisted run log, so they **carry across restarts** — restarting the app part-way through the day does not reset the day's tally to zero.
+- **Now** — a live KPI row (Alerts / Armed / Triggered / Errors) reflecting the current state of each alert this instant, a banner per currently-triggered alert, and one row per alert with a status badge, row count, and next-check countdown.
+- **NEW badge** — when an alert triggers, a red **NEW** flag stays next to it as a reminder until you open it with **View**. It's persisted, so the reminder survives a restart and only clears when you actually look.
 - **View** on an alert opens the **Result** page (full table + exports + copy). See below.
 
-The loop uses a Streamlit fragment, so it refreshes without reloading the whole page (your toggles and state survive).
+The evaluation loop runs in the app shell (not just the Monitor page) using a Streamlit fragment, so it refreshes without reloading the whole page and keeps ticking regardless of which view you're on.
+
+> On errors: the **Errors** counters (both Today and Now) count alerts whose **query chain failed to run** this cycle — an unreachable server, malformed qSQL, or a missing table/column. An alert in the error state isn't evaluating its trigger at all, so a non-zero Errors count is a health signal to go fix the connection or the query.
 
 ## The Result page
 
-Reached via **View** on a Monitor row (available once an alert has captured a triggered result). It gives you the full table plus flexible ways to get the data out:
+Reached via **View** on a Monitor row (available once an alert has fired). Opening it also clears that alert's red **NEW** badge. If the in-session result has been lost (for example after a restart), the page falls back to the most recent **stored daily snapshot** so there's still something to look at. It gives you the full table plus flexible ways to get the data out:
 
 - The full result table (searchable, sortable, expandable to fullscreen).
 - **Excel** and **CSV** download.
@@ -235,8 +246,11 @@ Requirements and gotchas:
 
 **Builder → Import / export (alerts & connections)** moves a whole setup between machines or teammates.
 
-- **Export** — pick which alerts to include (defaults to all). The downloaded `kdbmonitor-export.json` contains those alerts **and all your connections** (name, host, port). A connection's cached **schema is not exported** (it is derived data; re-fetch it with Introspect after importing).
-- **Import** — upload an export file. Then:
+- **Export** — two independent downloads:
+  - **Export connections** — writes `kdbmonitor-connections.json` with just your KDB connections (name, host, port) and **no alerts**. Handy for handing someone the servers without any of your alerts.
+  - **Export alerts** — pick which alerts to include (defaults to all). The downloaded `kdbmonitor-export.json` contains those alerts **and all your connections**, so it imports cleanly on the other side.
+  - In both cases a connection's cached **schema is not exported** (it is derived data; re-fetch it with Introspect after importing).
+- **Import** — upload either kind of export file (both use the same format; a connections-only file simply imports zero alerts). Then:
   - **Alert name clashes abort the import.** If any incoming alert has the same name as one you already have, nothing is imported and you're told which names conflict. Rename or delete the existing ones first.
   - **Connections are matched by name.** New ones are added; any whose name already exists are skipped (your local connection is kept). After importing, run **Introspect** on the new connections in Admin so the guided builder knows their tables/columns.
 
@@ -272,8 +286,10 @@ kdbmonitor/
     evaluate.py            # evaluate one alert end-to-end
     portability.py         # export / import bundles
     exporting.py           # Excel / CSV / copy helpers
+    reporting.py           # day/period report model + Excel rendering
   ui/                      # thin Streamlit views
-    admin.py  builder.py  monitor.py  result.py  common.py
+    admin.py  builder.py  monitor.py  result.py  reports.py  common.py
+    engine.py              # the monitoring loop (runs in the app shell, every tab)
 ```
 
 ## Testing
@@ -288,6 +304,6 @@ The core logic is covered by unit tests against a fake KDB client, and the Strea
 
 ## Notes and limitations
 
-- Checks run only while the app is open and **Monitoring** is on.
+- Checks run only while the app is open and **Monitoring** is on — but on any tab, and the on/off state is remembered across restarts.
 - KDB connections use host + port only (no authentication).
-- Alert result snapshots live in the browser session (they are not persisted to disk).
+- Per-day counters, the monitoring on/off state, the "seen" state behind the NEW badge, and triggered-result daily snapshots are persisted in `kdbmonitor.db`, so they survive restarts. The *live* in-session result view is per-session; when it's gone the Result page falls back to the stored daily snapshot.

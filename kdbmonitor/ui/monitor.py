@@ -1,23 +1,20 @@
 # kdbmonitor/ui/monitor.py
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from kdbmonitor.core.client import ConnectionManager
-from kdbmonitor.core.evaluate import evaluate_alert
-from kdbmonitor.core.notifiers import InAppSink, dispatch, send_email, post_webhook
+from kdbmonitor.ui import engine
 from kdbmonitor.ui.common import (
-    STATUS_META, INTERVAL_PRESETS, is_due, secs_until_due, humanize_secs,
-    condition_summary, make_client_for, should_capture_result,
-    group_label, sort_group_names, pluralize,
+    STATUS_META, INTERVAL_PRESETS, secs_until_due, humanize_secs,
+    condition_summary, group_label, sort_group_names, pluralize,
 )
 
 
-def _kpi(col, label: str, value: int, color: str | None = None) -> None:
+def _kpi(col, label: str, value: int, color: str | None = None,
+         caption: str | None = None) -> None:
     """Metric-style tile whose number turns `color` when it's non-zero."""
     with col.container(border=True):
         st.caption(label)
@@ -25,91 +22,58 @@ def _kpi(col, label: str, value: int, color: str | None = None) -> None:
             st.markdown(f"### :{color}[{value}]")
         else:
             st.markdown(f"### {value}")
+        if caption:
+            st.caption(caption)
 
 
-def _email_fn(store):
-    smtp_host = store.get_setting("smtp_host", "")
-    if not smtp_host:
-        return None
-    smtp_port = int(store.get_setting("smtp_port", "25"))
-    smtp_sender = store.get_setting("smtp_sender", "")
-    return lambda to, msg: send_email(
-        smtp_host, smtp_port, smtp_sender, to, subject="KdbMonitor alert", body=msg
-    )
-
-
-# Browser (OS-level) notifications that show even when the tab is minimized.
-# Requires a one-time permission grant (a user gesture), so an Enable button is
-# shown until granted. Each payload is deduped by key via localStorage.
-_NOTIFY_HTML = """
-<div id="kdbn" style="font:13px sans-serif;color:#8b98a5;padding:2px 0"></div>
-<script>
-(function(){
-  var payloads = __PAYLOADS__;
-  var box = document.getElementById('kdbn');
-  function beep(){ try{
-    var c = new (window.AudioContext||window.webkitAudioContext)();
-    var o = c.createOscillator(), g = c.createGain();
-    o.connect(g); g.connect(c.destination); o.frequency.value = 880;
-    g.gain.setValueAtTime(0.15, c.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.3);
-    o.start(); o.stop(c.currentTime + 0.3);
-  } catch(e){} }
-  function fire(){
-    var done = JSON.parse(localStorage.getItem('kdbmon_fired') || '[]');
-    var played = false;
-    payloads.forEach(function(p){
-      if(done.indexOf(p.key) === -1){
-        try{ new Notification(p.title, {body: p.body, tag: p.key}); } catch(e){}
-        if(p.sound && !played){ beep(); played = true; }
-        done.push(p.key);
-      }
-    });
-    localStorage.setItem('kdbmon_fired', JSON.stringify(done.slice(-200)));
-  }
-  if(!('Notification' in window)){ box.textContent = 'Browser notifications not supported'; return; }
-  if(Notification.permission === 'granted'){ box.innerHTML = '🔔 Alert notifications on'; fire(); }
-  else if(Notification.permission === 'denied'){ box.innerHTML = '🔕 Notifications blocked — enable them in your browser site settings'; }
-  else {
-    var b = document.createElement('button');
-    b.textContent = '🔔 Enable alert notifications';
-    b.style.cssText = 'padding:4px 10px;border-radius:6px;border:1px solid #3b82f6;background:#141b24;color:#dfe7ef;cursor:pointer';
-    b.onclick = function(){ Notification.requestPermission().then(function(perm){
-      if(perm === 'granted'){ box.innerHTML = '🔔 Alert notifications on'; fire(); }
-      else if(perm === 'denied'){ box.innerHTML = '🔕 Notifications blocked'; }
-    }); };
-    box.appendChild(b);
-  }
-})();
-</script>
-"""
-
-
-def _browser_notify(payloads: list[dict]) -> None:
-    components.html(_NOTIFY_HTML.replace("__PAYLOADS__", json.dumps(payloads)),
-                    height=44)
+def _today_strip(store) -> None:
+    """Durable per-day totals, derived from the persisted run log so they don't
+    reset when the app is restarted. Additive to the live 'now' KPIs below."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    d = store.daily_stats(today)
+    st.markdown(f":gray[**Today** · {today} UTC — cumulative, survives restarts]")
+    k = st.columns(4)
+    _kpi(k[0], "Triggered today", d["triggered_events"], color="red",
+         caption=f"{pluralize(d['triggered_alerts'], 'alert')}")
+    _kpi(k[1], "Armed today", d["armed_events"], color="green",
+         caption=f"{pluralize(d['armed_alerts'], 'alert')}")
+    _kpi(k[2], "Errors today", d["error_events"], color="orange",
+         caption=f"{pluralize(d['error_alerts'], 'alert')}")
+    _kpi(k[3], "Notifications today", d["notifications"],
+         caption=f"{d['total_checks']} checks run")
 
 
 def render(store, mgr: ConnectionManager) -> None:
     if st.session_state.pop("_open_result", False) and "_nav_pages" in st.session_state:
         st.switch_page(st.session_state["_nav_pages"]["result"])
-    resolve = make_client_for(store, mgr)
-    sink: InAppSink = st.session_state.setdefault("in_app_sink", InAppSink())
 
     st.subheader(":material/monitoring: Live monitor")
 
+    # --- monitoring controls (state persists in the DB, so it keeps running on
+    #     other tabs and auto-resumes after a restart; the loop itself lives in
+    #     the app shell — see app.py / ui/engine.py) --------------------------- #
+    running = engine.monitoring_on(store)
+    gran = engine.granularity_label(store)
+
     ctl = st.columns([1.4, 2.4, 1.2], vertical_alignment="center")
-    running = ctl[0].toggle("Monitoring", value=False, key="mon_running",
-                            help="Checks run only while this is on and the page is open.")
-    gran_label = ctl[1].segmented_control(
-        "Check granularity", list(INTERVAL_PRESETS.keys()), default="15s",
-        key="mon_gran", help="How often the loop wakes. Each alert still checks on its own interval.",
-    )
-    tick = INTERVAL_PRESETS.get(gran_label or "15s", 15)
+    new_running = ctl[0].toggle(
+        "Monitoring", value=running,
+        help="Checks keep running on every tab and after a restart while this is on.")
+    if new_running != running:
+        engine.set_monitoring(store, new_running)
+        st.rerun()
+    new_gran = ctl[1].segmented_control(
+        "Check granularity", list(INTERVAL_PRESETS.keys()), default=gran,
+        help="How often the loop wakes. Each alert still checks on its own interval.")
+    if new_gran and new_gran != gran:
+        engine.set_granularity(store, new_gran)
+        st.rerun()
     ctl[2].markdown(
         (":green-badge[:material/sensors: Active]" if running
          else ":gray-badge[:material/sensors_off: Paused]")
     )
+
+    tick = INTERVAL_PRESETS.get(gran, 15)
 
     alerts = store.list_alerts()
     if not alerts:
@@ -117,62 +81,33 @@ def render(store, mgr: ConnectionManager) -> None:
         return
 
     @st.fragment(run_every=tick if running else None)
-    def _tick() -> None:
+    def _view() -> None:
+        # Display only: the app-shell engine does the evaluating/recording; here
+        # we just read the latest persisted state so a page rerun never fires an
+        # alert on its own.
         now = datetime.now(timezone.utc)
-        email_fn = _email_fn(store)
-        notify_payloads = []
         display = []
-
         for a in store.list_alerts():
             latest = store.latest_run(a.id)
             if not a.enabled:
                 display.append({"a": a, "status": "disabled", "rows": None,
                                 "checked": None, "next": None})
-                continue
-
-            # only evaluate / record / notify while monitoring is live; otherwise
-            # just display the last known status (a page rerun must not fire alerts)
-            due = running and is_due(latest["ts"] if latest else None,
-                                     a.poll_interval_secs, now)
-            if due:
-                res = evaluate_alert(a, resolve, prev_run=latest, now=now,
-                                     last_notified_ts=store.last_notified_at(a.id),
-                                     last_triggered_hash=store.last_triggered_hash(a.id))
-                store.record_run(a.id, ts=now.isoformat(), status=res.status,
-                                 triggered=res.triggered, notified=res.notify,
-                                 row_count=res.row_count, message=res.message,
-                                 result_hash=res.result_hash)
-                prev_trig = bool(latest["triggered"]) if latest else False
-                if res.df is not None and should_capture_result(
-                        a.result_retention, res.triggered, prev_trig):
-                    st.session_state.setdefault("last_results", {})[a.id] = {
-                        "df": res.df, "rows": res.row_count, "when": now,
-                        "mode": a.result_retention}
-                # Persist the latest snapshot per day for historical reports.
-                if res.triggered and res.df is not None:
-                    store.save_result(a.id, now.isoformat(), res.df)
-                if res.notify:
-                    dispatch(a.channels, res.message, in_app_sink=sink,
-                             email_fn=email_fn, webhook_fn=post_webhook)
-                    if a.channels.in_app:
-                        notify_payloads.append({
-                            "key": f"{a.id}-{now.isoformat()}",
-                            "title": a.name, "body": res.message,
-                            "sound": bool(a.channels.sound)})
-                display.append({"a": a, "status": res.status, "rows": res.row_count,
-                                "checked": now, "next": a.poll_interval_secs})
+            elif latest is None:
+                display.append({"a": a, "status": "pending", "rows": None,
+                                "checked": None, "next": 0})
             else:
-                status = latest["status"] if latest else "pending"
-                nxt = secs_until_due(latest["ts"] if latest else None,
-                                     a.poll_interval_secs, now)
-                display.append({"a": a, "status": status,
-                                "rows": latest["row_count"] if latest else None,
-                                "checked": latest["ts"] if latest else None, "next": nxt})
+                display.append({
+                    "a": a, "status": latest["status"], "rows": latest["row_count"],
+                    "checked": latest["ts"],
+                    "next": secs_until_due(latest["ts"], a.poll_interval_secs, now)})
 
-        # KPI row (Triggered/Errors light up when non-zero)
+        # Durable per-day totals first, then the live 'now' snapshot KPIs.
+        _today_strip(store)
+
         n_trig = sum(1 for d in display if d["status"] == "triggered")
         n_err = sum(1 for d in display if d["status"] == "error")
         n_armed = sum(1 for d in display if d["status"] == "armed")
+        st.markdown(":gray[**Now** — current state of each alert]")
         k = st.columns(4)
         _kpi(k[0], "Alerts", len(display))
         _kpi(k[1], "Armed", n_armed, color="green")
@@ -186,20 +121,22 @@ def render(store, mgr: ConnectionManager) -> None:
                          f"·  {pluralize(d['rows'], 'row')}",
                          icon=":material/notifications_active:")
 
-        # Browser notifications (fire on new triggers; also shows the enable button)
-        _browser_notify(notify_payloads)
-
         # Per-alert status rows, bucketed by group
         last_results = st.session_state.get("last_results", {})
 
         def _render_row(d) -> None:
             a = d["a"]
             label, color, icon = STATUS_META[d["status"]]
+            unseen = store.has_unseen_trigger(a.id)
             with st.container(border=True):
                 row = st.columns([1.4, 3.4, 1, 2.1, 1.1], vertical_alignment="center")
                 row[0].badge(label, icon=icon, color=color)
+                # A red "NEW" badge stays next to an alert that has fired until
+                # the user opens it with View (persisted, so it survives restarts).
+                new_flag = " :red-badge[:material/notifications_active: NEW]" if unseen else ""
                 row[1].markdown(
-                    f"**{a.name}**  \n:gray[Triggers when {condition_summary(a.trigger)}]")
+                    f"**{a.name}**{new_flag}  \n"
+                    f":gray[Triggers when {condition_summary(a.trigger)}]")
                 if d["rows"] is None:
                     row[2].markdown(":gray[—]")
                 else:
@@ -214,10 +151,16 @@ def render(store, mgr: ConnectionManager) -> None:
                                    f"· every {humanize_secs(a.poll_interval_secs)}")
 
                 stored = last_results.get(a.id)
-                if stored is not None and stored.get("df") is not None:
+                has_result = (stored is not None and stored.get("df") is not None)
+                # Show View whenever there is something to open OR an unread
+                # trigger to clear; the result page falls back to the stored
+                # daily snapshot when the in-session result is gone.
+                if has_result or unseen:
+                    btn_type = "primary" if unseen else "secondary"
                     if row[4].button("View", key=f"view_{a.id}",
-                                     icon=":material/open_in_full:",
-                                     help="Open the full result table"):
+                                     icon=":material/open_in_full:", type=btn_type,
+                                     help="Open the result and clear the NEW flag"):
+                        store.mark_triggers_seen(a.id)
                         st.session_state["result_alert_id"] = a.id
                         st.session_state["_open_result"] = True
                         st.rerun()
@@ -253,7 +196,7 @@ def render(store, mgr: ConnectionManager) -> None:
             for d in display:
                 _render_row(d)
 
-        st.caption(f"Last loop: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        st.caption(f"Last refresh: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC"
                    + ("" if running else " · monitoring paused"))
 
-    _tick()
+    _view()

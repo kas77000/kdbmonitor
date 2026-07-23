@@ -74,6 +74,10 @@ class Storage:
                 rows_json TEXT NOT NULL,
                 PRIMARY KEY (alert_id, day)     -- one (latest) snapshot per alert per day
             );
+            CREATE TABLE IF NOT EXISTS alert_views (
+                alert_id INTEGER PRIMARY KEY,   -- last trigger the user has "seen"
+                seen_trigger_ts TEXT            -- ts of that trigger (ISO, UTC)
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -245,6 +249,76 @@ class Storage:
             sql += " AND triggered=1"
         sql += " ORDER BY ts ASC, id ASC"
         return [dict(r) for r in self.conn.execute(sql, (since_ts,)).fetchall()]
+
+    # --- daily rollups (derived from the persisted run log, so they survive
+    #     app restarts: every check is already written to alert_runs) ---
+    def daily_stats(self, day: str) -> dict:
+        """Per-day activity counts for ``day`` ('YYYY-MM-DD', UTC).
+
+        Because every check is persisted in ``alert_runs``, these totals are
+        durable — restarting the app never resets them. ``*_events`` counts
+        every check in that state; ``*_alerts`` counts the distinct alerts that
+        hit that state during the day; ``notifications`` is how many were sent.
+        """
+        rows = self.conn.execute(
+            "SELECT status, COUNT(*) AS c, COUNT(DISTINCT alert_id) AS d, "
+            "COALESCE(SUM(notified),0) AS n FROM alert_runs "
+            "WHERE substr(ts,1,10)=? GROUP BY status", (day,),
+        ).fetchall()
+        out = {
+            "day": day, "total_checks": 0, "notifications": 0,
+            "triggered_events": 0, "triggered_alerts": 0,
+            "armed_events": 0, "armed_alerts": 0,
+            "error_events": 0, "error_alerts": 0,
+        }
+        for r in rows:
+            out["total_checks"] += r["c"]
+            out["notifications"] += r["n"]
+            if r["status"] in ("triggered", "armed", "error"):
+                out[f"{r['status']}_events"] = r["c"]
+                out[f"{r['status']}_alerts"] = r["d"]
+        return out
+
+    def daily_stats_history(self, days: int = 14) -> list[dict]:
+        """The most recent ``days`` days that have any runs, newest first."""
+        day_rows = self.conn.execute(
+            "SELECT DISTINCT substr(ts,1,10) AS day FROM alert_runs "
+            "ORDER BY day DESC LIMIT ?", (days,),
+        ).fetchall()
+        return [self.daily_stats(r["day"]) for r in day_rows]
+
+    # --- unseen-trigger tracking (a red badge stays until the user opens the
+    #     result via View; persisted so it survives restarts) ---
+    def latest_triggered_ts(self, alert_id: int) -> Optional[str]:
+        r = self.conn.execute(
+            "SELECT ts FROM alert_runs WHERE alert_id=? AND triggered=1 "
+            "ORDER BY id DESC LIMIT 1", (alert_id,),
+        ).fetchone()
+        return r["ts"] if r else None
+
+    def has_unseen_trigger(self, alert_id: int) -> bool:
+        """True if the alert has fired more recently than the user last viewed it."""
+        latest = self.latest_triggered_ts(alert_id)
+        if latest is None:
+            return False
+        r = self.conn.execute(
+            "SELECT seen_trigger_ts FROM alert_views WHERE alert_id=?", (alert_id,),
+        ).fetchone()
+        seen = r["seen_trigger_ts"] if r else None
+        return seen is None or latest > seen
+
+    def mark_triggers_seen(self, alert_id: int, ts: Optional[str] = None) -> None:
+        """Clear the unseen-trigger badge up to ``ts`` (default: the latest trigger)."""
+        if ts is None:
+            ts = self.latest_triggered_ts(alert_id)
+        if ts is None:
+            return
+        self.conn.execute(
+            "INSERT INTO alert_views(alert_id, seen_trigger_ts) VALUES (?,?) "
+            "ON CONFLICT(alert_id) DO UPDATE SET seen_trigger_ts=excluded.seen_trigger_ts",
+            (alert_id, ts),
+        )
+        self.conn.commit()
 
     # --- captured result snapshots (latest per alert per day, N-day retention) ---
     @staticmethod

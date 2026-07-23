@@ -7,7 +7,8 @@ from kdbmonitor.core.models import (
     alert_to_dict,
 )
 from kdbmonitor.core.portability import (
-    export_bundle_json, import_bundle_json, conflicting_alert_names,
+    export_bundle_json, export_connections_json, import_bundle_json,
+    conflicting_alert_names,
 )
 
 
@@ -81,6 +82,18 @@ def test_exported_at_included():
     doc = json.loads(export_bundle_json([], [], exported_at="2026-07-17T10:00:00+00:00"))
     assert doc["exported_at"] == "2026-07-17T10:00:00+00:00"
     assert doc["alerts"] == [] and doc["connections"] == []
+
+
+def test_connections_only_export_roundtrips_with_no_alerts():
+    conns = _sample_conns()
+    doc = json.loads(export_connections_json(conns))
+    assert doc["kind"] == "kdbmonitor-export" and doc["version"] == 2
+    assert doc["alerts"] == []
+    assert [c["name"] for c in doc["connections"]] == ["kdp", "orders"]
+    assert all(c["schema"] == {} for c in doc["connections"])   # schema dropped
+    # imports cleanly through the shared importer: connections, zero alerts
+    r_conns, r_alerts = import_bundle_json(export_connections_json(conns))
+    assert [c.name for c in r_conns] == ["kdp", "orders"] and r_alerts == []
 
 
 def test_conflicting_alert_names():
