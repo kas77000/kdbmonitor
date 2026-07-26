@@ -5,7 +5,7 @@ from kdbmonitor.core.models import Step
 from kdbmonitor.core.qfmt import format_q_value, format_q_list
 
 
-def _filter_clause(f) -> str:
+def filter_clause(f) -> str:
     if f.op == "in":
         clause = f"{f.column} in {format_q_list(f.value, f.value_type)}"
     elif f.op == "like":
@@ -21,7 +21,7 @@ def build_step_qsql(step: Step) -> str:
     base = f"select from {step.table}"
     if not step.filters:
         return base
-    clauses = ", ".join(_filter_clause(f) for f in step.filters)
+    clauses = ", ".join(filter_clause(f) for f in step.filters)
     return f"{base} where {clauses}"
 
 
