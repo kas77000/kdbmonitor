@@ -309,3 +309,41 @@ def test_an_unknown_environment_is_reported_before_any_query(md_store):
     dash = Dashboard(id=1, name="d", datasets=[
         Dataset(name="x", env="nope", table="instrument")])
     assert "unknown environment" in run_datasets(dash, md_store, mgr, TODAY)["x"].error
+
+
+# --- one query, both modes --------------------------------------------------
+
+GUARDED_Q = ("select from target where "
+             "{{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}"
+             "side=`sellshort")
+
+
+def test_a_guarded_raw_query_runs_in_both_modes(store):
+    rt_q = "select from target where side=`sellshort"
+    hist_q = ("select from target where date within (2026.06.01;2026.06.30), "
+              "side=`sellshort")
+    mgr = _mgr({rt_q: pd.DataFrame({"sym": ["A"]}),
+                hist_q: pd.DataFrame({"sym": ["A"], "date": ["d"]})})
+
+    dash = Dashboard(id=1, name="d", datasets=[
+        Dataset(name="o", env="orders", mode="raw", raw_qsql=GUARDED_Q)])
+
+    dash.time_context = {"mode": "realtime"}
+    assert run_datasets(dash, store, mgr, TODAY)["o"].qsql == rt_q
+
+    dash.time_context = {"mode": "historical",
+                         "range": {"kind": "absolute",
+                                   "from": "2026-06-01", "to": "2026-06-30"}}
+    assert run_datasets(dash, store, mgr, TODAY)["o"].qsql == hist_q
+
+
+def test_an_unguarded_placeholder_is_refused_in_realtime(store):
+    """It would otherwise reach KDB verbatim as '{{date_from}}'."""
+    mgr = _mgr({})
+    dash = Dashboard(id=1, name="d", time_context={"mode": "realtime"}, datasets=[
+        Dataset(name="o", env="orders", mode="raw",
+                raw_qsql="select from target where date within "
+                         "({{date_from}};{{date_to}})")])
+    res = run_datasets(dash, store, mgr, TODAY)["o"]
+    assert res.df is None
+    assert "{{#historical}}" in res.error

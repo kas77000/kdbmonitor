@@ -147,9 +147,34 @@ def _need(df: pd.DataFrame, *columns: str) -> None:
                        f"(have: {', '.join(map(str, df.columns))})")
 
 
+def format_time_of_day(td: pd.Timedelta) -> str:
+    """Render a q time/timespan as HH:MM:SS(.mmm).
+
+    q ``time`` columns arrive from pykx as timedeltas, which stringify as
+    "0 days 09:30:00" — never what anyone wants to read in a report.
+    """
+    total = td.total_seconds()
+    sign = "-" if total < 0 else ""
+    total = abs(total)
+    hours, rem = divmod(int(total), 3600)
+    minutes, seconds = divmod(rem, 60)
+    millis = int(round((total - int(total)) * 1000))
+    stamp = f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{stamp}.{millis:03d}" if millis else stamp
+
+
 def _fmt(value: Any, spec: str = "") -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    # pd.NaT is not a float and not a Timedelta, so check nullness generically
+    # before anything else.
+    if value is None:
         return "—"
+    try:
+        if pd.isna(value):
+            return "—"
+    except (TypeError, ValueError):        # arrays and the like are never null
+        pass
+    if isinstance(value, pd.Timedelta):
+        return format_time_of_day(value)
     try:
         return format(value, spec) if spec else str(value)
     except (TypeError, ValueError):

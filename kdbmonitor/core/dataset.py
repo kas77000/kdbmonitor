@@ -18,6 +18,7 @@ from kdbmonitor.core.dashboard_models import Dashboard, Dataset
 from kdbmonitor.core.models import Connection
 from kdbmonitor.core.timectx import (
     ResolvedTime, date_clause, has_date_constraint, resolve, substitute_dates,
+    unresolved_date_refs,
 )
 from kdbmonitor.core.transform import apply_transforms
 
@@ -117,6 +118,14 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
     qsql = ""
     try:
         qsql = build_qsql(ds, effective, outputs)
+        if unresolved_date_refs(qsql):
+            # Only reachable in real-time, where nothing fills them. Sending
+            # '{{date_from}}' to KDB would be a baffling parse error.
+            return DatasetResult(
+                ds.name, None, qsql,
+                "this query uses {{date_from}}/{{date_to}} outside a "
+                "{{#historical}}…{{/historical}} block, so it cannot run in "
+                "real-time — wrap the date predicate in that block")
         df = mgr.get(conn).query(qsql)
         df = apply_transforms(df, ds.transforms)
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page

@@ -97,9 +97,31 @@ def date_clause(rt: ResolvedTime) -> str:
 _DATE_REF = re.compile(r"\{\{(date_from|date_to|date_list)\}\}")
 _DATE_WORD = re.compile(r"\bdate\b")
 
+# Mode-conditional blocks: {{#historical}}…{{/historical}} is kept only when the
+# dataset resolves to the HDB, {{#realtime}}…{{/realtime}} only when it does not.
+# Without these, one raw query cannot serve both modes — a date predicate is
+# mandatory against a partitioned HDB and meaningless against an RDB.
+_BLOCK = re.compile(r"\{\{#(historical|realtime)\}\}(.*?)\{\{/\1\}\}", re.S)
+
+
+def apply_mode_blocks(qsql: str, mode: str) -> str:
+    """Keep the blocks matching ``mode``, drop the others."""
+    return _BLOCK.sub(lambda m: m.group(2) if m.group(1) == mode else "",
+                      qsql or "")
+
+
+def unresolved_date_refs(qsql: str) -> bool:
+    """Whether any {{date_*}} placeholder survived substitution.
+
+    In real-time mode nothing fills them, so one left outside a
+    {{#historical}} block would be sent to KDB verbatim.
+    """
+    return _DATE_REF.search(qsql or "") is not None
+
 
 def substitute_dates(qsql: str, rt: ResolvedTime) -> str:
-    """Fill {{date_from}} / {{date_to}} / {{date_list}} in a raw q query."""
+    """Resolve mode blocks, then fill {{date_from}} / {{date_to}} / {{date_list}}."""
+    qsql = apply_mode_blocks(qsql, rt.mode)
     if rt.mode != "historical":
         return qsql
 

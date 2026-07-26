@@ -1,0 +1,375 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": null,
+  "connections": [],
+  "alerts": [],
+  "dashboards": [
+    {
+      "id": null,
+      "name": "Short sell by market",
+      "description": "Live short-sell orders per market: count, completion, rejections",
+      "refresh_secs": 30,
+      "time_context": {
+        "mode": "realtime"
+      },
+      "datasets": [
+        {
+          "name": "by_market",
+          "env": "OMS",
+          "time_mode": "realtime",
+          "time_context": null,
+          "mode": "raw",
+          "table": "",
+          "filters": [],
+          "raw_qsql": "{[]\n  o:select id_target, sym, side, size\n      from target\n      where side=`sellshort,\n        any sym like/: (\"*.HK\";\"*.JP\";\"*.KS\";\"*.MK\";\"*.TB\");\n  st:select remaining:last open, executed:last make\n       by id_target\n       from target_state\n       where id_target in exec id_target from o;\n  o:o lj st;\n  o:select from o where executed>0;\n  wo:select nReject:sum state like \"*reject*\"\n       by id_target\n       from workorder\n       where id_target in exec id_target from o;\n  o lj wo }[]",
+          "transforms": [
+            {
+              "kind": "derive",
+              "params": {
+                "column": "market",
+                "kind": "suffix_map",
+                "source": "sym",
+                "mapping": {
+                  ".HK": "Hong Kong",
+                  ".JP": "Japan",
+                  ".KS": "Korea",
+                  ".MK": "Malaysia",
+                  ".TB": "Thailand"
+                },
+                "default": "Unknown"
+              }
+            },
+            {
+              "kind": "groupby",
+              "params": {
+                "keys": [
+                  "market"
+                ],
+                "aggs": [
+                  {
+                    "column": "id_target",
+                    "func": "nunique",
+                    "as": "n_orders"
+                  },
+                  {
+                    "column": "size",
+                    "func": "sum",
+                    "as": "order_qty"
+                  },
+                  {
+                    "column": "executed",
+                    "func": "sum",
+                    "as": "executed_qty"
+                  },
+                  {
+                    "column": "remaining",
+                    "func": "sum",
+                    "as": "remaining_qty"
+                  },
+                  {
+                    "column": "nReject",
+                    "func": "sum",
+                    "as": "n_rejections"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "derive",
+              "params": {
+                "column": "completion_pct",
+                "kind": "arithmetic",
+                "expr": "100 * executed_qty / order_qty"
+              }
+            },
+            {
+              "kind": "sort",
+              "params": {
+                "columns": [
+                  "market"
+                ],
+                "ascending": true
+              }
+            }
+          ],
+          "max_rows": 5000
+        }
+      ],
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Short-sell orders",
+              "spec": {
+                "column": "n_orders",
+                "agg": "sum",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Overall completion",
+              "spec": {
+                "column": "completion_pct",
+                "agg": "mean",
+                "fmt": ",.1f",
+                "suffix": "%"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Rejections",
+              "spec": {
+                "column": "n_rejections",
+                "agg": "sum",
+                "fmt": ",.0f",
+                "thresholds": [
+                  {
+                    "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "by_market",
+              "title": "By market",
+              "spec": {
+                "columns": [
+                  "market",
+                  "n_orders",
+                  "order_qty",
+                  "executed_qty",
+                  "remaining_qty",
+                  "completion_pct",
+                  "n_rejections"
+                ],
+                "labels": {
+                  "market": "Market",
+                  "n_orders": "Orders",
+                  "order_qty": "Order qty",
+                  "executed_qty": "Executed",
+                  "remaining_qty": "Remaining",
+                  "completion_pct": "Completion %",
+                  "n_rejections": "Rejections"
+                },
+                "formats": {
+                  "order_qty": ",.0f",
+                  "executed_qty": ",.0f",
+                  "remaining_qty": ",.0f",
+                  "completion_pct": ",.1f"
+                },
+                "highlight": [
+                  {
+                    "column": "n_rejections",
+                    "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 2.2
+        },
+        {
+          "widgets": [
+            {
+              "type": "bar",
+              "dataset": "by_market",
+              "title": "Completion by market",
+              "spec": {
+                "x": "market",
+                "y": "completion_pct",
+                "orientation": "h",
+                "sort": "asc"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "bar",
+              "dataset": "by_market",
+              "title": "Rejections by market",
+              "spec": {
+                "x": "market",
+                "y": "n_rejections",
+                "orientation": "h",
+                "sort": "asc"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 2.9
+        }
+      ]
+    },
+    {
+      "id": null,
+      "name": "Limit up/down orders",
+      "description": "Orders trading limit-up, limit-down or locked stocks \u2014 switch Period between Real-time and a date range",
+      "refresh_secs": 60,
+      "time_context": {
+        "mode": "realtime"
+      },
+      "datasets": [
+        {
+          "name": "limit_orders",
+          "env": "OMS",
+          "time_mode": "inherit",
+          "time_context": null,
+          "mode": "raw",
+          "table": "",
+          "filters": [],
+          "raw_qsql": "{[]\n  o:select {{#historical}}date{{/historical}}{{#realtime}}date:.z.d{{/realtime}},\n           id_target, trader, basket, sym, side, size, limit_price, algo,\n           t_gen, t_start, t_end\n      from target\n      where {{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}\n        any sym like/: (\"*.IN\";\"*.JP\";\"*.C1\";\"*.C2\";\"*.CH\";\"*.TT\"),\n        not null algo;\n  w:select nChild:count i, venue:last venue\n      by {{#historical}}date, {{/historical}}id_target\n      from `time xasc select {{#historical}}date, {{/historical}}id_target, venue, time\n        from workorder\n        where {{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}\n          id_target in exec id_target from o;\n  o:update nChild:0^nChild from o lj w;\n  s:exec distinct sym from o;\n  q1:select {{#historical}}date, {{/historical}}sym, time,\n            state:?[qask=0&qbid>0;`up;?[qbid=0&qask>0;`down;`locked]],\n            lastPrice, qbid, qask\n       from qatt\n       where {{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}\n         sym in s,\n         (qask=0&qbid>0) | (qbid=0&qask>0) | ((qbid=qask)&qbid>0);\n  j:select from ej[{{#historical}}`date`sym{{/historical}}{{#realtime}}`sym{{/realtime}};o;q1]\n      where time within (t_start;t_end);\n  r:0!select stateStart:min time, stateEnd:max time,\n             lastPrice:last lastPrice, bid:last qbid, ask:last qask,\n             nChild:first nChild, venue:first venue\n       by date, id_target, trader, basket, sym, side, size, limit_price, algo, state\n       from `time xasc j;\n  select from r where not stateStart=stateEnd }[]",
+          "transforms": [],
+          "max_rows": 20000
+        }
+      ],
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "limit_orders",
+              "title": "Orders affected",
+              "spec": {
+                "column": "id_target",
+                "agg": "nunique",
+                "fmt": ",.0f",
+                "thresholds": [
+                  {
+                    "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "limit_orders",
+              "title": "Symbols",
+              "spec": {
+                "column": "sym",
+                "agg": "nunique",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "limit_orders",
+              "title": "Order \u00d7 state rows",
+              "spec": {
+                "column": "state",
+                "agg": "count",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "heatmap",
+              "dataset": "limit_orders",
+              "title": "Orders by date and state",
+              "spec": {
+                "rows": "date",
+                "cols": "state",
+                "value": "id_target",
+                "agg": "count",
+                "annotate": true
+              },
+              "width": 1.0
+            },
+            {
+              "type": "box",
+              "dataset": "limit_orders",
+              "title": "Child splits by state",
+              "spec": {
+                "x": "state",
+                "y": "nChild"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 2.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "limit_orders",
+              "title": "Affected orders",
+              "spec": {
+                "columns": [
+                  "sym",
+                  "side",
+                  "state",
+                  "algo",
+                  "size",
+                  "nChild",
+                  "lastPrice",
+                  "stateStart",
+                  "stateEnd"
+                ],
+                "labels": {
+                  "sym": "Symbol",
+                  "side": "Side",
+                  "state": "State",
+                  "algo": "Algo",
+                  "size": "Qty",
+                  "nChild": "Splits",
+                  "lastPrice": "Last",
+                  "stateStart": "From",
+                  "stateEnd": "To"
+                },
+                "formats": {
+                  "size": ",.0f",
+                  "lastPrice": ",.2f",
+                  "nChild": ",.0f"
+                }
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 3.4
+        },
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "dataset": "limit_orders",
+              "title": "Summary",
+              "spec": {
+                "markdown": "{{limit_orders.nunique.id_target}} orders touched a limit-up / limit-down / locked stock across {{limit_orders.nunique.sym}} symbols."
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.7
+        }
+      ]
+    }
+  ]
+}

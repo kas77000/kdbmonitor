@@ -295,3 +295,37 @@ def test_a_fully_specified_widget_is_unaffected():
                                  spec={"x": "market", "y": "n_orders"}),
                           _ok(_summary()))
     assert pm.kind == "bar"
+
+
+# --- q time columns ---------------------------------------------------------
+
+def test_a_q_time_column_prints_as_time_of_day():
+    """pykx returns q time columns as timedeltas, which stringify as
+    '0 days 09:30:00' — never what a report should show."""
+    df = pd.DataFrame({"sym": ["AAPL"],
+                       "t": [pd.Timedelta(hours=9, minutes=30, seconds=5)]})
+    pm = build_plot_model(Widget(type="table", dataset="by_market",
+                                 spec={"columns": ["sym", "t"]}), _ok(df))
+    assert pm.rows[0][1] == "09:30:05"
+    assert "0 days" not in pm.rows[0][1]
+
+
+def test_milliseconds_are_kept_when_present():
+    df = pd.DataFrame({"t": [pd.Timedelta(hours=9, minutes=30, milliseconds=250)]})
+    pm = build_plot_model(Widget(type="table", dataset="by_market",
+                                 spec={"columns": ["t"]}), _ok(df))
+    assert pm.rows[0][0] == "09:30:00.250"
+
+
+def test_a_null_time_still_shows_a_dash():
+    df = pd.DataFrame({"t": [pd.NaT]})
+    pm = build_plot_model(Widget(type="table", dataset="by_market",
+                                 spec={"columns": ["t"]}), _ok(df))
+    assert pm.rows[0][0] == "—"
+
+
+def test_a_kpi_over_times_is_unaffected():
+    df = pd.DataFrame({"n": [1, 2, 3]})
+    pm = build_plot_model(Widget(type="kpi", dataset="by_market",
+                                 spec={"column": "n", "agg": "sum"}), _ok(df))
+    assert pm.value == "6"

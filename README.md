@@ -327,6 +327,21 @@ Raw q must constrain `date` itself, using `{{date_from}}`, `{{date_to}}` or
 select from target where date within ({{date_from}};{{date_to}}), side=`sellshort
 ```
 
+For **one query that serves both modes**, wrap the parts that only apply to one
+of them in `{{#historical}}…{{/historical}}` or `{{#realtime}}…{{/realtime}}`.
+The block is kept or dropped depending on which server the period resolves to:
+
+```q
+select {{#historical}}date{{/historical}}{{#realtime}}date:.z.d{{/realtime}}, sym, size
+  from target
+  where {{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}
+    side=`sellshort
+```
+
+Without the guard a date placeholder would reach KDB verbatim in real-time mode,
+so a dataset that leaves one unguarded is refused with an explanation rather than
+sent.
+
 **Saving a historical raw dataset without a `date` reference is refused.** An
 unconstrained query against a partitioned HDB does not error — it reads years of
 data and hangs a refreshing page.

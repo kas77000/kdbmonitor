@@ -137,6 +137,12 @@ environments lossless in both directions.
   placeholders, substituted by extending the existing `_REF` mechanism in
   `core/chain.py`. `short_sell_report.py`'s `ORDER_FN` becomes historical with one
   edit to its where-clause.
+- **Mode-conditional blocks:** `{{#historical}}…{{/historical}}` and
+  `{{#realtime}}…{{/realtime}}` are kept or dropped by mode, so a single raw
+  dataset can serve a dashboard that switches between live and a date range —
+  the date predicate, the `date` column and the join key can all differ between
+  the two. A placeholder left outside such a block is refused at run time in
+  real-time mode, where nothing would fill it.
 
 The guided column picker reads the *resolved* connection's introspected schema, so
 `date` appears as a filterable column in historical mode and is absent in real-time

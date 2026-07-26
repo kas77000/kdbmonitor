@@ -114,3 +114,59 @@ def test_label_describes_the_range():
     assert ResolvedTime("realtime", None, None).label == "Real-time"
     assert ResolvedTime("historical", date(2026, 6, 1), date(2026, 6, 30)).label \
         == "Historical · 2026-06-01 → 2026-06-30"
+
+
+# --- mode-conditional blocks ------------------------------------------------
+
+def test_a_historical_block_is_kept_only_in_historical_mode():
+    from kdbmonitor.core.timectx import apply_mode_blocks
+    q = "select from t where {{#historical}}date within (a;b), {{/historical}}sym=`X"
+    assert apply_mode_blocks(q, "historical") == \
+        "select from t where date within (a;b), sym=`X"
+    assert apply_mode_blocks(q, "realtime") == "select from t where sym=`X"
+
+
+def test_a_realtime_block_is_the_mirror_image():
+    from kdbmonitor.core.timectx import apply_mode_blocks
+    q = "select {{#historical}}date{{/historical}}{{#realtime}}date:.z.d{{/realtime}}, x from t"
+    assert apply_mode_blocks(q, "historical") == "select date, x from t"
+    assert apply_mode_blocks(q, "realtime") == "select date:.z.d, x from t"
+
+
+def test_blocks_may_span_lines_and_repeat():
+    from kdbmonitor.core.timectx import apply_mode_blocks
+    q = ("a {{#historical}}one\ntwo{{/historical}} b "
+         "{{#historical}}three{{/historical}} c")
+    assert apply_mode_blocks(q, "historical") == "a one\ntwo b three c"
+    assert apply_mode_blocks(q, "realtime") == "a  b  c"
+
+
+def test_one_query_serves_both_modes():
+    q = ("select from target where "
+         "{{#historical}}date within ({{date_from}};{{date_to}}), {{/historical}}"
+         "side=`sellshort")
+    hist = ResolvedTime("historical", date(2026, 6, 1), date(2026, 6, 30))
+    assert substitute_dates(q, hist) == (
+        "select from target where date within (2026.06.01;2026.06.30), "
+        "side=`sellshort")
+    assert substitute_dates(q, ResolvedTime("realtime", None, None)) == \
+        "select from target where side=`sellshort"
+
+
+def test_a_guarded_query_leaves_no_placeholder_in_realtime():
+    from kdbmonitor.core.timectx import unresolved_date_refs
+    q = "select from t where {{#historical}}date within ({{date_from}};{{date_to}}){{/historical}}"
+    assert not unresolved_date_refs(substitute_dates(q, ResolvedTime("realtime", None, None)))
+
+
+def test_an_unguarded_placeholder_is_detectable():
+    from kdbmonitor.core.timectx import unresolved_date_refs
+    q = "select from t where date within ({{date_from}};{{date_to}})"
+    left = substitute_dates(q, ResolvedTime("realtime", None, None))
+    assert unresolved_date_refs(left)
+
+
+def test_a_guarded_query_still_counts_as_constraining_date():
+    q = ("select from t where "
+         "{{#historical}}date within ({{date_from}};{{date_to}}){{/historical}}")
+    assert has_date_constraint(q)
