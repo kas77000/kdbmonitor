@@ -61,13 +61,14 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 
 ---
 
-## The three views (plus a Result page)
+## The four views (plus a Result page)
 
 | View | Purpose |
 |------|---------|
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
 | **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export. Preview an alert's result before saving. |
-| **Admin** | Register KDB connections (host + port), introspect their tables/columns, load the demo servers, and set SMTP for email alerts. |
+| **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries, refreshing on their own interval, exportable as a PDF. |
+| **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, and set SMTP for email alerts. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
 ---
@@ -242,6 +243,120 @@ Requirements and gotchas:
 
 ---
 
+## Dashboards
+
+Saved pages built from KDB queries: KPIs, tables and charts that refresh while
+the page is open and export to a PDF of exactly what is on screen. Where an alert
+answers "tell me when this happens", a dashboard answers "show me the state of
+this, continuously".
+
+**Try it:** Admin → *Load demo servers*, then Dashboards → *Import* and pick
+`docs/examples/short_sell_dashboard.json`.
+
+### Datasets — query plus shaping
+
+A dataset produces one table of rows. Guided mode builds the where clause from
+the table's real columns; raw mode takes q directly. Either way an ordered list
+of **transforms** shapes the result, no Python required:
+
+| Transform | What it does |
+|---|---|
+| `derive` | a new column — an arithmetic expression (`100 * executed / size`) or a suffix map (`5.HK` → Hong Kong) |
+| `filter` | drop rows, including on a derived column |
+| `groupby` | keys + aggregations (count, nunique, sum, mean, min, max) |
+| `sort` / `limit` / `rename` | the usual finishing touches |
+
+Datasets run in order and can feed each other with `{{name.column}}`, the same
+substitution the alert builder uses for chained steps.
+
+### Environments — real-time and historical
+
+Real-time and historical KDB servers live on different ports and expose the same
+tables, differing only in that historical tables carry a `date` column. In Admin,
+give a pair of connections the same **environment** name:
+
+| Name | Environment | Kind |
+|---|---|---|
+| `order-rdb` | `orders` | real-time |
+| `order-hdb` | `orders` | historical |
+
+A dataset targets the *environment*, never a server. The dashboard's **period**
+control — Real-time, Today, Last 7 days, Last 30 days, Month to date, Last month,
+Year to date, or a custom range — decides which one is queried.
+
+The date constraint is **never stored in the dataset's filters**; it is injected
+at run time. So flipping a dashboard between real-time and a date range needs no
+edit to the dataset, and flipping back is lossless. Guided datasets get
+`date within (2026.06.01;2026.06.30)` as the **first** where-clause, which is what
+lets kdb+ prune partitions instead of scanning.
+
+Raw q must constrain `date` itself, using `{{date_from}}`, `{{date_to}}` or
+`{{date_list}}`:
+
+```q
+select from target where date within ({{date_from}};{{date_to}}), side=`sellshort
+```
+
+**Saving a historical raw dataset without a `date` reference is refused.** An
+unconstrained query against a partitioned HDB does not error — it reads years of
+data and hangs a refreshing page.
+
+A dashboard stores the range as a *spec*, not as dates, so a saved "last 30 days"
+dashboard means the last 30 days whenever you open it. Individual datasets can
+override the dashboard period (`inherit` / `realtime` / their own range), which is
+how you put a 30-day trend next to today's live fills on one page.
+
+### Layout and widgets
+
+A dashboard is rows of 1–4 widgets, each row with a printed height in inches.
+
+| Widget | Notes |
+|---|---|
+| `kpi` | one aggregate, formatted, optionally turning red past a threshold |
+| `table` | column picker, per-column formats, conditional highlighting |
+| `bar` `line` `scatter` | x/y, optional split-by series, sorting, trend line |
+| `hist` `box` `heatmap` `pie` | distributions, spreads, grids, composition |
+| `text` | markdown with `{{dataset.agg.column}}` placeholders that update with the data |
+
+The editor has three sections — **Data**, **Layout** and **Preview** — and
+validates on save: unknown datasets or environments, duplicate dataset names,
+forward references, missing tables, over-full rows and missing date constraints
+are all reported before anything is written.
+
+### Refresh
+
+Each dashboard has its own interval (off, 5s … 15m) and runs inside a Streamlit
+fragment while its page is open. Navigate away or switch tabs and it stops — a
+dashboard you are not looking at costs nothing. Nothing runs in the background,
+and the alert engine is untouched.
+
+The tab strip uses pills rather than `st.tabs` deliberately: `st.tabs` executes
+every tab's body on each rerun, which under a refresh timer would fire every
+dashboard's queries at KDB continuously. The open dashboard is in the URL
+(`?dash=<id>`), so it is bookmarkable and survives a browser refresh.
+
+### PDF
+
+*Generate PDF* renders the frames **already on screen** — it never re-queries, so
+the downloaded page shows the numbers you were looking at, not a fresh fetch taken
+a moment later. *Preview page* shows the real printed page inline first.
+
+On screen the charts are interactive Plotly (hover a line chart to read every
+series at that x); in the PDF the same resolved plot model is drawn by
+matplotlib/seaborn onto A4, with a shared palette so a series keeps its colour in
+both. Pages paginate automatically, and a dataset that failed prints a visible
+error panel rather than being silently dropped — a missing chart in a printed
+report reads as "nothing to report".
+
+### Sharing
+
+**Export all** downloads every dashboard as JSON; **Import** loads them back,
+suffixing any name that already exists. Dashboards reference environments by
+name, so a bundle lands cleanly on any machine whose Admin has the same
+environment names.
+
+---
+
 ## Sharing alerts and connections
 
 **Builder → Import / export (alerts & connections)** moves a whole setup between machines or teammates.
@@ -287,8 +402,19 @@ kdbmonitor/
     portability.py         # export / import bundles
     exporting.py           # Excel / CSV / copy helpers
     reporting.py           # day/period report model + Excel rendering
+    dashboard_models.py    # dashboards: Dataset, Transform, Row, Widget + JSON
+    timectx.py             # period spec -> dates, q date clause, {{date_*}} refs
+    transform.py           # dataset transforms (derive/groupby/sort/...)
+    dataset.py             # run a dataset: env+period -> connection -> rows
+    theme.py               # palette shared by both renderers
+    plotmodel.py           # widget + rows -> resolved, backend-agnostic plot
+    render_plotly.py       # PlotModel -> interactive figure (screen)
+    render_mpl.py          # PlotModel -> matplotlib axes (print)
+    dashpdf.py             # rows -> A4 pages -> PDF bytes
   ui/                      # thin Streamlit views
     admin.py  builder.py  monitor.py  result.py  reports.py  common.py
+    dashboards.py          # gallery, tab strip, live view, PDF export
+    dashboard_editor.py    # dataset + layout editors, save-time validation
     engine.py              # the monitoring loop (runs in the app shell, every tab)
 ```
 
