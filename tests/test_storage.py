@@ -379,3 +379,40 @@ def test_env_falls_back_to_connection_name(tmp_path):
     s.init_db()
     s.add_connection(Connection(id=None, name="standalone", host="h", port=5010))
     assert "standalone" in s.list_environments()
+
+
+# --- dashboards -------------------------------------------------------------
+
+def _dash(name="Short sell"):
+    from kdbmonitor.core.dashboard_models import Dashboard, Dataset
+    return Dashboard(id=None, name=name,
+                     datasets=[Dataset(name="orders", env="orders",
+                                       table="target")])
+
+
+def test_dashboard_crud(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+
+    did = s.add_dashboard(_dash())
+    got = s.get_dashboard(did)
+    assert got.id == did
+    assert got.name == "Short sell"
+    assert got.datasets[0].table == "target"
+
+    got.name = "Renamed"
+    s.update_dashboard(got)
+    assert s.get_dashboard(did).name == "Renamed"
+    assert [d.name for d in s.list_dashboards()] == ["Renamed"]
+
+    s.delete_dashboard(did)
+    assert s.list_dashboards() == []
+    assert s.get_dashboard(did) is None
+
+
+def test_dashboards_are_listed_by_name(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_dashboard(_dash("Zulu"))
+    s.add_dashboard(_dash("Alpha"))
+    assert [d.name for d in s.list_dashboards()] == ["Alpha", "Zulu"]

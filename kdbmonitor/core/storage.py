@@ -8,6 +8,9 @@ from datetime import date, timedelta
 from typing import Optional
 
 from kdbmonitor.core.models import Connection, Alert, alert_to_json, alert_from_json
+from kdbmonitor.core.dashboard_models import (
+    Dashboard, dashboard_from_json, dashboard_to_json,
+)
 
 RESULT_RETENTION_DAYS = 20   # default; overridable via the 'result_retention_days' setting
 RESULT_MAX_ROWS = 500        # default row cap per snapshot; overridable via 'result_max_rows'
@@ -79,6 +82,11 @@ class Storage:
             CREATE TABLE IF NOT EXISTS alert_views (
                 alert_id INTEGER PRIMARY KEY,   -- last trigger the user has "seen"
                 seen_trigger_ts TEXT            -- ts of that trigger (ISO, UTC)
+            );
+            CREATE TABLE IF NOT EXISTS dashboards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                dashboard_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -164,6 +172,41 @@ class Storage:
                                    {"realtime": None, "historical": None})
             slot[c.kind] = c
         return envs
+
+    # --- dashboards ---
+    def add_dashboard(self, d: Dashboard) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO dashboards(name, dashboard_json) VALUES (?,?)",
+            (d.name, dashboard_to_json(d)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _row_to_dashboard(self, r: sqlite3.Row) -> Dashboard:
+        d = dashboard_from_json(r["dashboard_json"])
+        d.id = r["id"]                      # the row id is authoritative
+        return d
+
+    def get_dashboard(self, dashboard_id: int) -> Optional[Dashboard]:
+        r = self.conn.execute(
+            "SELECT * FROM dashboards WHERE id=?", (dashboard_id,)).fetchone()
+        return self._row_to_dashboard(r) if r else None
+
+    def list_dashboards(self) -> list[Dashboard]:
+        rows = self.conn.execute(
+            "SELECT * FROM dashboards ORDER BY name COLLATE NOCASE").fetchall()
+        return [self._row_to_dashboard(r) for r in rows]
+
+    def update_dashboard(self, d: Dashboard) -> None:
+        self.conn.execute(
+            "UPDATE dashboards SET name=?, dashboard_json=? WHERE id=?",
+            (d.name, dashboard_to_json(d), d.id),
+        )
+        self.conn.commit()
+
+    def delete_dashboard(self, dashboard_id: int) -> None:
+        self.conn.execute("DELETE FROM dashboards WHERE id=?", (dashboard_id,))
+        self.conn.commit()
 
     # --- alerts ---
     def alert_name_exists(self, name: str, exclude_id: Optional[int] = None) -> bool:
