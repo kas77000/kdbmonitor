@@ -1,7 +1,8 @@
 # KdbMonitor Dashboards — Design
 
 **Date:** 2026-07-26
-**Status:** approved (pending spec review)
+**Status:** built — this document was revised after implementation to match what
+shipped. Changes made during the build, on user feedback, are listed in §15.
 
 ## 1. Goal
 
@@ -14,9 +15,10 @@ script that queries the order RDB, shapes the result in pandas, and draws an A4
 one-pager. That script should be reproducible entirely inside the app, without
 writing Python, and kept live rather than run by hand.
 
-Dashboards must work against both environments: the **real-time** servers and the
-**historical** servers, where the tables are identical except that historical
-tables carry a `date` column.
+Dashboards must work across the three kinds of server the desk runs: the
+**real-time** servers, the **historical** servers (identical tables plus a `date`
+column), and the **market-data** servers holding reference data, which no date
+range applies to.
 
 ### Non-goals
 
@@ -40,29 +42,47 @@ Dashboard
 A **Dataset** produces one DataFrame. A **Widget** renders one dataset. A **Row**
 places 1–4 widgets side by side. Widgets never query; datasets never draw.
 
-## 3. Environments (real-time vs historical)
+## 3. Environments (real-time, historical, market data)
 
-### 3.1 Connection pairing
+### 3.1 Connection kinds and pairing
 
-Real-time and historical live on different hosts/ports and expose the same table
-names. `Connection` gains two fields:
+`Connection` gains two fields:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `kind` | `"realtime" \| "historical"` | `"realtime"` | which environment this server is |
-| `env` | `str` | `""` (falls back to `name`) | the logical group both servers share |
+| `kind` | `"realtime" \| "historical" \| "marketdata"` | `"realtime"` | what this server holds |
+| `env` | `str` | `""` (falls back to `name`) | the logical group linking servers |
 
-Connections sharing an `env` form a pair:
+The three kinds:
+
+| Kind | Holds | Date-partitioned |
+| --- | --- | --- |
+| `realtime` | today's data | no `date` column |
+| `historical` | the partitioned HDB — same tables plus `date` | yes |
+| `marketdata` | reference data (instruments, sectors, lot sizes) | no |
+
+Real-time and historical live on different hosts/ports and expose the same table
+names. Putting them in the same `env` **links them** — they are two views of one
+dataset, and the dashboard's period decides which is queried:
 
 | Name | env | kind |
 | --- | --- | --- |
 | `order-rdb` | `orders` | realtime |
-| `order-hdb` | `orders` | historical |
-| `kdp-rdb` | `marketdata` | realtime |
-| `kdp-hdb` | `marketdata` | historical |
+| `order-hdb` | `orders` | historical ← linked to `order-rdb` |
+| `refdata` | `marketdata` | marketdata |
 
-Admin lists connections grouped by `env` and warns when an env has only one side,
-so a dataset can never offer "historical" against a server that has no HDB.
+**Market-data environments stand alone.** Mixing a market-data server into a
+real-time/historical env would make "which server does this dataset hit"
+ambiguous, so Admin's environment picker refuses the combination and the
+Environments panel flags any env that has it anyway (possible only via import or
+a hand-edited DB).
+
+Admin renders the environment options *from the current state*: a kind that is
+already filled for an env is not offered again, and the form states what a
+connection will be linked to before you add it. Every registered server also has
+an inline **Edit** form (name, host, port, kind, env), so relinking never
+requires deleting and re-adding. Changing a server's address clears its cached
+schema, because the tables on the new host may differ.
 
 Alerts are unaffected: a `Step` still names a single connection.
 
@@ -98,6 +118,11 @@ Each dataset carries `time_mode`:
 
 This is what allows "last 30 days by market" and "today's live fills" on one page.
 
+A dataset on a **market-data** environment ignores all of this: reference data is
+not partitioned by date, so it always resolves to the market-data server and runs
+with no date clause whatever the period says. The editor disables that dataset's
+Period control and says why.
+
 ### 3.4 Date injection
 
 The date constraint is **never stored in the dataset's filters**. It is injected
@@ -123,6 +148,10 @@ mode. No special-casing.
 automatically; raw mode is validated at save time and refuses to run without a
 date reference. An unconstrained `select from target` against a partitioned HDB
 does not error — it reads years of data and hangs the app on a refresh timer.
+
+The guard applies to the server *actually queried*, resolved before the query is
+built: a market-data dataset is never historical, so it is never asked for a date
+constraint it could not satisfy.
 
 ## 4. Datasets
 
@@ -245,7 +274,7 @@ class Row:
 | Type | `spec` fields |
 | --- | --- |
 | `kpi` | `column`, `agg` (count/nunique/sum/mean/min/max), `fmt`, `suffix`, `thresholds` (value → colour) |
-| `table` | `columns`, per-column `fmt`, `sort`, `max_rows`, `highlight` rules (e.g. rejections > 0 → red) |
+| `table` | `columns`, per-column `labels` (header text) and `formats`, `highlight` rules (e.g. rejections > 0 → red) |
 | `bar` | `x`, `y`, `orientation`, `hue`, `sort`, `value_labels` |
 | `line` | `x`, `y` (one or many), `hue`, `markers` |
 | `scatter` | `x`, `y`, `hue`, `size`, `regression` |
@@ -257,6 +286,18 @@ class Row:
 
 Adding a widget type means one `plotmodel` resolver, one `render_mpl` function,
 one `render_plotly` function, and one spec form. Nothing else changes.
+
+`core/plotmodel.py` owns two maps the editor imports rather than duplicating:
+`REQUIRED_SPEC` (fields a widget cannot render without) and `COLUMN_SPEC_FIELDS`
+(the subset that actually names a column). They are distinct — a `text` widget
+requires `markdown`, but that is prose, not a column — and keeping them in core
+is what stops the save-time check and the runtime check disagreeing.
+
+Number formats are chosen from a catalogue whose labels *are* their sample output
+(`1,235`, `1,234.6`, `61.4%`), with a `Custom…` escape hatch that previews what a
+spec produces and is rejected by validation if unusable. Table headers are
+renameable per column; labels are presentation only, so formats and highlight
+rules keep keying off the real column names.
 
 ## 7. UI
 
@@ -295,18 +336,44 @@ queries at KDB continuously. Pills keep exactly one dashboard live.
 The active dashboard is written to the URL as `?dash=<id>`, so a dashboard is
 bookmarkable and survives a browser refresh.
 
+That URL parameter is also why the view needs its own **← All dashboards**
+control: Streamlit's sidebar page link preserves query params, so clicking
+"Dashboards" in the nav while a dashboard is open lands on that same dashboard
+again. The nav alone cannot get you out.
+
 ### 7.3 Edit
 
-Two sub-sections:
+Three sub-sections:
 
 - **Data** — the dataset list. Per dataset: name, env, time mode, guided/raw
-  toggle, table, filters, transform steps, plus a live preview of the resulting
-  rows and the generated q.
-- **Layout** — the row list. Each row is an expander with `↑ ↓ ✕` and
-  `+ widget`; each widget is a card with type, dataset, column bindings and
-  title. A live render of the real page sits alongside.
+  toggle, table, filters, transform steps, plus a preview of the resulting rows
+  and the generated q.
+- **Layout** — the row list. Each row has `↑ ↓ ✕`, a printed height and
+  `+ widget`; each widget is a card with type, dataset, title, width and a
+  per-type spec form.
+- **Preview** — the real page, rendered exactly as the view renders it.
 
-Both are session-state-driven, following `ui/builder.py`.
+All session-state-driven, following `ui/builder.py`. The draft is written back
+only on Save.
+
+**Validation runs on every rerun, not only on Save**, with a standing panel
+listing each problem by location and Save disabled while any remain. It covers
+invalid configurations *and* inputs simply left unfilled: blank names, an empty
+raw query, filters with no value, incomplete transforms, empty rows, missing
+required widget fields, unusable number formats, and columns a dataset no longer
+produces.
+
+Widget spec forms live in their own key namespace (`{row}{widget}_spec_*`). The
+card's own controls use `{row}{widget}_*`, and without the split a widget's
+remove button (`_x`) collided with its X-axis picker (`_x`).
+
+### 7.4 Form width
+
+The app runs `layout="wide"` so tables, charts and status rows get the room they
+need, but Streamlit stretches inputs to their container — a host-name box
+spanning a 27" monitor is harder to use, not easier. Forms therefore sit in a
+bounded column (`ui/common.form_area`, one ratio app-wide) while data displays
+stay full width. No custom CSS, per the app's native-theming rule.
 
 ## 8. Refresh
 
@@ -340,8 +407,16 @@ CRUD mirrors the alert CRUD: `add_dashboard`, `get_dashboard`, `list_dashboards`
 `update_dashboard`, `delete_dashboard`, with the whole definition serialised as
 JSON exactly as `alert_json` is today.
 
-Export/import extends `core/portability.py` with a dashboards bundle, alongside
-the existing alerts and connections exports.
+Export/import extends `core/portability.py` with `export_dashboards_json` /
+`import_dashboards_json`, additive alongside the existing alerts and connections
+exports so no current caller changes. The gallery offers a per-dashboard
+**Export** and an **Export all**; import accepts several files at once.
+
+Imports never overwrite — a clashing name becomes `(imported)`, `(imported 2)`
+and so on, so re-importing yields a copy to compare against rather than replacing
+what you have. Uploads are tracked by `file_id` and imported exactly once:
+`st.file_uploader` returns the same file on every rerun, so importing whatever it
+holds and then rerunning duplicates the dashboard without bound.
 
 ## 10. Modules
 
@@ -423,3 +498,56 @@ Added to `requirements.txt`: `matplotlib`, `seaborn`, `plotly`.
 - Query timeouts in `PyKxClient`
 - Drag-and-drop grid layout
 - Cross-dashboard shared datasets
+
+---
+
+## 15. Changed during the build
+
+Recorded so the reasoning is not lost. Everything here came from using the app
+and is reflected in the sections above.
+
+**Rendering split into two backends.** The design first chose a single
+matplotlib renderer for both screen and print, accepting static charts. The user
+required interactive charts (hover a line to read every series at that x), which
+that choice could not give. Rather than run two independent renderers, the split
+moved to `PlotModel`: every numeric, ordering, colour and formatting decision
+resolves once, and Plotly and matplotlib are dumb backends over it. Drift is
+limited to visual styling, never to numbers.
+
+**A third connection kind.** `marketdata` was added for reference data. It is not
+partitioned by date, so those datasets always resolve to the market-data server
+and never receive a date clause, whatever the dashboard's period. Market-data
+environments stand alone (§3.1).
+
+**Linking made explicit.** Pairing originally meant typing the same `env` string
+on two connections. Admin now offers environments from the current state, states
+what a connection will be linked to before you add it, and lets you edit a
+registered connection in place.
+
+**Validation became continuous.** It ran only on Save; unfilled fields now
+surface while you build, and Save is disabled until they are fixed (§7.3).
+
+**Defects found by running the app, not by tests.** Each is now covered by a
+test, and several point at gaps in the original test strategy:
+
+- Widget titles collided with the row above, chart tick labels were clipped at
+  the page margin, and horizontal bars carried no readable values. Fixed by
+  giving the page assembler ownership of titles and label gutters.
+- Segoe UI has no `⚠` glyph, so PDF error cards printed a tofu box. Error text
+  is plain ASCII now.
+- A widget's remove button and its X-axis picker shared the key `{key}_x`,
+  crashing the Layout editor. Spec forms now have their own key namespace, and
+  `tests/test_editor_render.py` renders every widget type through `AppTest`.
+- A short table forced to its printed height was padded with blank filler rows,
+  reading as missing data.
+- `st.file_uploader` returns the same file every rerun; importing what it held
+  and then rerunning duplicated a dashboard without bound (17 copies from one
+  upload).
+- The column-existence check treated a `text` widget's markdown as a column name
+  and flagged a shipped example as invalid — the origin of the
+  `REQUIRED_SPEC` / `COLUMN_SPEC_FIELDS` split (§6).
+
+The lesson worth keeping: unit tests over pure helpers cannot catch duplicate
+widget keys, invalid Streamlit argument values, or layout collisions. Rendering
+the page — via `AppTest`, a PNG of the printed page, or a browser — is what
+found all of these.
