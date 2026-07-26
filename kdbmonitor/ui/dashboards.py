@@ -392,6 +392,10 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
 def _render_export(dashboard: Dashboard) -> None:
     payload = st.session_state.get(frames_key(dashboard.id))
     st.divider()
+    pages = page_count(dashboard)
+    st.caption(f":material/picture_as_pdf: This dashboard prints on "
+               f"**{pages}** A4 page(s) — the Layout editor shows which row "
+               f"lands on which page.")
     e = st.columns([1.6, 1.5, 1.5, 3], vertical_alignment="center")
 
     if e[0].button("Generate PDF", icon=":material/picture_as_pdf:", type="primary",

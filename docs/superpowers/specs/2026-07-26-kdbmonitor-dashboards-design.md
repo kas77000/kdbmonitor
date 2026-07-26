@@ -353,6 +353,11 @@ Three sub-sections:
   per-type spec form.
 - **Preview** — the real page, rendered exactly as the view renders it.
 
+The Layout section surfaces the PDF pagination while you build: a page badge per
+row, a page-break marker, free inches remaining per page and the total page
+count, all from `dashpdf.plan_rows` — derived from `paginate`, not
+reimplemented, so the editor cannot disagree with what prints.
+
 All session-state-driven, following `ui/builder.py`. The draft is written back
 only on Save.
 

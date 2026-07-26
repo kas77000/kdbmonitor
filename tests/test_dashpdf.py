@@ -4,7 +4,8 @@ import pandas as pd
 
 from kdbmonitor.core.dashboard_models import Dashboard, Row, Widget
 from kdbmonitor.core.dashpdf import (
-    CONTENT_H_FIRST, dashboard_to_pdf_bytes, paginate, pdf_filename,
+    CONTENT_H_FIRST, dashboard_to_pdf_bytes, page_limit, paginate,
+    pdf_filename, plan_rows,
 )
 from kdbmonitor.core.dataset import DatasetResult
 from kdbmonitor.core.timectx import ResolvedTime
@@ -120,3 +121,50 @@ def test_filename_is_slugged_and_stamped():
 def test_filename_strips_awkward_characters():
     assert pdf_filename(Dashboard(id=1, name="P&L / risk (EOD)"), AS_OF) == \
         "p_l_risk_eod_2026-07-26_0915.pdf"
+
+
+# --- page plan for the editor ----------------------------------------------
+
+def test_every_row_gets_a_placement():
+    rows = [Row(height_in=h) for h in (0.9, 2.4, 3.0, 3.0, 2.0)]
+    assert [p.index for p in plan_rows(rows)] == [0, 1, 2, 3, 4]
+
+
+def test_placements_agree_with_the_pdf_pagination():
+    """The editor must never disagree with what actually prints."""
+    rows = [Row(height_in=h) for h in (0.9, 2.4, 3.0, 3.0, 2.0, 4.0)]
+    pages = paginate(rows)
+    plan = plan_rows(rows)
+    assert max(p.page for p in plan) == len(pages)
+    for page_no, page in enumerate(pages, start=1):
+        on_page = [p for p in plan if p.page == page_no]
+        assert len(on_page) == len(page)
+        assert [p.y_top for p in on_page] == [y for _, y in page]
+
+
+def test_the_first_row_of_each_page_is_flagged():
+    rows = [Row(height_in=3.0) for _ in range(6)]
+    starts = [p.index for p in plan_rows(rows) if p.starts_page]
+    assert starts[0] == 0
+    assert len(starts) == len(paginate(rows))
+
+
+def test_free_space_shrinks_down_the_page():
+    rows = [Row(height_in=2.0), Row(height_in=2.0), Row(height_in=2.0)]
+    free = [p.free_after for p in plan_rows(rows)]
+    assert free == sorted(free, reverse=True)
+    assert all(f >= 0 for f in free)
+
+
+def test_free_space_is_never_negative_for_an_oversized_row():
+    assert plan_rows([Row(height_in=99.0)])[0].free_after == 0.0
+
+
+def test_page_one_holds_less_than_later_pages():
+    """The title band only appears on page 1."""
+    assert page_limit(1) < page_limit(2)
+    assert page_limit(2) == page_limit(3)
+
+
+def test_an_empty_dashboard_plans_nothing():
+    assert plan_rows([]) == []

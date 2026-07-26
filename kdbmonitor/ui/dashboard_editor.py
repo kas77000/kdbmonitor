@@ -15,6 +15,7 @@ import streamlit as st
 from kdbmonitor.core.dashboard_models import (
     Dashboard, Dataset, Row, Transform, Widget,
 )
+from kdbmonitor.core.dashpdf import plan_rows
 from kdbmonitor.core.dataset import is_marketdata_env, run_datasets
 from kdbmonitor.core.models import Filter
 from kdbmonitor.core.plotmodel import (
@@ -701,10 +702,26 @@ def _render_layout(store, draft: Dashboard) -> None:
     names = [ds.name for ds in draft.datasets]
     by_name = {ds.name: ds for ds in draft.datasets}
 
+    # Which page each row prints on, from the same pagination the PDF uses, so
+    # the layout can be arranged here rather than by generating and re-checking.
+    placements = {p.index: p for p in plan_rows(draft.rows)}
+    total_pages = max((p.page for p in placements.values()), default=1)
+    if draft.rows:
+        st.caption(f":material/picture_as_pdf: Prints on **{total_pages}** A4 "
+                   f"page(s). Row heights are printed inches — reorder or resize "
+                   f"rows to change where the page breaks fall.")
+
     for r_i, row in enumerate(list(draft.rows)):
+        placed = placements.get(r_i)
+        if placed and placed.starts_page and placed.page > 1:
+            st.markdown(f":gray[──────  page break  ·  page {placed.page} "
+                        f"starts here  ──────]")
+
         with st.container(border=True):
             head = st.columns([3, 1.6, 0.6, 0.6, 0.6], vertical_alignment="bottom")
-            head[0].markdown(f"**Row {r_i + 1}** · {len(row.widgets)} widget(s)")
+            page_badge = (f" :blue-badge[page {placed.page}]" if placed else "")
+            head[0].markdown(f"**Row {r_i + 1}**{page_badge} · "
+                             f"{len(row.widgets)} widget(s)")
             row.height_in = float(head[1].number_input(
                 "Height (in)", 0.4, 9.0, float(row.height_in), step=0.1,
                 key=f"r{r_i}_h", help="Printed height on the A4 page."))
@@ -756,6 +773,19 @@ def _render_layout(store, draft: Dashboard) -> None:
                          disabled=len(row.widgets) >= 4):
                 row.widgets.append(Widget(type="kpi", dataset=names[0], title=""))
                 st.rerun()
+
+        # Room left below this row, so you can see what will still fit before
+        # the next page break rather than discovering it in the PDF.
+        last_on_page = placed and (r_i + 1 not in placements
+                                   or placements[r_i + 1].page != placed.page)
+        if last_on_page:
+            free = placed.free_after
+            if free < 0.5:
+                st.caption(f":orange[Page {placed.page} is full — "
+                           f"{free:.1f} in left.]")
+            else:
+                st.caption(f":gray[{free:.1f} in still free on page "
+                           f"{placed.page}.]")
 
     if st.button("Add row", icon=":material/add:", type="primary"):
         draft.rows.append(Row(widgets=[], height_in=2.5))

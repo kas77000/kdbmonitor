@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from kdbmonitor.core import theme
@@ -51,6 +52,42 @@ def paginate(rows: list[Row]) -> list[list[tuple[Row, float]]]:
     if page:
         pages.append(page)
     return pages
+
+
+@dataclass(frozen=True)
+class RowPlacement:
+    """Where a row lands on the printed page."""
+    index: int          # position in dashboard.rows
+    page: int           # 1-based page number
+    y_top: float        # inches from the top of that page
+    starts_page: bool   # first row on its page
+    free_after: float   # inches still free on the page below this row
+
+
+def page_limit(page_no: int) -> float:
+    """Usable height on a page — page 1 gives up more to the title band."""
+    header = HEADER_H_FIRST if page_no == 1 else HEADER_H_CONT
+    return PAGE_H - MARGIN * 2 - header - FOOTER_H
+
+
+def plan_rows(rows: list[Row]) -> list[RowPlacement]:
+    """Which page each row prints on, so the editor can show it while you build.
+
+    Same pagination the PDF uses — derived from :func:`paginate` rather than
+    reimplemented, so the editor can never disagree with the output.
+    """
+    placements: list[RowPlacement] = []
+    index = 0
+    pages = paginate(rows)
+    for page_no, page in enumerate(pages, start=1):
+        bottom = PAGE_H - MARGIN - FOOTER_H
+        for position, (row, y_top) in enumerate(page):
+            placements.append(RowPlacement(
+                index=index, page=page_no, y_top=y_top,
+                starts_page=position == 0,
+                free_after=max(bottom - (y_top + row.height_in), 0.0)))
+            index += 1
+    return placements
 
 
 def _rect(x_in: float, y_top_in: float, w_in: float, h_in: float) -> list[float]:

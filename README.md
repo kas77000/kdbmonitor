@@ -348,6 +348,14 @@ A dashboard is rows of 1–4 widgets, each row with a printed height in inches.
 | `hist` `box` `heatmap` `pie` | distributions, spreads, grids, composition |
 | `text` | markdown with `{{dataset.agg.column}}` placeholders that update with the data |
 
+The **Layout** editor shows where the page breaks will fall before you generate
+anything: a `page N` badge on every row, a `page break` marker where a new page
+starts, how many inches are still free at the bottom of each page, and the total
+page count. Row heights are printed inches, so reordering or resizing rows moves
+the breaks — you can lay the report out from the app instead of exporting a PDF
+to find out. The figures come from the same pagination the PDF uses, so the two
+cannot disagree.
+
 The editor has three sections — **Data**, **Layout** and **Preview** — and
 validates on save: unknown datasets or environments, duplicate dataset names,
 forward references, missing tables, over-full rows and missing date constraints
