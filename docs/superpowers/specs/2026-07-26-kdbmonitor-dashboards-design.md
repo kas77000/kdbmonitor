@@ -253,9 +253,15 @@ inline — Previous/Next plus a slider — so a multi-page report can be checked
 before downloading. Pages are cached per `(page, as_of)`, so paging back and
 forth does not re-render but new data does.
 
-Only page 1 carries a title band; continuation pages have no header. A repeated
-"<name> (continued)" band duplicates the footer's page number and costs a third
-of an inch of every later page.
+The title band carries the dashboard name and `dashpdf.report_period` — the date
+range, or the timestamp for a real-time snapshot — and nothing else. The words
+"real-time"/"historical" and the dashboard description are omitted: an arrow
+reads as a range and a single timestamp reads as a snapshot, so the reader
+learns *when* without being told which server answered.
+
+Only page 1 carries the band; continuation pages have no header. A repeated
+"<name> (continued)" duplicates the footer's page number and costs a third of an
+inch of every later page.
 
 Filename: `<dashboard_slug>_<YYYY-MM-DD_HHMM>.pdf`, delivered by
 `st.download_button` — the same shape as the Excel download in `ui/reports.py`.

@@ -230,3 +230,44 @@ def test_dropping_the_header_gives_later_pages_more_room():
     from kdbmonitor.core.dashpdf import HEADER_H_CONT
     assert HEADER_H_CONT < 0.3
     assert page_limit(2) > page_limit(1)
+
+
+# --- report period line -----------------------------------------------------
+
+def test_a_date_range_prints_as_a_range():
+    from kdbmonitor.core.dashpdf import report_period
+    assert report_period(HIST, AS_OF) == "2026-06-01 → 2026-06-30"
+
+
+def test_a_single_day_range_prints_one_date():
+    from kdbmonitor.core.dashpdf import report_period
+    one_day = ResolvedTime("historical", date(2026, 6, 1), date(2026, 6, 1))
+    assert report_period(one_day, AS_OF) == "2026-06-01"
+
+
+def test_realtime_prints_the_moment_it_was_taken():
+    from kdbmonitor.core.dashpdf import report_period
+    assert report_period(RT, AS_OF) == "2026-07-26 09:15"
+
+
+def test_the_period_line_carries_no_words():
+    """Just the dates — no 'Real-time'/'Historical', no description."""
+    from kdbmonitor.core.dashpdf import report_period
+    for rt in (RT, HIST):
+        line = report_period(rt, AS_OF)
+        assert not any(w in line.lower() for w in
+                       ("real", "historical", "as of", "generated"))
+
+
+def test_the_header_shows_only_the_name_and_the_period():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header, report_period
+
+    dash = _dash([])                       # description "by market"
+    fig = plt.figure()
+    _header(fig, dash, HIST, AS_OF, first=True)
+    texts = [t.get_text() for t in fig.texts]
+    plt.close(fig)
+
+    assert texts == ["Short sell", report_period(HIST, AS_OF)]
+    assert dash.description not in texts   # description stays off the page

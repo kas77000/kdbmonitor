@@ -126,6 +126,20 @@ def _axes_rect(x: float, y_top: float, w_in: float, h_in: float,
             title_h)
 
 
+def report_period(rt: ResolvedTime, as_of: datetime) -> str:
+    """What the report covers: a date range, or the moment it was taken.
+
+    Just the dates. A single timestamp reads as a snapshot and an arrow reads as
+    a range, so the words "real-time" and "historical" add nothing to a printed
+    page — the reader wants to know *when*, not which server answered.
+    """
+    if rt.mode == "historical" and rt.start and rt.end:
+        if rt.start == rt.end:
+            return f"{rt.start:%Y-%m-%d}"
+        return f"{rt.start:%Y-%m-%d} → {rt.end:%Y-%m-%d}"
+    return f"{as_of:%Y-%m-%d %H:%M}"
+
+
 def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
             first: bool) -> None:
     """Title band — page 1 only.
@@ -141,13 +155,8 @@ def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
 
     fig.text(MARGIN / PAGE_W, 1 - 0.42 / PAGE_H, dashboard.name,
              fontsize=22, fontweight="bold", color=theme.INK, va="top")
-    subtitle = rt.label
-    if dashboard.description:
-        subtitle = f"{dashboard.description}  ·  {subtitle}"
-    if rt.mode == "realtime":
-        subtitle += f"  ·  as of {as_of:%Y-%m-%d %H:%M}"
-    fig.text(MARGIN / PAGE_W, 1 - 0.78 / PAGE_H, subtitle,
-             fontsize=11, color=theme.INK2, va="top")
+    fig.text(MARGIN / PAGE_W, 1 - 0.78 / PAGE_H,
+             report_period(rt, as_of), fontsize=11, color=theme.INK2, va="top")
 
     rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / PAGE_H
     fig.add_artist(plt.Line2D([MARGIN / PAGE_W, 1 - MARGIN / PAGE_W],

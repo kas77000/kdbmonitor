@@ -380,9 +380,10 @@ the downloaded page shows the numbers you were looking at, not a fresh fetch tak
 a moment later. *Preview pages* shows the real printed pages inline first, with
 Previous/Next and a slider to step through a multi-page report.
 
-Only page 1 carries a title band. Continuation pages start straight into the
-content — a repeated "<name> (continued)" header says nothing the footer's page
-number does not, and reclaims a third of an inch on every later page.
+The title band is the dashboard name and the period it covers, nothing else —
+`2026-06-01 → 2026-06-30` for a range, `2026-07-26 09:15` for a real-time
+snapshot. Only page 1 carries it; continuation pages start straight into the
+content, which reclaims a third of an inch on every later page.
 
 On screen the charts are interactive Plotly (hover a line chart to read every
 series at that x); in the PDF the same resolved plot model is drawn by
