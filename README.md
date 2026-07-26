@@ -299,8 +299,11 @@ the same data, and a dashboard switches between them by period.
 | `refdata` | `marketdata` | Market data |
 
 Admin's **Environments** panel shows each pair and confirms the link, or flags a
-half-configured environment. To link servers you already registered, use **Link
-an existing connection to another environment** — no need to delete and re-add.
+half-configured environment. Every registered server has an **Edit** button for
+its name, host, port, kind and environment — so linking two servers you already
+registered, or moving one to a different environment, never means deleting and
+re-adding it. Changing a server's address clears its cached schema, since the
+tables on the new host may differ; run **Introspect** afterwards.
 
 A dataset targets the *environment*, never a server. The dashboard's **period**
 control — Real-time, Today, Last 7 days, Last 30 days, Month to date, Last month,

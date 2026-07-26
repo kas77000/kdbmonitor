@@ -121,45 +121,59 @@ def _render_environments(store) -> None:
                            f"— dashboards on it cannot show today.]")
 
 
-def _render_relink(store, conns) -> None:
-    """Move an existing connection into another environment.
+def _render_edit(store, c: Connection) -> None:
+    """Edit a registered connection in place — name, address, kind, environment.
 
-    Without this, linking two servers you already registered would mean deleting
-    and re-adding one of them.
+    Relinking lives here too: changing the environment is how you pair a server
+    with its real-time or historical counterpart after the fact, without having
+    to delete and re-add it.
     """
-    if not conns:
-        return
-    with st.expander("Link an existing connection to another environment"):
-        by_name = {c.name: c for c in conns}
-        r = st.columns([2.2, 1.6, 2.2, 1.2], vertical_alignment="bottom")
-        chosen = r[0].selectbox("Connection", list(by_name), key="relink_conn")
-        conn = by_name[chosen]
+    key = f"ed{c.id}"
+    st.markdown(f"**Edit `{c.name}`**")
 
-        kind = r[1].selectbox("Kind", list(CONNECTION_KINDS),
-                              index=list(CONNECTION_KINDS).index(conn.kind),
-                              format_func=lambda k: KIND_LABELS[k],
-                              key="relink_kind")
+    a = st.columns([2, 2, 1], vertical_alignment="bottom")
+    name = a[0].text_input("Name", value=c.name, key=f"{key}_name")
+    host = a[1].text_input("Host", value=c.host, key=f"{key}_host")
+    port = int(a[2].number_input("Port", 1, 65535, c.port, key=f"{key}_port"))
 
-        options = _env_options(store, kind) + [NEW_ENV]
-        current = conn.env or conn.name
-        if current not in options:
-            options.insert(0, current)
-        target = r[2].selectbox("Environment", options,
-                                index=options.index(current), key="relink_env")
-        if target == NEW_ENV:
-            target = st.text_input("New environment name", key="relink_new").strip()
+    kinds = list(CONNECTION_KINDS)
+    kind = st.selectbox("Kind", kinds, index=kinds.index(c.kind),
+                        format_func=lambda k: KIND_LABELS[k], key=f"{key}_kind")
 
-        if target and target != NEW_ENV:
-            st.caption(_partner_hint(store, target, kind)
-                       if kind != "marketdata"
-                       else f"Market-data environment `{target}`.")
+    options = _env_options(store, kind)
+    current = c.env or c.name
+    if current not in options:            # its own env is always a valid choice
+        options.insert(0, current)
+    options.append(NEW_ENV)
+    picked = st.selectbox("Environment", options, index=options.index(current),
+                          key=f"{key}_env",
+                          help="Put a real-time and a historical server in the "
+                               "same environment to link them.")
+    env = picked
+    if picked == NEW_ENV:
+        env = st.text_input("New environment name", key=f"{key}_newenv").strip()
+    elif kind != "marketdata" and picked != current:
+        st.caption(_partner_hint(store, picked, kind))
 
-        if r[3].button("Link", icon=":material/link:", use_container_width=True,
-                       disabled=not target or target == NEW_ENV):
-            conn.kind = kind
-            conn.env = target
-            store.update_connection(conn)
-            st.toast(f"{conn.name} → {target}", icon=":material/check:")
+    moved = (host.strip(), port) != (c.host, c.port)
+    if moved and c.schema:
+        st.caption(":orange[Changing the address clears the cached schema — "
+                   "run Introspect afterwards.]")
+
+    if st.button("Save changes", icon=":material/save:", type="primary",
+                 key=f"{key}_save", disabled=not name.strip() or not env):
+        c.name, c.host, c.port, c.kind, c.env = (
+            name.strip(), host.strip(), port, kind, env)
+        if moved:
+            # The schema came from the old server; keeping it would let the
+            # builder offer tables that may not exist on the new one.
+            c.schema, c.last_introspected_at = {}, None
+        try:
+            store.update_connection(c)
+        except Exception as exc:  # noqa: BLE001 — e.g. the name is already taken
+            st.error(f"Could not save: {exc}", icon=":material/error:")
+        else:
+            st.toast(f"Saved '{c.name}'", icon=":material/check:")
             st.rerun()
 
 
@@ -228,15 +242,13 @@ def render(store, mgr: ConnectionManager) -> None:
             else:
                 _add_connection(store, name, host, port, kind, env)
 
-    _render_relink(store, conns)
-
     # ---- Registered servers ---------------------------------------------- #
     st.markdown("**Registered servers**")
     if not conns:
         st.caption("None yet. Load the demo servers above or add one.")
     for c in conns:
         with st.container(border=True):
-            row = st.columns([2, 2.4, 2, 1.2, 1], vertical_alignment="center")
+            row = st.columns([2, 1.9, 2, 1.2, 1, 0.9], vertical_alignment="center")
             is_demo = c.host == "demo"
             badge = " :blue-badge[demo]" if is_demo else ""
             _colour = {"historical": "violet", "marketdata": "orange"}.get(
@@ -260,7 +272,10 @@ def render(store, mgr: ConnectionManager) -> None:
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Introspect failed: {exc}", icon=":material/error:")
-            with row[4].popover("", icon=":material/delete:"):
+            with row[4].popover("Edit", icon=":material/edit:",
+                                use_container_width=True):
+                _render_edit(store, c)
+            with row[5].popover("", icon=":material/delete:"):
                 st.warning(f"Delete '{c.name}'?")
                 if st.button("Confirm", key=f"del_{c.id}", type="primary"):
                     store.delete_connection(c.id)
