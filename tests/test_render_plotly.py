@@ -84,3 +84,10 @@ def test_unsupported_kind_is_rejected_loudly():
 def test_chart_kinds_matches_the_renderer():
     assert CHART_KINDS == {"bar", "line", "scatter", "hist", "box",
                            "heatmap", "pie"}
+
+
+def test_pie_percentages_use_a_fixed_precision():
+    fig = figure(PlotModel(kind="pie",
+                           series=[Series("n", ["A", "B", "C"], [5000, 3000, 1200],
+                                          theme.BLUE)]))
+    assert fig.data[0].texttemplate == "%{percent:.0%}"

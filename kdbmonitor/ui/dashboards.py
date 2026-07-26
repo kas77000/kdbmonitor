@@ -56,6 +56,23 @@ def row_height_px(height_in: float) -> int:
     return int(round(height_in * DPI))
 
 
+ROW_PX = 35          # Streamlit's data-editor row height, header included
+
+
+def table_height(n_rows: int, allotted_px: int) -> "int | str":
+    """Height for st.dataframe: a pixel cap, or "content" to fit the rows.
+
+    Forcing the row's printed height on a short table pads it with blank filler
+    rows, which reads as missing data. Only constrain the height when the table
+    is actually taller than its slot and therefore needs to scroll.
+
+    Returns "content" rather than None — st.dataframe rejects None, accepting
+    only a positive int, "stretch" or "content".
+    """
+    natural = ROW_PX * (n_rows + 1) + 3
+    return allotted_px if natural > allotted_px else "content"
+
+
 # --- widget rendering ------------------------------------------------------
 
 def render_widget(pm, height_px: int, key: str) -> None:
@@ -75,7 +92,8 @@ def render_widget(pm, height_px: int, key: str) -> None:
         if pm.title:
             st.markdown(f"**{pm.title}**")
         st.dataframe({c: [r[i] for r in pm.rows] for i, c in enumerate(pm.columns)},
-                     use_container_width=True, height=height_px, hide_index=True)
+                     use_container_width=True, hide_index=True,
+                     height=table_height(len(pm.rows), height_px))
         return
     st.plotly_chart(figure(pm), use_container_width=True, key=key)
 

@@ -82,7 +82,10 @@ def figure(pm: PlotModel) -> go.Figure:
 
     elif pm.kind == "pie":
         s = pm.series[0]
+        # Fixed 0-decimal percents: plotly's default varies the precision per
+        # slice (32.6% next to 13%), which the printed page does not do.
         fig.add_pie(labels=s.x, values=s.y, hole=0.55 if pm.donut else 0.0,
+                    texttemplate="%{percent:.0%}",
                     marker=dict(colors=[theme.color_for(i)
                                         for i in range(len(s.x))]))
 

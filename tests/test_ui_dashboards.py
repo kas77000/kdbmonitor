@@ -196,3 +196,23 @@ def test_a_guided_dataset_without_a_table_is_reported(tmp_path):
 def test_widget_spec_forms_exist_for_every_renderable_type():
     from kdbmonitor.core.plotmodel import _RESOLVERS
     assert set(ed.WIDGET_TYPES) == set(_RESOLVERS) | {"text"}
+
+
+def test_a_short_table_is_not_padded_with_blank_rows():
+    # 3 rows need ~143px; a 1.9in slot is 182px, so let it fit its content
+    assert dashboards.table_height(3, dashboards.row_height_px(1.9)) == "content"
+
+
+def test_a_long_table_is_constrained_so_it_scrolls():
+    assert dashboards.table_height(50, dashboards.row_height_px(1.9)) == 182
+
+
+def test_an_empty_table_is_not_constrained():
+    assert dashboards.table_height(0, 500) == "content"
+
+
+def test_table_height_is_a_value_streamlit_accepts():
+    """st.dataframe rejects None; only a positive int, "stretch" or "content"."""
+    from streamlit.elements.lib.layout_utils import validate_height
+    for n in (0, 3, 50):
+        validate_height(dashboards.table_height(n, 182), allow_content=True)
