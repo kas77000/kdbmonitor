@@ -1,0 +1,223 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": null,
+  "connections": [],
+  "alerts": [],
+  "dashboards": [
+    {
+      "id": null,
+      "name": "Short sell",
+      "description": "By market",
+      "refresh_secs": 15,
+      "time_context": {
+        "mode": "realtime"
+      },
+      "datasets": [
+        {
+          "name": "by_market",
+          "env": "orders",
+          "time_mode": "inherit",
+          "time_context": null,
+          "mode": "guided",
+          "table": "target",
+          "filters": [
+            {
+              "column": "side",
+              "op": "=",
+              "value": "sellshort",
+              "value_type": "symbol",
+              "negated": false
+            }
+          ],
+          "raw_qsql": null,
+          "transforms": [
+            {
+              "kind": "derive",
+              "params": {
+                "column": "market",
+                "kind": "suffix_map",
+                "source": "sym",
+                "mapping": {
+                  ".HK": "Hong Kong",
+                  ".JP": "Japan",
+                  ".KS": "Korea",
+                  ".MK": "Malaysia",
+                  ".TB": "Thailand"
+                },
+                "default": "Unknown"
+              }
+            },
+            {
+              "kind": "groupby",
+              "params": {
+                "keys": [
+                  "market"
+                ],
+                "aggs": [
+                  {
+                    "column": "id_target",
+                    "func": "nunique",
+                    "as": "n_orders"
+                  },
+                  {
+                    "column": "size",
+                    "func": "sum",
+                    "as": "order_qty"
+                  },
+                  {
+                    "column": "executed",
+                    "func": "sum",
+                    "as": "executed_qty"
+                  },
+                  {
+                    "column": "nReject",
+                    "func": "sum",
+                    "as": "n_rejections"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "derive",
+              "params": {
+                "column": "completion_pct",
+                "kind": "arithmetic",
+                "expr": "100 * executed_qty / order_qty"
+              }
+            },
+            {
+              "kind": "sort",
+              "params": {
+                "columns": [
+                  "market"
+                ],
+                "ascending": true
+              }
+            }
+          ],
+          "max_rows": 5000
+        }
+      ],
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Short-sell orders",
+              "spec": {
+                "column": "n_orders",
+                "agg": "sum",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Overall completion",
+              "spec": {
+                "column": "completion_pct",
+                "agg": "mean",
+                "fmt": ".1f",
+                "suffix": "%"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_market",
+              "title": "Rejections",
+              "spec": {
+                "column": "n_rejections",
+                "agg": "sum",
+                "fmt": ",.0f",
+                "thresholds": [
+                  {
+                    "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "by_market",
+              "title": "By market",
+              "spec": {
+                "columns": [
+                  "market",
+                  "n_orders",
+                  "order_qty",
+                  "executed_qty",
+                  "completion_pct",
+                  "n_rejections"
+                ],
+                "labels": {
+                  "market": "Market",
+                  "n_orders": "Orders",
+                  "order_qty": "Order qty",
+                  "executed_qty": "Executed",
+                  "completion_pct": "Completion",
+                  "n_rejections": "Rejections"
+                },
+                "formats": {
+                  "completion_pct": ".1f",
+                  "order_qty": ",.0f",
+                  "executed_qty": ",.0f"
+                },
+                "highlight": [
+                  {
+                    "column": "n_rejections",
+                    "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 2.4
+        },
+        {
+          "widgets": [
+            {
+              "type": "bar",
+              "dataset": "by_market",
+              "title": "Completion by market",
+              "spec": {
+                "x": "market",
+                "y": "completion_pct",
+                "orientation": "h",
+                "sort": "asc"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "bar",
+              "dataset": "by_market",
+              "title": "Rejections by market",
+              "spec": {
+                "x": "market",
+                "y": "n_rejections",
+                "orientation": "h",
+                "sort": "asc"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 3.0
+        }
+      ]
+    }
+  ]
+}

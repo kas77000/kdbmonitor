@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -28,6 +28,8 @@ SCHEMA: dict[str, list[str]] = {
     "target": ["sym", "orderId", "qty", "side", "price", "algo"],
     "work_order": ["sym", "workOrderId", "filledQty", "leavesQty", "state"],
     "target_state": ["sym", "orderId", "state", "pct_complete"],
+    # Reference data: what an instrument *is*, not what it did today.
+    "instrument": ["sym", "name", "sector", "currency", "lotSize", "exchange"],
 }
 
 # Names that can go "limit locked" in the demo; kept in sync with _target so
@@ -100,9 +102,26 @@ def _target_state() -> pd.DataFrame:
     ])
 
 
+def _instrument() -> pd.DataFrame:
+    """Static reference data — deliberately time-invariant, unlike the others."""
+    return pd.DataFrame([
+        {"sym": "AAPL", "name": "Apple Inc", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "MSFT", "name": "Microsoft Corp", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "GOOG", "name": "Alphabet Inc", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "AMZN", "name": "Amazon.com Inc", "sector": "Consumer",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "TSLA", "name": "Tesla Inc", "sector": "Consumer",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+    ])
+
+
 _BUILDERS = {
     "QATT": _qatt, "target": _target,
     "work_order": _work_order, "target_state": _target_state,
+    "instrument": _instrument,
 }
 
 
@@ -148,13 +167,76 @@ class MockKdbClient:
         return df
 
 
+_HDB_DAYS = 30            # how much history the demo server pretends to hold
+
+
+def _with_dates(df: pd.DataFrame, days: int = _HDB_DAYS) -> pd.DataFrame:
+    """Repeat a real-time frame once per day for the last ``days`` days.
+
+    Quantities are scaled by the day index so a chart over a range is not flat.
+    """
+    today = datetime.now(timezone.utc).date()
+    frames = []
+    for i in range(days):
+        d = df.copy()
+        d.insert(0, "date", today - timedelta(days=days - 1 - i))
+        for col in ("qty", "filledQty", "leavesQty", "pct_complete"):
+            if col in d.columns:
+                d[col] = (d[col] * (0.5 + i / days)).round(2)
+        frames.append(d)
+    return pd.concat(frames, ignore_index=True)
+
+
+_DATE_WITHIN = re.compile(
+    r"date\s+within\s*\(\s*(\d{4}\.\d{2}\.\d{2})\s*;\s*(\d{4}\.\d{2}\.\d{2})\s*\)")
+
+
+class MockHdbClient(MockKdbClient):
+    """Historical twin of ``MockKdbClient``: the same tables plus a ``date``
+    column, with best-effort support for a ``date within (d1;d2)`` constraint."""
+
+    def query(self, qsql: str) -> pd.DataFrame:
+        q = qsql.strip()
+        if "tables[]" in q:
+            return pd.DataFrame({"t": list(SCHEMA.keys())})
+        if q.startswith("cols"):
+            m = re.search(r"`(\w+)", q)
+            cols = SCHEMA.get(m.group(1) if m else "", [])
+            return pd.DataFrame({"c": (["date"] + cols) if cols else []})
+
+        m = re.search(r"from\s+(\w+)", q)
+        if not m or m.group(1) not in _BUILDERS:
+            return pd.DataFrame()
+        df = _with_dates(_BUILDERS[m.group(1)]())
+
+        w = _DATE_WITHIN.search(q)
+        if w:
+            lo = datetime.strptime(w.group(1), "%Y.%m.%d").date()
+            hi = datetime.strptime(w.group(2), "%Y.%m.%d").date()
+            df = df[(df["date"] >= lo) & (df["date"] <= hi)].reset_index(drop=True)
+        return self._sym_filter(q, df)
+
+
 def demo_connection_specs() -> list[Connection]:
-    """Two pre-introspected demo connections (host 'demo' routes to the mock)."""
+    """Pre-introspected demo connections (host 'demo' routes to a mock).
+
+    ``orders_demo`` / ``orders_hdb_demo`` form one environment, so the
+    realtime/historical switch is demoable with no real KDB.
+    """
     ts = datetime.now(timezone.utc).isoformat()
+    order_tables = ("target", "work_order", "target_state")
     return [
         Connection(id=None, name="kdp_demo", host="demo", port=1,
-                   schema={"QATT": SCHEMA["QATT"]}, last_introspected_at=ts),
+                   schema={"QATT": SCHEMA["QATT"]}, last_introspected_at=ts,
+                   kind="realtime", env="quotes"),
+        Connection(id=None, name="refdata_demo", host="demo", port=4,
+                   schema={"instrument": SCHEMA["instrument"]},
+                   last_introspected_at=ts,
+                   kind="marketdata", env="marketdata"),
         Connection(id=None, name="orders_demo", host="demo", port=2,
-                   schema={k: SCHEMA[k] for k in ("target", "work_order", "target_state")},
-                   last_introspected_at=ts),
+                   schema={k: SCHEMA[k] for k in order_tables},
+                   last_introspected_at=ts, kind="realtime", env="orders"),
+        Connection(id=None, name="orders_hdb_demo", host="demo", port=3,
+                   schema={k: ["date"] + SCHEMA[k] for k in order_tables},
+                   last_introspected_at=ts, kind="historical", env="orders"),
     ]

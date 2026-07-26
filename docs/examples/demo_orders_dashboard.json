@@ -1,0 +1,178 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": null,
+  "connections": [],
+  "alerts": [],
+  "dashboards": [
+    {
+      "id": null,
+      "name": "Demo orders",
+      "description": "Built on the demo servers",
+      "refresh_secs": 15,
+      "time_context": {
+        "mode": "realtime"
+      },
+      "datasets": [
+        {
+          "name": "by_algo",
+          "env": "orders",
+          "time_mode": "inherit",
+          "time_context": null,
+          "mode": "guided",
+          "table": "target",
+          "filters": [],
+          "raw_qsql": null,
+          "transforms": [
+            {
+              "kind": "groupby",
+              "params": {
+                "keys": [
+                  "algo"
+                ],
+                "aggs": [
+                  {
+                    "column": "orderId",
+                    "func": "nunique",
+                    "as": "n_orders"
+                  },
+                  {
+                    "column": "qty",
+                    "func": "sum",
+                    "as": "order_qty"
+                  },
+                  {
+                    "column": "price",
+                    "func": "mean",
+                    "as": "avg_price"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "sort",
+              "params": {
+                "columns": [
+                  "order_qty"
+                ],
+                "ascending": false
+              }
+            }
+          ],
+          "max_rows": 5000
+        }
+      ],
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "by_algo",
+              "title": "Orders",
+              "spec": {
+                "column": "n_orders",
+                "agg": "sum",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_algo",
+              "title": "Total qty",
+              "spec": {
+                "column": "order_qty",
+                "agg": "sum",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "by_algo",
+              "title": "Algos in use",
+              "spec": {
+                "column": "algo",
+                "agg": "nunique",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "by_algo",
+              "title": "By algo",
+              "spec": {
+                "columns": [
+                  "algo",
+                  "n_orders",
+                  "order_qty",
+                  "avg_price"
+                ],
+                "formats": {
+                  "avg_price": ",.2f",
+                  "order_qty": ",.0f"
+                },
+                "labels": {
+                  "algo": "Algo",
+                  "n_orders": "Orders",
+                  "order_qty": "Order qty",
+                  "avg_price": "Avg price"
+                }
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 1.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "bar",
+              "dataset": "by_algo",
+              "title": "Quantity by algo",
+              "spec": {
+                "x": "algo",
+                "y": "order_qty",
+                "orientation": "h",
+                "sort": "asc"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "pie",
+              "dataset": "by_algo",
+              "title": "Share of quantity",
+              "spec": {
+                "by": "algo",
+                "value": "order_qty",
+                "donut": true
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 2.8
+        },
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "dataset": "by_algo",
+              "title": "Summary",
+              "spec": {
+                "markdown": "{{by_algo.sum.n_orders}} orders across {{by_algo.nunique.algo}} algos, {{by_algo.sum.order_qty}} shares in total."
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.8
+        }
+      ]
+    }
+  ]
+}

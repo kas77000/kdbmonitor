@@ -15,6 +15,7 @@ from kdbmonitor.core.portability import (
     conflicting_alert_names,
 )
 from kdbmonitor.ui.common import (
+    form_area,
     STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs, make_client_for,
     group_label, group_alerts, pluralize,
 )
@@ -636,60 +637,64 @@ def render(store, mgr) -> None:
     editing = st.session_state.get("b_edit_id") is not None
 
     st.divider()
-    hdr = st.columns([6, 1.7], vertical_alignment="center")
-    hdr[0].markdown(
-        f"### :material/{'edit_note' if editing else 'add_circle'}: "
-        f"{'Edit alert' if editing else 'Create a new alert'}")
-    if editing and hdr[1].button("Start new", icon=":material/add:",
-                                 use_container_width=True):
-        _clear_builder()
-        st.rerun()
-    st.caption("Name it and pick a group, build the query chain, set the trigger, "
-               "then choose how you're notified.")
-
-    # 1 · Basics — name, group, cadence
-    with st.container(border=True):
-        st.markdown("**:material/tune: Basics**")
-        top = st.columns([3, 2, 2], vertical_alignment="top")
-        name = top[0].text_input("Alert name", key="b_name",
-                                 placeholder="e.g. AAPL bid breakout")
-        group = _group_selector(top[1], store)
-        interval = int(top[2].number_input(
-            "Check interval (seconds)", 5, 3600, key="b_interval",
-            help="How often this alert runs. Presets: "
-                 + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
-        st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while "
-                   "monitoring is on.  ·  :material/folder: Group buckets this alert "
-                   "on the Monitor.")
-
-    # 2 · Query steps — the chain
-    with st.container(border=True):
-        st.markdown("**:material/account_tree: Query steps**")
-        st.caption("Each step queries a server; later steps can reference earlier "
-                   "outputs with `{{stepN.col}}`.")
-        nsteps = int(st.session_state["b_nsteps"])
-        steps = [_step_block(store, i, servers) for i in range(nsteps)]
-        sc = st.columns([1.4, 5])
-        if nsteps < 8 and sc[0].button("Add step", icon=":material/add:",
-                                       use_container_width=True):
-            st.session_state[f"b_nf_{nsteps}"] = 0
-            st.session_state["b_nsteps"] = nsteps + 1
+    # The form sits in a bounded column: stretched-out inputs are
+    # harder to fill in, not easier. The preview below stays full
+    # width, where the extra room actually helps read result rows.
+    with form_area():
+        hdr = st.columns([6, 1.7], vertical_alignment="center")
+        hdr[0].markdown(
+            f"### :material/{'edit_note' if editing else 'add_circle'}: "
+            f"{'Edit alert' if editing else 'Create a new alert'}")
+        if editing and hdr[1].button("Start new", icon=":material/add:",
+                                     use_container_width=True):
+            _clear_builder()
             st.rerun()
+        st.caption("Name it and pick a group, build the query chain, set the trigger, "
+                   "then choose how you're notified.")
 
-    # 3 · Trigger   4 · Notify & re-arm
-    trigger = _trigger_block()
-    channels, rearm = _notify_block()
+        # 1 · Basics — name, group, cadence
+        with st.container(border=True):
+            st.markdown("**:material/tune: Basics**")
+            top = st.columns([3, 2, 2], vertical_alignment="top")
+            name = top[0].text_input("Alert name", key="b_name",
+                                     placeholder="e.g. AAPL bid breakout")
+            group = _group_selector(top[1], store)
+            interval = int(top[2].number_input(
+                "Check interval (seconds)", 5, 3600, key="b_interval",
+                help="How often this alert runs. Presets: "
+                     + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
+            st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while "
+                       "monitoring is on.  ·  :material/folder: Group buckets this alert "
+                       "on the Monitor.")
 
-    # 5 · Result capture
-    with st.container(border=True):
-        st.markdown("**:material/table_view: Result capture**")
-        retention = st.selectbox(
-            "Keep result on trigger", ["latest", "snapshot"],
-            format_func=lambda m: {"latest": "Latest — refresh each triggered check",
-                                   "snapshot": "Snapshot — freeze at the trigger moment"}[m],
-            key="b_retention",
-            help="What the Monitor's Result view keeps for this alert. Data is only "
-                 "captured while the alert is triggered.")
+        # 2 · Query steps — the chain
+        with st.container(border=True):
+            st.markdown("**:material/account_tree: Query steps**")
+            st.caption("Each step queries a server; later steps can reference earlier "
+                       "outputs with `{{stepN.col}}`.")
+            nsteps = int(st.session_state["b_nsteps"])
+            steps = [_step_block(store, i, servers) for i in range(nsteps)]
+            sc = st.columns([1.4, 5])
+            if nsteps < 8 and sc[0].button("Add step", icon=":material/add:",
+                                           use_container_width=True):
+                st.session_state[f"b_nf_{nsteps}"] = 0
+                st.session_state["b_nsteps"] = nsteps + 1
+                st.rerun()
+
+        # 3 · Trigger   4 · Notify & re-arm
+        trigger = _trigger_block()
+        channels, rearm = _notify_block()
+
+        # 5 · Result capture
+        with st.container(border=True):
+            st.markdown("**:material/table_view: Result capture**")
+            retention = st.selectbox(
+                "Keep result on trigger", ["latest", "snapshot"],
+                format_func=lambda m: {"latest": "Latest — refresh each triggered check",
+                                       "snapshot": "Snapshot — freeze at the trigger moment"}[m],
+                key="b_retention",
+                help="What the Monitor's Result view keeps for this alert. Data is only "
+                     "captured while the alert is triggered.")
 
     _preview_panel(store, mgr, steps, trigger)
 

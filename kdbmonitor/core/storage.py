@@ -7,7 +7,12 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Optional
 
-from kdbmonitor.core.models import Connection, Alert, alert_to_json, alert_from_json
+from kdbmonitor.core.models import (
+    CONNECTION_KINDS, Connection, Alert, alert_to_json, alert_from_json,
+)
+from kdbmonitor.core.dashboard_models import (
+    Dashboard, dashboard_from_json, dashboard_to_json,
+)
 
 RESULT_RETENTION_DAYS = 20   # default; overridable via the 'result_retention_days' setting
 RESULT_MAX_ROWS = 500        # default row cap per snapshot; overridable via 'result_max_rows'
@@ -45,7 +50,9 @@ class Storage:
                 host TEXT NOT NULL,
                 port INTEGER NOT NULL,
                 schema_json TEXT NOT NULL DEFAULT '{}',
-                last_introspected_at TEXT
+                last_introspected_at TEXT,
+                kind TEXT NOT NULL DEFAULT 'realtime',
+                env TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +85,11 @@ class Storage:
                 alert_id INTEGER PRIMARY KEY,   -- last trigger the user has "seen"
                 seen_trigger_ts TEXT            -- ts of that trigger (ISO, UTC)
             );
+            CREATE TABLE IF NOT EXISTS dashboards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                dashboard_json TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -93,6 +105,14 @@ class Storage:
         if "result_hash" not in cols:
             self.conn.execute("ALTER TABLE alert_runs ADD COLUMN result_hash TEXT")
 
+        ccols = {r["name"] for r in self.conn.execute("PRAGMA table_info(connections)")}
+        if "kind" not in ccols:
+            self.conn.execute(
+                "ALTER TABLE connections ADD COLUMN kind TEXT NOT NULL DEFAULT 'realtime'")
+        if "env" not in ccols:
+            self.conn.execute(
+                "ALTER TABLE connections ADD COLUMN env TEXT NOT NULL DEFAULT ''")
+
     # --- connections ---
     def add_connection(self, c: Connection) -> int:
         r = self.conn.execute(
@@ -101,8 +121,10 @@ class Storage:
         if r is not None:
             raise ValueError(f"A connection named '{c.name}' already exists.")
         cur = self.conn.execute(
-            "INSERT INTO connections(name, host, port, schema_json, last_introspected_at) VALUES (?,?,?,?,?)",
-            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at),
+            "INSERT INTO connections(name, host, port, schema_json, last_introspected_at,"
+            " kind, env) VALUES (?,?,?,?,?,?,?)",
+            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
+             c.kind, c.env),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -112,6 +134,7 @@ class Storage:
             id=r["id"], name=r["name"], host=r["host"], port=r["port"],
             schema=json.loads(r["schema_json"]),
             last_introspected_at=r["last_introspected_at"],
+            kind=r["kind"], env=r["env"],
         )
 
     def list_connections(self) -> list[Connection]:
@@ -128,13 +151,66 @@ class Storage:
 
     def update_connection(self, c: Connection) -> None:
         self.conn.execute(
-            "UPDATE connections SET name=?, host=?, port=?, schema_json=?, last_introspected_at=? WHERE id=?",
-            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at, c.id),
+            "UPDATE connections SET name=?, host=?, port=?, schema_json=?,"
+            " last_introspected_at=?, kind=?, env=? WHERE id=?",
+            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
+             c.kind, c.env, c.id),
         )
         self.conn.commit()
 
     def delete_connection(self, cid: int) -> None:
         self.conn.execute("DELETE FROM connections WHERE id=?", (cid,))
+        self.conn.commit()
+
+    def list_environments(self) -> dict[str, dict[str, Optional[Connection]]]:
+        """Group connections by environment, one slot per kind.
+
+        ``{env: {"realtime": Conn|None, "historical": Conn|None,
+                 "marketdata": Conn|None}}``
+
+        A connection with a blank ``env`` forms its own single-slot environment
+        named after itself, so pre-existing connections keep working untouched.
+        """
+        envs: dict[str, dict[str, Optional[Connection]]] = {}
+        for c in self.list_connections():
+            slot = envs.setdefault(c.env or c.name,
+                                   {k: None for k in CONNECTION_KINDS})
+            slot[c.kind] = c
+        return envs
+
+    # --- dashboards ---
+    def add_dashboard(self, d: Dashboard) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO dashboards(name, dashboard_json) VALUES (?,?)",
+            (d.name, dashboard_to_json(d)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _row_to_dashboard(self, r: sqlite3.Row) -> Dashboard:
+        d = dashboard_from_json(r["dashboard_json"])
+        d.id = r["id"]                      # the row id is authoritative
+        return d
+
+    def get_dashboard(self, dashboard_id: int) -> Optional[Dashboard]:
+        r = self.conn.execute(
+            "SELECT * FROM dashboards WHERE id=?", (dashboard_id,)).fetchone()
+        return self._row_to_dashboard(r) if r else None
+
+    def list_dashboards(self) -> list[Dashboard]:
+        rows = self.conn.execute(
+            "SELECT * FROM dashboards ORDER BY name COLLATE NOCASE").fetchall()
+        return [self._row_to_dashboard(r) for r in rows]
+
+    def update_dashboard(self, d: Dashboard) -> None:
+        self.conn.execute(
+            "UPDATE dashboards SET name=?, dashboard_json=? WHERE id=?",
+            (d.name, dashboard_to_json(d), d.id),
+        )
+        self.conn.commit()
+
+    def delete_dashboard(self, dashboard_id: int) -> None:
+        self.conn.execute("DELETE FROM dashboards WHERE id=?", (dashboard_id,))
         self.conn.commit()
 
     # --- alerts ---
