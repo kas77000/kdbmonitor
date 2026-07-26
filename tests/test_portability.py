@@ -164,3 +164,68 @@ def test_store_bundle_roundtrip():
 
     assert [c.name for c in dst.list_connections()] == [c.name for c in src.list_connections()]
     assert [a.name for a in dst.list_alerts()] == [a.name for a in src.list_alerts()]
+
+
+# --- dashboards -------------------------------------------------------------
+
+def _dash():
+    from kdbmonitor.core.dashboard_models import Dashboard, Dataset, Row, Widget
+    return Dashboard(
+        id=9, name="Short sell", description="by market",
+        time_context={"mode": "historical",
+                      "range": {"kind": "preset", "name": "last_30d"}},
+        datasets=[Dataset(name="orders", env="orders", table="target")],
+        rows=[Row(height_in=0.9, widgets=[
+            Widget(type="kpi", dataset="orders", title="Orders",
+                   spec={"column": "size", "agg": "sum"})])])
+
+
+def test_dashboards_survive_an_export_import_roundtrip():
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    back = import_dashboards_json(export_dashboards_json([_dash()]))
+    assert len(back) == 1
+    assert back[0].name == "Short sell"
+    assert back[0].datasets[0].table == "target"
+    assert back[0].rows[0].widgets[0].spec["column"] == "size"
+
+
+def test_dashboard_export_drops_ids():
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    assert import_dashboards_json(export_dashboards_json([_dash()]))[0].id is None
+
+
+def test_dashboard_time_context_is_preserved():
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    back = import_dashboards_json(export_dashboards_json([_dash()]))
+    assert back[0].time_context["range"]["name"] == "last_30d"
+
+
+def test_importing_a_non_export_file_is_a_clear_error():
+    import pytest
+    from kdbmonitor.core.portability import import_dashboards_json
+    with pytest.raises(ValueError, match="Not a KdbMonitor export"):
+        import_dashboards_json('{"kind": "something-else"}')
+
+
+def test_importing_broken_dashboard_json_is_a_clear_error():
+    import pytest
+    from kdbmonitor.core.portability import import_dashboards_json
+    with pytest.raises(ValueError, match="Not valid JSON"):
+        import_dashboards_json("{oh no")
+
+
+def test_importing_a_bundle_without_dashboards_yields_none():
+    from kdbmonitor.core.portability import import_dashboards_json
+    assert import_dashboards_json(
+        '{"kind": "kdbmonitor-export", "version": 2, "alerts": []}') == []
+
+
+def test_an_alert_bundle_still_imports_unchanged():
+    from kdbmonitor.core.portability import import_bundle_json
+    conns, alerts = import_bundle_json(
+        '{"kind": "kdbmonitor-export", "version": 2, "alerts": [], '
+        '"connections": []}')
+    assert conns == [] and alerts == []

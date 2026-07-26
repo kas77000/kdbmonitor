@@ -110,3 +110,59 @@ def conflicting_alert_names(existing: Iterable[str], alerts: Iterable[Alert]) ->
             out.append(a.name)
             seen.add(a.name)
     return out
+
+
+# --- dashboards --------------------------------------------------------------
+# Additive, following export_connections_json: the existing import_bundle_json
+# signature is left alone so no current caller breaks.
+
+from kdbmonitor.core.dashboard_models import (  # noqa: E402
+    Dashboard, dashboard_from_dict, dashboard_to_dict,
+)
+
+
+def export_dashboards_json(dashboards: Iterable[Dashboard],
+                           exported_at: Optional[str] = None) -> str:
+    """A bundle carrying only dashboards.
+
+    Uses the same envelope as the alert bundle so one importer can recognise
+    every KdbMonitor file. IDs are dropped, so importing always creates fresh
+    rows. Dashboards reference *environments* by name, not connection ids, so a
+    bundle lands cleanly on any machine whose Admin has the same env names.
+    """
+    payload = {
+        "kind": EXPORT_KIND,
+        "version": EXPORT_VERSION,
+        "exported_at": exported_at,
+        "connections": [],
+        "alerts": [],
+        "dashboards": [{**dashboard_to_dict(d), "id": None} for d in dashboards],
+    }
+    return json.dumps(payload, indent=2)
+
+
+def import_dashboards_json(raw: str) -> list[Dashboard]:
+    """Parse the dashboards out of an export document, each with id=None."""
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"Not valid JSON: {exc}")
+
+    if not isinstance(payload, dict) or payload.get("kind") not in (EXPORT_KIND,
+                                                                    LEGACY_KIND):
+        raise ValueError("Not a KdbMonitor export file "
+                         f"(expected kind '{EXPORT_KIND}').")
+
+    raw_dashboards = payload.get("dashboards", [])
+    if not isinstance(raw_dashboards, list):
+        raise ValueError("Export file 'dashboards' must be a list.")
+
+    out: list[Dashboard] = []
+    for i, d in enumerate(raw_dashboards):
+        try:
+            dash = dashboard_from_dict(d)
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"Dashboard #{i + 1} is malformed: {exc}")
+        dash.id = None
+        out.append(dash)
+    return out

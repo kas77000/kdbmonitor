@@ -20,6 +20,38 @@ def _fmt_ts(ts: str | None) -> str:
         return ts
 
 
+def _render_environments(store) -> None:
+    """Show real-time/historical pairs, and flag any half-configured one.
+
+    A dashboard can only offer 'historical' for an environment that actually has
+    a historical server, so a missing side is worth surfacing here rather than as
+    a query error later.
+    """
+    st.markdown("**Environments**")
+    envs = store.list_environments()
+    if not envs:
+        st.caption("None yet — environments appear once you add connections.")
+        return
+
+    with st.container(border=True):
+        st.caption("A real-time and a historical server sharing an environment "
+                   "name form a pair. Dashboards pick the environment; the date "
+                   "range decides which server is queried.")
+        for env, pair in sorted(envs.items()):
+            e = st.columns([2, 2.5, 2.5], vertical_alignment="center")
+            e[0].markdown(f"**{env}**")
+            for i, kind in enumerate(("realtime", "historical"), start=1):
+                conn = pair[kind]
+                label = "Real-time" if kind == "realtime" else "Historical"
+                if conn is not None:
+                    e[i].markdown(f":green-badge[{label}] `{conn.name}`")
+                else:
+                    e[i].markdown(f":orange-badge[{label} missing]")
+            if pair["historical"] is None:
+                st.caption(f":orange[Environment '{env}' has no historical server "
+                           f"— dashboards on it cannot query date ranges.]")
+
+
 def render(store, mgr: ConnectionManager) -> None:
     st.subheader(":material/settings: Admin")
 
@@ -30,10 +62,11 @@ def render(store, mgr: ConnectionManager) -> None:
         d = st.columns([5, 1.6], vertical_alignment="center")
         d[0].markdown("**Demo KDB** — try the app with an in-memory mock, no real "
                       "connection")
-        d[0].caption("Adds `kdp_demo` (QATT) and `orders_demo` (target, work_order, "
-                     "target_state) with live synthetic data.")
+        d[0].caption("Adds `kdp_demo` (QATT), `orders_demo` (target, work_order, "
+                     "target_state) and `orders_hdb_demo` (the same tables with a "
+                     "date column) with live synthetic data.")
         existing = {c.name for c in conns}
-        already = existing.issuperset({"kdp_demo", "orders_demo"})
+        already = existing.issuperset({"kdp_demo", "orders_demo", "orders_hdb_demo"})
         if d[1].button("Load demo servers", icon=":material/science:",
                        disabled=already, type="primary" if not conns else "secondary"):
             added = 0
@@ -49,16 +82,23 @@ def render(store, mgr: ConnectionManager) -> None:
     # ---- Add connection --------------------------------------------------- #
     st.markdown("**Add a KDB connection**")
     with st.form("add_conn", clear_on_submit=True, border=True):
-        f = st.columns([2, 2, 1, 1.2], vertical_alignment="bottom")
-        name = f[0].text_input("Name", placeholder="e.g. kdp, orders")
+        f = st.columns([2, 2, 1, 1.6, 1.4, 1.2], vertical_alignment="bottom")
+        name = f[0].text_input("Name", placeholder="e.g. order-rdb")
         host = f[1].text_input("Host", value="localhost")
         port = f[2].number_input("Port", 1, 65535, 5010)
-        submitted = f[3].form_submit_button("Add", icon=":material/add:",
+        env = f[3].text_input("Environment", placeholder="e.g. orders",
+                              help="Pair a real-time and a historical server by "
+                                   "giving them the same environment name.")
+        kind = f[4].selectbox("Kind", ["realtime", "historical"],
+                              help="Historical servers carry a date column; "
+                                   "dashboards inject the date range for you.")
+        submitted = f[5].form_submit_button("Add", icon=":material/add:",
                                             use_container_width=True)
         if submitted and name:
             try:
                 store.add_connection(Connection(id=None, name=name.strip(),
-                                                host=host.strip(), port=int(port)))
+                                                host=host.strip(), port=int(port),
+                                                kind=kind, env=env.strip()))
             except ValueError as exc:
                 st.error(str(exc), icon=":material/error:")
             except Exception as exc:  # noqa: BLE001 — DB failure shouldn't crash the page
@@ -77,8 +117,11 @@ def render(store, mgr: ConnectionManager) -> None:
         with st.container(border=True):
             row = st.columns([2, 2.4, 2, 1.2, 1], vertical_alignment="center")
             is_demo = c.host == "demo"
-            row[0].markdown(f"**{c.name}**"
-                            + (" :blue-badge[demo]" if is_demo else ""))
+            badge = " :blue-badge[demo]" if is_demo else ""
+            badge += (" :violet-badge[historical]" if c.kind == "historical"
+                      else " :gray-badge[real-time]")
+            row[0].markdown(f"**{c.name}**{badge}<br>:gray[env: {c.env or c.name}]",
+                            unsafe_allow_html=True)
             row[1].markdown(f"`{c.host}:{c.port}`")
             if c.schema:
                 row[2].markdown(f":green-badge[:material/table: {len(c.schema)} tables] "
@@ -100,6 +143,8 @@ def render(store, mgr: ConnectionManager) -> None:
                 if st.button("Confirm", key=f"del_{c.id}", type="primary"):
                     store.delete_connection(c.id)
                     st.rerun()
+
+    _render_environments(store)
 
     # ---- SMTP ------------------------------------------------------------- #
     st.markdown("**Email (SMTP)**")
