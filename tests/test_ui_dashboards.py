@@ -360,3 +360,86 @@ def test_a_widget_with_an_unusable_format_is_reported(tmp_path):
     d = _complete(tmp_path)
     d.rows[0].widgets[0].spec["fmt"] = "not-a-format"
     assert any("format" in m.lower() for m in ed.validate(d, _store(tmp_path)))
+
+
+# --- export / import --------------------------------------------------------
+
+def test_export_filename_is_slugged():
+    assert dashboards.dashboard_filename(Dashboard(id=1, name="Short sell")) == \
+        "short_sell.json"
+    assert dashboards.dashboard_filename(Dashboard(id=1, name="P&L / risk")) == \
+        "p_l_risk.json"
+
+
+def test_export_filename_survives_a_nameless_dashboard():
+    assert dashboards.dashboard_filename(Dashboard(id=1, name="  ")) == \
+        "dashboard.json"
+
+
+def test_a_fresh_name_is_left_alone():
+    assert dashboards.unique_dashboard_name("Fills", {"Orders"}) == "Fills"
+
+
+def test_an_existing_name_is_suffixed_not_overwritten():
+    assert dashboards.unique_dashboard_name("Orders", {"Orders"}) == \
+        "Orders (imported)"
+
+
+def test_repeated_imports_keep_counting():
+    taken = {"Orders", "Orders (imported)"}
+    assert dashboards.unique_dashboard_name("Orders", taken) == "Orders (imported 2)"
+    taken.add("Orders (imported 2)")
+    assert dashboards.unique_dashboard_name("Orders", taken) == "Orders (imported 3)"
+
+
+def test_a_single_dashboard_export_roundtrips(tmp_path):
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    d = _complete(tmp_path)
+    back = import_dashboards_json(export_dashboards_json([d]))
+    assert len(back) == 1
+    assert back[0].name == d.name
+    assert back[0].id is None
+    assert back[0].rows[0].widgets[0].spec == d.rows[0].widgets[0].spec
+
+
+class _Upload:
+    """Stand-in for Streamlit's UploadedFile — it keeps the same file_id across
+    reruns, which is what made a single upload import repeatedly."""
+    def __init__(self, file_id, name="d.json"):
+        self.file_id = file_id
+        self.name = name
+
+
+def test_an_upload_is_pending_only_until_it_is_processed():
+    up = _Upload("abc")
+    processed = set()
+    assert dashboards.pending_uploads([up], processed) == [up]
+    processed.add("abc")
+    assert dashboards.pending_uploads([up], processed) == []
+
+
+def test_the_same_upload_across_reruns_imports_once():
+    """Regression: st.file_uploader returns the same file every rerun, so
+    importing whatever it holds duplicated the dashboard without bound."""
+    up = _Upload("abc")
+    processed, imports = set(), 0
+    for _ in range(20):                     # 20 reruns, as a refresh would cause
+        for u in dashboards.pending_uploads([up], processed):
+            processed.add(u.file_id)
+            imports += 1
+    assert imports == 1
+
+
+def test_distinct_files_each_import():
+    a, b, c = _Upload("a"), _Upload("b"), _Upload("c")
+    processed = set()
+    assert dashboards.pending_uploads([a, b], processed) == [a, b]
+
+    processed.update({"a", "b"})
+    assert dashboards.pending_uploads([a, b, c], processed) == [c]
+
+
+def test_no_uploads_is_not_an_error():
+    assert dashboards.pending_uploads(None, set()) == []
+    assert dashboards.pending_uploads([], {"a"}) == []

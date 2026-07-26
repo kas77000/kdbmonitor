@@ -359,10 +359,15 @@ report reads as "nothing to report".
 
 ### Sharing
 
-**Export all** downloads every dashboard as JSON; **Import** loads them back,
-suffixing any name that already exists. Dashboards reference environments by
-name, so a bundle lands cleanly on any machine whose Admin has the same
-environment names.
+Each card has its own **Export** button (one dashboard, named after it), and
+**Export all** downloads the lot as `kdbmonitor_dashboards.json`. **Import**
+accepts one or more `.json` files.
+
+Imports never overwrite: a name that already exists is suffixed
+`(imported)`, `(imported 2)` and so on, so re-importing gives you a copy to
+compare against rather than replacing what you have. Dashboards reference
+*environments* by name rather than servers, so a file lands cleanly on any
+machine whose Admin has the same environment names.
 
 ---
 

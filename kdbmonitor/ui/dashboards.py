@@ -7,6 +7,7 @@ dashboard's queries at KDB continuously. Pills keep exactly one dashboard live.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 
 import streamlit as st
@@ -54,6 +55,40 @@ def option_for_spec(spec: dict) -> str:
 
 def row_height_px(height_in: float) -> int:
     return int(round(height_in * DPI))
+
+
+def dashboard_filename(dashboard: Dashboard) -> str:
+    """Filename for a single-dashboard export."""
+    slug = re.sub(r"[^a-z0-9]+", "_", dashboard.name.lower()).strip("_")
+    return f"{slug or 'dashboard'}.json"
+
+
+def pending_uploads(uploads, processed_ids) -> list:
+    """Uploads not yet imported.
+
+    st.file_uploader keeps returning the same file on every rerun, so importing
+    whatever it holds — and then rerunning — duplicates the dashboard endlessly.
+    Each upload carries a stable ``file_id``; import once per id.
+    """
+    return [u for u in (uploads or [])
+            if getattr(u, "file_id", None) not in processed_ids]
+
+
+def unique_dashboard_name(name: str, taken) -> str:
+    """A name that does not collide with ``taken``.
+
+    Imports never overwrite: re-importing the same file gives you a second copy
+    to compare against, rather than silently replacing the one you have.
+    """
+    taken = set(taken)
+    if name not in taken:
+        return name
+    candidate = f"{name} (imported)"
+    i = 2
+    while candidate in taken:
+        candidate = f"{name} (imported {i})"
+        i += 1
+    return candidate
 
 
 ROW_PX = 35          # Streamlit's data-editor row height, header included
@@ -178,7 +213,8 @@ def _render_gallery(store) -> None:
                 icon=":material/dashboard:")
     for d in saved:
         with st.container(border=True):
-            c = st.columns([3, 2.4, 1, 1, 1.2, 0.8], vertical_alignment="center")
+            c = st.columns([2.8, 2.2, 1, 1, 1.2, 1.1, 0.8],
+                           vertical_alignment="center")
             c[0].markdown(f"**{d.name}**"
                           + (f"<br>:gray[{d.description}]" if d.description else ""),
                           unsafe_allow_html=True)
@@ -204,34 +240,70 @@ def _render_gallery(store) -> None:
                 store.add_dashboard(copy)
                 st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
                 st.rerun()
-            with c[5].popover("", icon=":material/delete:"):
+            c[5].download_button(
+                "Export", key=f"exp_{d.id}",
+                data=export_dashboards_json([d]),
+                file_name=dashboard_filename(d), mime="application/json",
+                icon=":material/download:", use_container_width=True,
+                help="Download this dashboard as JSON")
+            with c[6].popover("", icon=":material/delete:"):
                 st.warning(f"Delete '{d.name}'?")
                 if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
                     store.delete_dashboard(d.id)
                     st.rerun()
 
     st.divider()
-    io_cols = st.columns([1.6, 3], vertical_alignment="center")
-    io_cols[0].download_button(
-        "Export all", data=export_dashboards_json(saved),
-        file_name="kdbmonitor_dashboards.json", mime="application/json",
-        icon=":material/download:", use_container_width=True, disabled=not saved)
+    st.markdown("**Share dashboards**")
+    st.caption("Dashboards travel as JSON. They reference *environments* by "
+               "name, not servers, so a file lands cleanly on any machine whose "
+               "Admin has the same environment names.")
 
-    uploaded = io_cols[1].file_uploader("Import dashboards", type=["json"],
-                                        label_visibility="collapsed")
-    if uploaded is not None:
+    io_cols = st.columns([1.8, 4.2], vertical_alignment="top")
+    with io_cols[0]:
+        st.download_button(
+            f"Export all ({len(saved)})", data=export_dashboards_json(saved),
+            file_name="kdbmonitor_dashboards.json", mime="application/json",
+            icon=":material/download:", use_container_width=True,
+            disabled=not saved,
+            help="Every dashboard in one file. Use a card's Export button for "
+                 "just one.")
+
+    with io_cols[1]:
+        uploaded = st.file_uploader(
+            "Import dashboards from a .json file", type=["json"],
+            accept_multiple_files=True, key="dash_import",
+            help="A name that already exists is suffixed rather than "
+                 "overwritten, so an import never destroys your work.")
+
+    processed = st.session_state.setdefault("dash_imported_ids", set())
+    fresh = pending_uploads(uploaded, processed)
+    imported_any = False
+
+    for upload in fresh:
+        # Mark first: a file that fails to parse must not be retried on every
+        # rerun, or its error banner never goes away.
+        processed.add(getattr(upload, "file_id", None))
         try:
-            incoming = import_dashboards_json(uploaded.getvalue().decode("utf-8"))
-        except ValueError as exc:
-            st.error(str(exc), icon=":material/error:")
-        else:
-            existing = {d.name for d in saved}
-            for d in incoming:
-                if d.name in existing:
-                    d.name = f"{d.name} (imported)"
-                store.add_dashboard(d)
-            st.toast(f"Imported {len(incoming)} dashboard(s)", icon=":material/check:")
-            st.rerun()
+            incoming = import_dashboards_json(upload.getvalue().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            st.error(f"{upload.name}: {exc}", icon=":material/error:")
+            continue
+        if not incoming:
+            st.warning(f"{upload.name} contains no dashboards.",
+                       icon=":material/warning:")
+            continue
+
+        existing = {d.name for d in store.list_dashboards()}
+        for d in incoming:
+            d.name = unique_dashboard_name(d.name, existing)
+            existing.add(d.name)
+            store.add_dashboard(d)
+        st.toast(f"Imported {len(incoming)} dashboard(s) from {upload.name}",
+                 icon=":material/check:")
+        imported_any = True
+
+    if imported_any:
+        st.rerun()
 
 
 # --- view ------------------------------------------------------------------
