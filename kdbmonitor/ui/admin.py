@@ -24,6 +24,16 @@ def _fmt_ts(ts: str | None) -> str:
 
 NEW_ENV = "＋ New environment…"
 
+# Forms sit in a bounded column with a gutter beside them. Streamlit inputs
+# stretch to their container, and a host name box 1200px wide is neither easier
+# to read nor to fill in.
+FORM_RATIO = [2.15, 1]
+
+
+def _form_area():
+    """A column narrow enough that inputs stay a sensible size."""
+    return st.columns(FORM_RATIO, vertical_alignment="top")[0]
+
 
 def _add_connection(store, name: str, host: str, port, kind: str,
                     env: str) -> None:
@@ -208,8 +218,8 @@ def render(store, mgr: ConnectionManager) -> None:
     st.markdown("**Add a KDB connection**")
     # Outside a form: the environment options depend on the kind you pick, and a
     # form would not rerun until submit.
-    with st.container(border=True):
-        f = st.columns([2, 2, 1, 1.5], vertical_alignment="bottom")
+    with _form_area().container(border=True):
+        f = st.columns([2, 2, 1.1, 1.6], vertical_alignment="bottom")
         name = f[0].text_input("Name", placeholder="e.g. order-rdb", key="ac_name")
         host = f[1].text_input("Host", value="localhost", key="ac_host")
         port = f[2].number_input("Port", 1, 65535, 5010, key="ac_port")
@@ -285,7 +295,7 @@ def render(store, mgr: ConnectionManager) -> None:
 
     # ---- SMTP ------------------------------------------------------------- #
     st.markdown("**Email (SMTP)**")
-    with st.container(border=True):
+    with _form_area().container(border=True):
         st.caption("Used by alerts that select the email channel.")
         s = st.columns([2, 1, 2], vertical_alignment="bottom")
         host = s[0].text_input("SMTP host", value=store.get_setting("smtp_host", ""))
@@ -300,7 +310,7 @@ def render(store, mgr: ConnectionManager) -> None:
 
     # ---- Result snapshots (reports) -------------------------------------- #
     st.markdown("**Result snapshots (for reports)**")
-    with st.container(border=True):
+    with _form_area().container(border=True):
         st.caption("Triggered results are stored per alert per day so they appear in "
                    "reports. Older days are pruned; large results are capped.")
         r = st.columns([1.4, 1.4, 2], vertical_alignment="bottom")
