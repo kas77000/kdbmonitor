@@ -165,14 +165,13 @@ def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
 
 
 def _footer(fig, as_of: datetime, page_no: int, total: int) -> None:
+    """Page number only. The header already dates the report, and the tool that
+    produced it is not something the reader needs on every page."""
     import matplotlib.pyplot as plt
 
     y = (MARGIN + FOOTER_H - 0.14) / PAGE_H
     fig.add_artist(plt.Line2D([MARGIN / PAGE_W, 1 - MARGIN / PAGE_W], [y, y],
                               color=theme.GRID, lw=1, transform=fig.transFigure))
-    fig.text(MARGIN / PAGE_W, y - 0.2 / PAGE_H,
-             f"Generated {as_of:%Y-%m-%d %H:%M}  ·  KdbMonitor",
-             fontsize=8.5, color=theme.MUTED, va="top")
     fig.text(1 - MARGIN / PAGE_W, y - 0.2 / PAGE_H, f"{page_no} / {total}",
              fontsize=8.5, color=theme.MUTED, va="top", ha="right")
 

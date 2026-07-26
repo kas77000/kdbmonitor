@@ -26,10 +26,15 @@ def _bare(ax, keep_bottom: bool = True) -> None:
 
 def _value_formatter(values) -> Callable[[float], str]:
     """One format for the whole series — mixing '88.2' and '12' in a single
-    chart reads as sloppy, so the decimals are decided once."""
-    whole = all(float(v).is_integer() for v in values)
-    spec = ",.0f" if whole else ",.1f"
-    return lambda v: format(v, spec)
+    chart reads as sloppy, so the decimals are decided once.
+
+    A decimal on a four-figure number is noise, and it made a chart print
+    '47,833.3' beside a table saying '47,833'. Past 100, drop it.
+    """
+    numbers = [float(v) for v in values] or [0.0]
+    if all(v.is_integer() for v in numbers) or max(abs(v) for v in numbers) >= 100:
+        return lambda v: format(v, ",.0f")
+    return lambda v: format(v, ",.1f")
 
 
 def _kpi(ax, pm: PlotModel) -> None:

@@ -271,3 +271,29 @@ def test_the_header_shows_only_the_name_and_the_period():
 
     assert texts == ["Short sell", report_period(HIST, AS_OF)]
     assert dash.description not in texts   # description stays off the page
+
+
+def test_the_footer_is_only_a_page_number():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _footer
+
+    fig = plt.figure()
+    _footer(fig, AS_OF, page_no=2, total=3)
+    texts = [t.get_text() for t in fig.texts]
+    plt.close(fig)
+
+    assert texts == ["2 / 3"]
+
+
+def test_no_generated_stamp_survives_anywhere_on_the_page():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _footer, _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=True)
+    _footer(fig, AS_OF, page_no=1, total=1)
+    page_text = " ".join(t.get_text() for t in fig.texts)
+    plt.close(fig)
+
+    for gone in ("Generated", "KdbMonitor", "by market"):
+        assert gone not in page_text

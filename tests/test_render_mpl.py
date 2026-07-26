@@ -147,3 +147,16 @@ def test_value_labels_share_one_format_across_the_series(ax):
 def test_whole_numbers_get_no_decimals(ax):
     draw(ax, PlotModel(kind="bar", series=[_series(y=[12.0, 30.0])]))
     assert "12" in _texts(ax) and "12.0" not in _texts(ax)
+
+
+def test_large_values_drop_the_decimal(ax):
+    """A chart printed '47,833.3' beside a table saying '47,833'."""
+    draw(ax, PlotModel(kind="bar",
+                       series=[_series(x=["A", "B"], y=[47833.3, 11480.0])]))
+    assert "47,833" in _texts(ax)
+    assert "47,833.3" not in _texts(ax)
+
+
+def test_small_values_keep_their_decimal(ax):
+    draw(ax, PlotModel(kind="bar", series=[_series(y=[61.4, 88.2])]))
+    assert "61.4" in _texts(ax)
