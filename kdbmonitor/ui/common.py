@@ -29,6 +29,23 @@ INTERVAL_PRESETS: dict[str, int] = {
 # Label shown for alerts that have no group assigned.
 UNGROUPED = "Ungrouped"
 
+# The app runs with layout="wide" so tables, charts and status rows get the room
+# they need. Input controls do not benefit from that — Streamlit stretches them
+# to their container, and a host-name box spanning a 27" monitor is harder to
+# use, not easier. Forms therefore sit in a bounded column with a gutter beside
+# them. One ratio for the whole app so every form lines up.
+FORM_RATIO = [2.15, 1]
+
+
+def form_area():
+    """A column narrow enough that form inputs stay a sensible size.
+
+    Use as a context manager around a form; leave data displays (tables, charts,
+    lists of rows) full width.
+    """
+    import streamlit as st
+    return st.columns(FORM_RATIO, vertical_alignment="top")[0]
+
 
 def group_label(alert) -> str:
     """Display group name for an alert ('Ungrouped' when unset)."""

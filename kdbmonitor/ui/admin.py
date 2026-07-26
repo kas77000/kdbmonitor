@@ -11,6 +11,7 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.mock import demo_connection_specs
+from kdbmonitor.ui.common import form_area
 
 
 def _fmt_ts(ts: str | None) -> str:
@@ -24,15 +25,6 @@ def _fmt_ts(ts: str | None) -> str:
 
 NEW_ENV = "＋ New environment…"
 
-# Forms sit in a bounded column with a gutter beside them. Streamlit inputs
-# stretch to their container, and a host name box 1200px wide is neither easier
-# to read nor to fill in.
-FORM_RATIO = [2.15, 1]
-
-
-def _form_area():
-    """A column narrow enough that inputs stay a sensible size."""
-    return st.columns(FORM_RATIO, vertical_alignment="top")[0]
 
 
 def _add_connection(store, name: str, host: str, port, kind: str,
@@ -218,7 +210,7 @@ def render(store, mgr: ConnectionManager) -> None:
     st.markdown("**Add a KDB connection**")
     # Outside a form: the environment options depend on the kind you pick, and a
     # form would not rerun until submit.
-    with _form_area().container(border=True):
+    with form_area().container(border=True):
         f = st.columns([2, 2, 1.1, 1.6], vertical_alignment="bottom")
         name = f[0].text_input("Name", placeholder="e.g. order-rdb", key="ac_name")
         host = f[1].text_input("Host", value="localhost", key="ac_host")
@@ -295,7 +287,7 @@ def render(store, mgr: ConnectionManager) -> None:
 
     # ---- SMTP ------------------------------------------------------------- #
     st.markdown("**Email (SMTP)**")
-    with _form_area().container(border=True):
+    with form_area().container(border=True):
         st.caption("Used by alerts that select the email channel.")
         s = st.columns([2, 1, 2], vertical_alignment="bottom")
         host = s[0].text_input("SMTP host", value=store.get_setting("smtp_host", ""))
@@ -310,7 +302,7 @@ def render(store, mgr: ConnectionManager) -> None:
 
     # ---- Result snapshots (reports) -------------------------------------- #
     st.markdown("**Result snapshots (for reports)**")
-    with _form_area().container(border=True):
+    with form_area().container(border=True):
         st.caption("Triggered results are stored per alert per day so they appear in "
                    "reports. Older days are pruned; large results are capped.")
         r = st.columns([1.4, 1.4, 2], vertical_alignment="bottom")

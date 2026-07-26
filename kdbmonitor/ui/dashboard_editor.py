@@ -22,6 +22,7 @@ from kdbmonitor.core.plotmodel import (
     referenced_columns,
 )
 from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, has_date_constraint, resolve
+from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
@@ -522,16 +523,24 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
         st.rerun()
 
     if draft.datasets and st.button("Preview datasets", icon=":material/play_arrow:"):
-        for name, res in run_datasets(draft, store, mgr, date.today()).items():
-            with st.container(border=True):
-                st.markdown(f"**{name}**")
-                st.code(res.qsql or "(no query)", language="python")
-                if res.error:
-                    st.error(res.error, icon=":material/error:")
-                else:
-                    st.caption(f"{res.row_count} row(s)"
-                               + (" — capped" if res.truncated else ""))
-                    st.dataframe(res.df, use_container_width=True, height=220)
+        st.session_state["dash_preview_data"] = True
+
+
+def _render_dataset_results(store, mgr, draft: Dashboard) -> None:
+    """Query results for the Data section — rendered outside the bounded form
+    column, because result rows want the width."""
+    if not st.session_state.pop("dash_preview_data", False):
+        return
+    for name, res in run_datasets(draft, store, mgr, date.today()).items():
+        with st.container(border=True):
+            st.markdown(f"**{name}**")
+            st.code(res.qsql or "(no query)", language="python")
+            if res.error:
+                st.error(res.error, icon=":material/error:")
+            else:
+                st.caption(f"{res.row_count} row(s)"
+                           + (" — capped" if res.truncated else ""))
+                st.dataframe(res.df, use_container_width=True, height=220)
 
 
 # --- widget spec forms -----------------------------------------------------
@@ -796,9 +805,11 @@ def _render_problems(problems: list[str]) -> None:
 def render(store, mgr) -> None:
     draft = _draft(store)
 
-    head = st.columns([3, 3, 1.2, 1.2, 1.2], vertical_alignment="bottom")
-    draft.name = head[0].text_input("Dashboard name", value=draft.name)
-    draft.description = head[1].text_input("Description", value=draft.description)
+    with form_area():
+        head = st.columns([3, 3, 1.4, 1.2, 1.2], vertical_alignment="bottom")
+        draft.name = head[0].text_input("Dashboard name", value=draft.name)
+        draft.description = head[1].text_input("Description",
+                                               value=draft.description)
 
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.
@@ -829,14 +840,19 @@ def render(store, mgr) -> None:
         _close()
         back_to_gallery()
 
-    _render_problems(problems)
+    with form_area():
+        _render_problems(problems)
 
     section = st.segmented_control("Section", ["Data", "Layout", "Preview"],
                                    default="Data", key="dash_edit_section")
     st.divider()
-    if section == "Layout":
-        _render_layout(store, draft)
-    elif section == "Preview":
+    if section == "Preview":
+        # The preview IS the dashboard — it must match the real thing's width.
         _render_preview(store, mgr, draft)
+    elif section == "Layout":
+        with form_area():
+            _render_layout(store, draft)
     else:
-        _render_data(store, mgr, draft)
+        with form_area():
+            _render_data(store, mgr, draft)
+        _render_dataset_results(store, mgr, draft)
