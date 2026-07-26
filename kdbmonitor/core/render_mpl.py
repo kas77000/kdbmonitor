@@ -1,0 +1,197 @@
+"""PlotModel -> matplotlib axes, for the printed report.
+
+Draws onto an ``Axes`` the caller owns so the page assembler controls layout.
+Styling follows short_sell_report.py: light surface, no chart junk, values
+labelled directly rather than read off an axis.
+"""
+from __future__ import annotations
+
+import seaborn as sns
+
+from kdbmonitor.core import theme
+from kdbmonitor.core.plotmodel import PlotModel
+
+
+def _bare(ax, keep_bottom: bool = True) -> None:
+    ax.set_facecolor(theme.SURFACE)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_visible(keep_bottom)
+    if keep_bottom:
+        ax.spines["bottom"].set_color(theme.BASELINE)
+    ax.tick_params(length=0, labelsize=9, colors=theme.INK2)
+
+
+def _title(ax, pm: PlotModel) -> None:
+    if pm.title:
+        ax.set_title(pm.title, fontsize=12, fontweight="bold", color=theme.INK,
+                     loc="left", pad=10)
+
+
+def _kpi(ax, pm: PlotModel) -> None:
+    ax.axis("off")
+    ax.text(0, 0.62, pm.value or "—", fontsize=26, fontweight="bold",
+            color=pm.value_color or theme.INK, transform=ax.transAxes, va="center")
+    ax.text(0, 0.24, pm.title, fontsize=10.5, color=theme.MUTED,
+            transform=ax.transAxes, va="center")
+    if pm.caption:
+        ax.text(0, 0.05, pm.caption, fontsize=8.5, color=theme.MUTED,
+                transform=ax.transAxes, va="center")
+
+
+def _table(ax, pm: PlotModel) -> None:
+    ax.axis("off")
+    _title(ax, pm)
+    if not pm.rows:
+        ax.text(0, 0.5, "no rows", fontsize=10, color=theme.MUTED,
+                transform=ax.transAxes)
+        return
+
+    # bbox=[0,0,1,1] makes the table fill its axes exactly (no internal gap).
+    table = ax.table(cellText=pm.rows, colLabels=pm.columns, cellLoc="right",
+                     colLoc="right", bbox=[0, 0, 1, 1])
+    table.auto_set_font_size(False)
+    table.set_fontsize(10.5)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor(theme.GRID)
+        cell.set_linewidth(0.8)
+        if col == 0:
+            cell.get_text().set_ha("left")
+        if row == 0:
+            cell.set_facecolor(theme.INK)
+            cell.set_text_props(color="white", fontweight="bold")
+        else:
+            cell.set_facecolor(theme.SURFACE if row % 2 else "#f4f3f0")
+            colour = pm.cell_colors.get((row - 1, col))   # row 0 is the header
+            if colour:
+                cell.get_text().set_color(colour)
+                cell.get_text().set_fontweight("bold")
+
+
+def _bar(ax, pm: PlotModel) -> None:
+    _bare(ax)
+    _title(ax, pm)
+    n = max(len(pm.series), 1)
+    for i, s in enumerate(pm.series):
+        positions = [p + i * (0.8 / n) for p in range(len(s.x))]
+        if pm.orientation == "h":
+            ax.barh(positions, s.y, height=0.8 / n, color=s.color,
+                    label=s.label, zorder=3)
+        else:
+            ax.bar(positions, s.y, width=0.8 / n, color=s.color,
+                   label=s.label, zorder=3)
+    labels = [str(v) for v in pm.series[0].x] if pm.series else []
+    centres = [p + 0.4 - 0.4 / n for p in range(len(labels))]
+    if pm.orientation == "h":
+        ax.set_yticks(centres, labels)
+        ax.set_xticks([])
+    else:
+        ax.set_xticks(centres, labels)
+    if len(pm.series) > 1:
+        ax.legend(frameon=False, fontsize=9)
+
+
+def _line(ax, pm: PlotModel) -> None:
+    _bare(ax)
+    _title(ax, pm)
+    for s in pm.series:
+        ax.plot(s.x, s.y, color=s.color, label=s.label, marker="o",
+                markersize=3.5, linewidth=1.8)
+    ax.grid(axis="y", color=theme.GRID, linewidth=0.8)
+    if len(pm.series) > 1:
+        ax.legend(frameon=False, fontsize=9)
+
+
+def _scatter(ax, pm: PlotModel) -> None:
+    _bare(ax)
+    _title(ax, pm)
+    for s in pm.series:
+        ax.scatter(s.x, s.y, color=s.color, label=s.label, s=26, zorder=3)
+        if pm.regression and len(s.x) > 1:
+            sns.regplot(x=list(s.x), y=list(s.y), ax=ax, scatter=False,
+                        color=s.color, line_kws={"linewidth": 1.4})
+    ax.set_xlabel(pm.x_label, fontsize=9.5, color=theme.INK2)
+    ax.set_ylabel(pm.y_label, fontsize=9.5, color=theme.INK2)
+    if len(pm.series) > 1:
+        ax.legend(frameon=False, fontsize=9)
+
+
+def _hist(ax, pm: PlotModel) -> None:
+    _bare(ax)
+    _title(ax, pm)
+    for s in pm.series:
+        sns.histplot(x=s.y, bins=pm.bins, ax=ax, color=s.color, kde=False)
+    ax.set_xlabel(pm.x_label, fontsize=9.5, color=theme.INK2)
+    ax.set_ylabel("count", fontsize=9.5, color=theme.INK2)
+
+
+def _box(ax, pm: PlotModel) -> None:
+    _bare(ax)
+    _title(ax, pm)
+    parts = ax.boxplot([s.y for s in pm.series],
+                       tick_labels=[s.label for s in pm.series],
+                       patch_artist=True, medianprops={"color": theme.INK})
+    for patch, s in zip(parts["boxes"], pm.series):
+        patch.set_facecolor(s.color)
+        patch.set_alpha(0.75)
+    ax.set_ylabel(pm.y_label, fontsize=9.5, color=theme.INK2)
+
+
+def _heatmap(ax, pm: PlotModel) -> None:
+    _title(ax, pm)
+    sns.heatmap(pm.matrix, ax=ax, cmap=theme.SEQUENTIAL_CMAP,
+                annot=pm.annotate, fmt=".0f", cbar=False,
+                xticklabels=pm.col_labels, yticklabels=pm.row_labels,
+                linewidths=0.5, linecolor=theme.SURFACE)
+    ax.tick_params(length=0, labelsize=9, colors=theme.INK2)
+    ax.set_ylabel("")
+    ax.set_xlabel("")
+
+
+def _pie(ax, pm: PlotModel) -> None:
+    _title(ax, pm)
+    s = pm.series[0]
+    ax.pie(s.y, labels=[str(v) for v in s.x],
+           colors=[theme.color_for(i) for i in range(len(s.x))],
+           autopct="%1.0f%%", textprops={"fontsize": 9, "color": theme.INK},
+           wedgeprops={"width": 0.45} if pm.donut else None)
+    ax.set_aspect("equal")
+
+
+def _text(ax, pm: PlotModel) -> None:
+    ax.axis("off")
+    _title(ax, pm)
+    ax.text(0, 0.95, pm.text, fontsize=10.5, color=theme.INK2, wrap=True,
+            transform=ax.transAxes, va="top")
+
+
+def _error(ax, pm: PlotModel, message: str) -> None:
+    ax.axis("off")
+    _title(ax, pm)
+    ax.text(0.5, 0.5, f"⚠ {message}", fontsize=10.5, color=theme.CRITICAL,
+            ha="center", va="center", wrap=True, transform=ax.transAxes)
+
+
+_DRAWERS = {
+    "kpi": _kpi, "table": _table, "bar": _bar, "line": _line,
+    "scatter": _scatter, "hist": _hist, "box": _box, "heatmap": _heatmap,
+    "pie": _pie, "text": _text,
+}
+
+
+def draw(ax, pm: PlotModel) -> None:
+    """Draw a PlotModel onto ``ax``. Never raises — a broken panel prints as a
+    visible error, because a silently missing chart reads as 'nothing to report'.
+    """
+    if pm.kind == "error":
+        _error(ax, pm, pm.error or "unknown error")
+        return
+    drawer = _DRAWERS.get(pm.kind)
+    if drawer is None:
+        _error(ax, pm, f"unknown widget type '{pm.kind}'")
+        return
+    try:
+        drawer(ax, pm)
+    except Exception as exc:      # noqa: BLE001 - never break the whole page
+        ax.clear()
+        _error(ax, pm, str(exc))
