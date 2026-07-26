@@ -37,11 +37,40 @@ def resolve_connection(store, env: str, kind: str) -> Connection:
     envs = store.list_environments()
     if env not in envs:
         raise ValueError(f"unknown environment: '{env}'")
-    conn = envs[env][kind]
+    conn = envs[env].get(kind)
     if conn is None:
         raise ValueError(
             f"environment '{env}' has no {kind} server — add one in Admin")
     return conn
+
+
+def is_marketdata_env(pair: dict) -> bool:
+    """Market-data environments hold reference data (instruments and the like)."""
+    return pair.get("marketdata") is not None
+
+
+def resolve_target(store, env: str,
+                   rt: ResolvedTime) -> tuple[Connection, ResolvedTime]:
+    """The server to query, and the time context that actually applies to it.
+
+    Market data is not partitioned by date, so a dashboard's period does not
+    apply to it: those datasets resolve to the market-data server and run with
+    no date clause whatever the period says. Real-time/historical environments
+    resolve by the period as usual.
+    """
+    envs = store.list_environments()
+    if env not in envs:
+        raise ValueError(f"unknown environment: '{env}'")
+
+    pair = envs[env]
+    if is_marketdata_env(pair):
+        return pair["marketdata"], ResolvedTime("realtime", None, None)
+
+    conn = pair.get(rt.mode)
+    if conn is None:
+        raise ValueError(
+            f"environment '{env}' has no {rt.mode} server — add one in Admin")
+    return conn, rt
 
 
 def effective_time(ds: Dataset, dashboard_time: ResolvedTime,
@@ -71,7 +100,14 @@ def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict) -> str:
 def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
                 outputs: dict) -> DatasetResult:
     """Run one dataset, capturing any failure as an error on the result."""
-    if rt.mode == "historical" and ds.mode == "raw" \
+    # Resolve first: the date guard must apply to the server actually queried,
+    # and a market-data environment is never historical.
+    try:
+        conn, effective = resolve_target(store, ds.env, rt)
+    except Exception as exc:      # noqa: BLE001 - a broken panel, not a page
+        return DatasetResult(ds.name, None, "", str(exc))
+
+    if effective.mode == "historical" and ds.mode == "raw" \
             and not has_date_constraint(ds.raw_qsql or ""):
         return DatasetResult(
             ds.name, None, ds.raw_qsql or "",
@@ -80,8 +116,7 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
 
     qsql = ""
     try:
-        qsql = build_qsql(ds, rt, outputs)
-        conn = resolve_connection(store, ds.env, rt.mode)
+        qsql = build_qsql(ds, effective, outputs)
         df = mgr.get(conn).query(qsql)
         df = apply_transforms(df, ds.transforms)
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page

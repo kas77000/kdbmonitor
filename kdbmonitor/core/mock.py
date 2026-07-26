@@ -28,6 +28,8 @@ SCHEMA: dict[str, list[str]] = {
     "target": ["sym", "orderId", "qty", "side", "price", "algo"],
     "work_order": ["sym", "workOrderId", "filledQty", "leavesQty", "state"],
     "target_state": ["sym", "orderId", "state", "pct_complete"],
+    # Reference data: what an instrument *is*, not what it did today.
+    "instrument": ["sym", "name", "sector", "currency", "lotSize", "exchange"],
 }
 
 # Names that can go "limit locked" in the demo; kept in sync with _target so
@@ -100,9 +102,26 @@ def _target_state() -> pd.DataFrame:
     ])
 
 
+def _instrument() -> pd.DataFrame:
+    """Static reference data — deliberately time-invariant, unlike the others."""
+    return pd.DataFrame([
+        {"sym": "AAPL", "name": "Apple Inc", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "MSFT", "name": "Microsoft Corp", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "GOOG", "name": "Alphabet Inc", "sector": "Technology",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "AMZN", "name": "Amazon.com Inc", "sector": "Consumer",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+        {"sym": "TSLA", "name": "Tesla Inc", "sector": "Consumer",
+         "currency": "USD", "lotSize": 1, "exchange": "NASDAQ"},
+    ])
+
+
 _BUILDERS = {
     "QATT": _qatt, "target": _target,
     "work_order": _work_order, "target_state": _target_state,
+    "instrument": _instrument,
 }
 
 
@@ -209,7 +228,11 @@ def demo_connection_specs() -> list[Connection]:
     return [
         Connection(id=None, name="kdp_demo", host="demo", port=1,
                    schema={"QATT": SCHEMA["QATT"]}, last_introspected_at=ts,
-                   kind="realtime", env="marketdata"),
+                   kind="realtime", env="quotes"),
+        Connection(id=None, name="refdata_demo", host="demo", port=4,
+                   schema={"instrument": SCHEMA["instrument"]},
+                   last_introspected_at=ts,
+                   kind="marketdata", env="marketdata"),
         Connection(id=None, name="orders_demo", host="demo", port=2,
                    schema={k: SCHEMA[k] for k in order_tables},
                    last_introspected_at=ts, kind="realtime", env="orders"),

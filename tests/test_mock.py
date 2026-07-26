@@ -41,7 +41,8 @@ def test_manager_routes_demo_host_to_mock():
 def test_demo_connection_specs():
     specs = demo_connection_specs()
     names = {s.name for s in specs}
-    assert names == {"kdp_demo", "orders_demo", "orders_hdb_demo"}
+    assert names == {"kdp_demo", "orders_demo", "orders_hdb_demo",
+                     "refdata_demo"}
     assert all(s.host == "demo" for s in specs)
     kdp = next(s for s in specs if s.name == "kdp_demo")
     assert "QATT" in kdp.schema
@@ -93,3 +94,30 @@ def test_connection_manager_routes_by_kind():
     by_name = {c.name: c for c in demo_connection_specs()}
     assert isinstance(mgr.get(by_name["orders_demo"]), MockKdbClient)
     assert isinstance(mgr.get(by_name["orders_hdb_demo"]), MockHdbClient)
+
+
+def test_the_demo_set_covers_all_three_connection_kinds():
+    from kdbmonitor.core.models import CONNECTION_KINDS
+    kinds = {c.kind for c in demo_connection_specs()}
+    assert kinds == set(CONNECTION_KINDS)
+
+
+def test_the_market_data_demo_server_serves_instruments():
+    by_name = {c.name: c for c in demo_connection_specs()}
+    ref = by_name["refdata_demo"]
+    assert ref.kind == "marketdata"
+    assert "instrument" in ref.schema
+
+
+def test_reference_data_does_not_change_with_the_clock():
+    from kdbmonitor.core.mock import MockKdbClient
+    first = MockKdbClient().query("select from instrument")
+    second = MockKdbClient().query("select from instrument")
+    assert first.equals(second)
+    assert "sector" in first.columns
+
+
+def test_the_linked_pair_shares_one_environment():
+    by_name = {c.name: c for c in demo_connection_specs()}
+    assert by_name["orders_demo"].env == by_name["orders_hdb_demo"].env
+    assert by_name["refdata_demo"].env != by_name["orders_demo"].env

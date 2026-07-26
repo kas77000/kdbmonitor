@@ -278,20 +278,38 @@ of **transforms** shapes the result, no Python required:
 Datasets run in order and can feed each other with `{{name.column}}`, the same
 substitution the alert builder uses for chained steps.
 
-### Environments — real-time and historical
+### Environments — linking your servers
 
-Real-time and historical KDB servers live on different ports and expose the same
-tables, differing only in that historical tables carry a `date` column. In Admin,
-give a pair of connections the same **environment** name:
+A connection has one of three **kinds**:
+
+| Kind | What it holds |
+|---|---|
+| **Real-time** | today's data, no `date` column |
+| **Historical** | the partitioned HDB — the same tables plus a `date` column |
+| **Market data** | reference data (instruments, sectors, lot sizes); not partitioned by date |
+
+Connections are grouped into **environments**. Putting a real-time and a
+historical server in the *same* environment **links them**: they are two views of
+the same data, and a dashboard switches between them by period.
 
 | Name | Environment | Kind |
 |---|---|---|
-| `order-rdb` | `orders` | real-time |
-| `order-hdb` | `orders` | historical |
+| `order-rdb` | `orders` | Real-time |
+| `order-hdb` | `orders` | Historical &nbsp;← linked to `order-rdb` |
+| `refdata` | `marketdata` | Market data |
+
+Admin's **Environments** panel shows each pair and confirms the link, or flags a
+half-configured environment. To link servers you already registered, use **Link
+an existing connection to another environment** — no need to delete and re-add.
 
 A dataset targets the *environment*, never a server. The dashboard's **period**
 control — Real-time, Today, Last 7 days, Last 30 days, Month to date, Last month,
 Year to date, or a custom range — decides which one is queried.
+
+**Market data ignores the period.** Reference data is not partitioned by date, so
+those datasets always hit the market-data server and never receive a date clause,
+whatever the dashboard is showing. That means one page can mix a 7-day order
+history with a live instrument list, and each dataset goes to the right server.
 
 The date constraint is **never stored in the dataset's filters**; it is injected
 at run time. So flipping a dashboard between real-time and a date range needs no

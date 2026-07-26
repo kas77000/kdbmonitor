@@ -443,3 +443,49 @@ def test_distinct_files_each_import():
 def test_no_uploads_is_not_an_error():
     assert dashboards.pending_uploads(None, set()) == []
     assert dashboards.pending_uploads([], {"a"}) == []
+
+
+# --- market-data environments ----------------------------------------------
+
+def _md_store(tmp_path) -> Storage:
+    s = Storage(str(tmp_path / "md.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="refdata", host="h", port=9,
+                                kind="marketdata", env="marketdata",
+                                schema={"instrument": ["sym", "sector"]}))
+    return s
+
+
+def _md_dashboard() -> Dashboard:
+    return Dashboard(
+        id=1, name="Ref",
+        time_context={"mode": "historical",
+                      "range": {"kind": "preset", "name": "last_30d"}},
+        datasets=[Dataset(name="ref", env="marketdata", table="instrument")],
+        rows=[Row(widgets=[Widget(type="kpi", dataset="ref",
+                                  spec={"column": "sym", "agg": "nunique"})])])
+
+
+def test_a_marketdata_env_is_valid_on_a_historical_dashboard(tmp_path):
+    """The period does not apply to reference data, so demanding a historical
+    server for it would be wrong."""
+    assert ed.validate(_md_dashboard(), _md_store(tmp_path)) == []
+
+
+def test_a_realtime_only_env_on_a_historical_dashboard_is_still_reported(tmp_path):
+    s = Storage(str(tmp_path / "rt.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="rdb", host="h", port=1,
+                                kind="realtime", env="orders",
+                                schema={"target": ["sym"]}))
+    d = _md_dashboard()
+    d.datasets[0].env = "orders"
+    d.datasets[0].table = "target"
+    d.rows[0].widgets[0].spec = {"column": "sym", "agg": "nunique"}
+    assert any("no historical server" in m for m in ed.validate(d, s))
+
+
+def test_column_pickers_work_for_a_marketdata_dataset(tmp_path):
+    s = _md_store(tmp_path)
+    ds = Dataset(name="ref", env="marketdata", table="instrument")
+    assert ed.dataset_columns(ds, ed._connection_for(s, ds)) == ["sym", "sector"]

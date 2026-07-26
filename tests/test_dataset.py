@@ -231,3 +231,81 @@ def test_a_realtime_dataset_on_a_historical_dashboard_hits_the_rdb(store):
     res = run_datasets(dash, store, mgr, TODAY)
     assert res["live"].error is None
     assert res["live"].qsql == q          # no date clause injected
+
+
+# --- market data ------------------------------------------------------------
+
+@pytest.fixture()
+def md_store(tmp_path):
+    s = Storage(str(tmp_path / "md.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="refdata", host="ref", port=9,
+                                kind="marketdata", env="marketdata"))
+    return s
+
+
+def test_a_marketdata_env_resolves_to_its_server(md_store):
+    from kdbmonitor.core.dataset import resolve_target
+    conn, eff = resolve_target(md_store, "marketdata", RT)
+    assert conn.name == "refdata"
+    assert eff.mode == "realtime"
+
+
+def test_a_marketdata_env_ignores_a_historical_period(md_store):
+    """Reference data is not partitioned by date, so no date clause applies."""
+    from kdbmonitor.core.dataset import resolve_target
+    conn, eff = resolve_target(md_store, "marketdata", HIST)
+    assert conn.name == "refdata"
+    assert eff.mode == "realtime"
+    assert eff.start is None
+
+
+def test_a_marketdata_dataset_gets_no_date_clause_on_a_historical_dashboard(md_store):
+    q = "select from instrument"
+    mgr = _mgr({q: pd.DataFrame({"sym": ["AAPL"], "sector": ["Technology"]})})
+    dash = Dashboard(
+        id=1, name="d",
+        time_context={"mode": "historical",
+                      "range": {"kind": "preset", "name": "last_30d"}},
+        datasets=[Dataset(name="ref", env="marketdata", table="instrument")])
+
+    res = run_datasets(dash, md_store, mgr, TODAY)
+    assert res["ref"].error is None
+    assert res["ref"].qsql == q                 # no date within (...)
+
+
+def test_a_raw_marketdata_query_needs_no_date_constraint(md_store):
+    q = "select from instrument where sector=`Technology"
+    mgr = _mgr({q: pd.DataFrame({"sym": ["AAPL"]})})
+    dash = Dashboard(
+        id=1, name="d",
+        time_context={"mode": "historical",
+                      "range": {"kind": "preset", "name": "last_30d"}},
+        datasets=[Dataset(name="ref", env="marketdata", mode="raw", raw_qsql=q)])
+
+    res = run_datasets(dash, md_store, mgr, TODAY)
+    assert res["ref"].error is None
+
+
+def test_a_realtime_env_still_refuses_a_dateless_historical_raw_query(store):
+    mgr = _mgr({})
+    dash = Dashboard(
+        id=1, name="d",
+        time_context={"mode": "historical",
+                      "range": {"kind": "preset", "name": "last_30d"}},
+        datasets=[Dataset(name="o", env="orders", mode="raw",
+                          raw_qsql="select from target")])
+    assert "must constrain 'date'" in run_datasets(dash, store, mgr, TODAY)["o"].error
+
+
+def test_environments_expose_all_three_kinds(md_store):
+    pair = md_store.list_environments()["marketdata"]
+    assert set(pair) == {"realtime", "historical", "marketdata"}
+    assert pair["marketdata"].name == "refdata"
+
+
+def test_an_unknown_environment_is_reported_before_any_query(md_store):
+    mgr = _mgr({})
+    dash = Dashboard(id=1, name="d", datasets=[
+        Dataset(name="x", env="nope", table="instrument")])
+    assert "unknown environment" in run_datasets(dash, md_store, mgr, TODAY)["x"].error

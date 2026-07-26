@@ -15,7 +15,7 @@ import streamlit as st
 from kdbmonitor.core.dashboard_models import (
     Dashboard, Dataset, Row, Transform, Widget,
 )
-from kdbmonitor.core.dataset import run_datasets
+from kdbmonitor.core.dataset import is_marketdata_env, run_datasets
 from kdbmonitor.core.models import Filter
 from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
@@ -195,12 +195,22 @@ def validate(draft: Dashboard, store) -> list[str]:
         else:
             rt = dashboard_time
 
+        # Market-data environments hold reference data: no date partitioning, so
+        # the period simply does not apply to them.
+        market = ds.env in envs and is_marketdata_env(envs[ds.env])
+        if market:
+            rt = resolve({"mode": "realtime"}, date.today())
+
         if ds.env not in envs:
             problems.append(f"Dataset '{ds.name}' uses unknown environment "
                             f"'{ds.env}'.")
         elif rt.mode == "historical" and envs[ds.env]["historical"] is None:
             problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has no "
                             f"historical server — add one in Admin.")
+        elif rt.mode == "realtime" and not market \
+                and envs[ds.env]["realtime"] is None:
+            problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has no "
+                            f"real-time server — add one in Admin.")
 
         if rt.mode == "historical" and ds.mode == "raw" \
                 and not has_date_constraint(ds.raw_qsql or ""):
@@ -275,8 +285,11 @@ def _close() -> None:
 
 
 def _connection_for(store, ds: Dataset):
+    """Any server in the dataset's environment — used only to read the schema
+    for column pickers, so which side it comes from does not matter."""
     pair = store.list_environments().get(getattr(ds, "env", "")) or {}
-    return pair.get("realtime") or pair.get("historical")
+    return (pair.get("marketdata") or pair.get("realtime")
+            or pair.get("historical"))
 
 
 def _coerce(raw: str, value_type: str):
@@ -418,9 +431,14 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                                    index=envs.index(ds.env) if ds.env in envs else 0,
                                    key=f"{key}_e")
         modes = ["inherit", "realtime", "custom"]
+        market = is_marketdata_env(
+            store.list_environments().get(ds.env) or {})
         ds.time_mode = head[2].selectbox(
             "Period", modes, index=modes.index(ds.time_mode), key=f"{key}_tm",
-            help="inherit = follow the dashboard's period control")
+            disabled=market,
+            help="Market data is not partitioned by date — the period does not "
+                 "apply." if market
+                 else "inherit = follow the dashboard's period control")
         ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
                                                ds.max_rows, step=100, key=f"{key}_mr"))
         if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
@@ -436,6 +454,10 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             ds.time_context = {"mode": "historical",
                                "range": {"kind": "preset",
                                          "name": PRESETS[labels.index(chosen)]}}
+
+        if market:
+            st.caption(":violet[Market data] — reference tables, queried the "
+                       "same way whatever period the dashboard is showing.")
 
         ds.mode = st.radio("Query", ["guided", "raw"], horizontal=True,
                            index=0 if ds.mode == "guided" else 1, key=f"{key}_m")

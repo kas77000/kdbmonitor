@@ -7,7 +7,9 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Optional
 
-from kdbmonitor.core.models import Connection, Alert, alert_to_json, alert_from_json
+from kdbmonitor.core.models import (
+    CONNECTION_KINDS, Connection, Alert, alert_to_json, alert_from_json,
+)
 from kdbmonitor.core.dashboard_models import (
     Dashboard, dashboard_from_json, dashboard_to_json,
 )
@@ -161,15 +163,18 @@ class Storage:
         self.conn.commit()
 
     def list_environments(self) -> dict[str, dict[str, Optional[Connection]]]:
-        """Group connections into {env: {"realtime": Conn|None, "historical": Conn|None}}.
+        """Group connections by environment, one slot per kind.
 
-        A connection with a blank ``env`` forms its own single-sided environment
+        ``{env: {"realtime": Conn|None, "historical": Conn|None,
+                 "marketdata": Conn|None}}``
+
+        A connection with a blank ``env`` forms its own single-slot environment
         named after itself, so pre-existing connections keep working untouched.
         """
         envs: dict[str, dict[str, Optional[Connection]]] = {}
         for c in self.list_connections():
             slot = envs.setdefault(c.env or c.name,
-                                   {"realtime": None, "historical": None})
+                                   {k: None for k in CONNECTION_KINDS})
             slot[c.kind] = c
         return envs
 

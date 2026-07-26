@@ -63,6 +63,17 @@ class Alert:
     group: str = ""                    # optional grouping label ("" = Ungrouped)
 
 
+# The three kinds of KDB server this app talks to.
+#   realtime   — today's data, no date column
+#   historical — the partitioned HDB; same tables plus a date column
+#   marketdata — reference/instrument data (stocks and the like); not
+#                partitioned by date, so a dashboard's period does not apply
+CONNECTION_KINDS = ("realtime", "historical", "marketdata")
+
+KIND_LABELS = {"realtime": "Real-time", "historical": "Historical",
+               "marketdata": "Market data"}
+
+
 @dataclass
 class Connection:
     id: Optional[int]
@@ -71,7 +82,7 @@ class Connection:
     port: int
     schema: dict[str, list[str]] = field(default_factory=dict)  # table -> columns
     last_introspected_at: Optional[str] = None
-    kind: str = "realtime"       # realtime | historical
+    kind: str = "realtime"       # one of CONNECTION_KINDS
     env: str = ""                # logical environment; "" falls back to name
 
 
