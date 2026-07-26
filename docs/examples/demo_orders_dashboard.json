@@ -117,6 +117,12 @@
                 "formats": {
                   "avg_price": ",.2f",
                   "order_qty": ",.0f"
+                },
+                "labels": {
+                  "algo": "Algo",
+                  "n_orders": "Orders",
+                  "order_qty": "Order qty",
+                  "avg_price": "Avg price"
                 }
               },
               "width": 1.0

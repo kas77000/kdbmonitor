@@ -275,20 +275,20 @@ def test_a_filter_with_no_value_is_reported(tmp_path):
 def test_a_kpi_without_a_column_is_reported(tmp_path):
     d = _complete(tmp_path)
     d.rows[0].widgets[0].spec = {"agg": "sum"}
-    assert any("'column'" in m for m in ed.validate(d, _store(tmp_path)))
+    assert any("has no column set" in m for m in ed.validate(d, _store(tmp_path)))
 
 
 def test_a_bar_without_axes_is_reported(tmp_path):
     d = _complete(tmp_path)
     d.rows[0].widgets[0] = Widget(type="bar", dataset="o", title="B", spec={})
     problems = ed.validate(d, _store(tmp_path))
-    assert any("'x'" in m and "'y'" in m for m in problems)
+    assert any("X axis" in m and "Y axis" in m for m in problems)
 
 
 def test_a_text_widget_with_no_markdown_is_reported(tmp_path):
     d = _complete(tmp_path)
     d.rows[0].widgets[0] = Widget(type="text", dataset="o", spec={"markdown": ""})
-    assert any("'markdown'" in m for m in ed.validate(d, _store(tmp_path)))
+    assert any("has no text set" in m for m in ed.validate(d, _store(tmp_path)))
 
 
 def test_a_widget_bound_to_a_vanished_column_is_reported(tmp_path):
@@ -325,3 +325,38 @@ def test_problem_messages_say_where_the_problem_is(tmp_path):
     d.datasets[0].transforms = [Transform(kind="sort", params={"columns": []})]
     assert all(m.startswith(("Dataset", "Row", "The dashboard", "No ", "Duplicate", "A "))
                for m in ed.validate(d, _store(tmp_path)))
+
+
+# --- number format picker ---------------------------------------------------
+
+def test_every_catalogued_format_is_valid():
+    for label, spec in ed.NUMBER_FORMATS.items():
+        assert ed.is_valid_format(spec), f"{label} -> {spec!r}"
+
+
+def test_the_catalogue_labels_are_their_own_samples():
+    """The label a user picks must be what they actually get."""
+    for label, spec in ed.NUMBER_FORMATS.items():
+        if label in ("No formatting",) or "(" in label:
+            continue
+        assert ed.format_sample(spec) == label
+
+
+def test_format_label_roundtrips():
+    assert ed.format_label_for(",.0f") == "1,235"
+    assert ed.format_label_for("") == "No formatting"
+
+
+def test_an_unknown_spec_is_offered_as_custom():
+    assert ed.format_label_for(",.4f") == ed.CUSTOM_FORMAT
+
+
+def test_a_typo_in_a_custom_format_is_reported_not_raised():
+    assert ed.format_sample("qq") == "invalid format"
+    assert not ed.is_valid_format("qq")
+
+
+def test_a_widget_with_an_unusable_format_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows[0].widgets[0].spec["fmt"] = "not-a-format"
+    assert any("format" in m.lower() for m in ed.validate(d, _store(tmp_path)))

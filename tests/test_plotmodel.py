@@ -220,3 +220,78 @@ def test_unknown_widget_type_is_an_error_model():
                           _ok(_summary()))
     assert pm.kind == "error"
     assert "hologram" in pm.error
+
+
+# --- table column labels ----------------------------------------------------
+
+def test_table_headers_can_be_renamed():
+    w = Widget(type="table", dataset="by_market",
+               spec={"columns": ["market", "n_orders"],
+                     "labels": {"market": "Market", "n_orders": "Orders"}})
+    pm = build_plot_model(w, _ok(_summary()))
+    assert pm.columns == ["Market", "Orders"]
+
+
+def test_unlabelled_columns_keep_their_own_name():
+    w = Widget(type="table", dataset="by_market",
+               spec={"columns": ["market", "n_orders"],
+                     "labels": {"market": "Market"}})
+    assert build_plot_model(w, _ok(_summary())).columns == ["Market", "n_orders"]
+
+
+def test_a_blank_label_falls_back_to_the_column_name():
+    w = Widget(type="table", dataset="by_market",
+               spec={"columns": ["market"], "labels": {"market": ""}})
+    assert build_plot_model(w, _ok(_summary())).columns == ["market"]
+
+
+def test_formats_and_highlights_still_key_off_the_real_column():
+    w = Widget(type="table", dataset="by_market",
+               spec={"columns": ["market", "completion_pct", "n_rejections"],
+                     "labels": {"completion_pct": "Completion",
+                                "n_rejections": "Rejects"},
+                     "formats": {"completion_pct": ".1f"},
+                     "highlight": [{"column": "n_rejections", "op": ">",
+                                    "value": 0, "color": "critical"}]})
+    pm = build_plot_model(w, _ok(_summary()))
+    assert pm.columns == ["market", "Completion", "Rejects"]
+    assert pm.rows[0][1] == "61.4"                  # format applied
+    assert pm.cell_colors[(0, 2)] == theme.CRITICAL  # highlight applied
+
+
+# --- unset widget fields ----------------------------------------------------
+
+def test_a_bar_with_no_axes_says_so_in_plain_english():
+    pm = build_plot_model(Widget(type="bar", dataset="by_market",
+                                 title="Missing axes", spec={}), _ok(_summary()))
+    assert pm.kind == "error"
+    assert "X axis" in pm.error and "Y axis" in pm.error
+    assert "no X axis, Y axis set" in pm.error
+
+
+def test_the_old_bare_keyerror_message_is_gone():
+    """It used to surface as just 'x', which told the reader nothing."""
+    pm = build_plot_model(Widget(type="bar", dataset="by_market", spec={}),
+                          _ok(_summary()))
+    assert pm.error != "x"
+    assert len(pm.error) > 20
+
+
+def test_a_kpi_with_no_column_names_the_field():
+    pm = build_plot_model(Widget(type="kpi", dataset="by_market",
+                                 spec={"agg": "sum"}), _ok(_summary()))
+    assert "column" in pm.error
+
+
+def test_a_heatmap_lists_every_unset_field():
+    pm = build_plot_model(Widget(type="heatmap", dataset="by_market", spec={}),
+                          _ok(_summary()))
+    for expected in ("row grouping", "column grouping", "value column"):
+        assert expected in pm.error
+
+
+def test_a_fully_specified_widget_is_unaffected():
+    pm = build_plot_model(Widget(type="bar", dataset="by_market",
+                                 spec={"x": "market", "y": "n_orders"}),
+                          _ok(_summary()))
+    assert pm.kind == "bar"

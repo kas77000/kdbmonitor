@@ -17,7 +17,10 @@ from kdbmonitor.core.dashboard_models import (
 )
 from kdbmonitor.core.dataset import run_datasets
 from kdbmonitor.core.models import Filter
-from kdbmonitor.core.plotmodel import build_plot_model
+from kdbmonitor.core.plotmodel import (
+    FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
+    referenced_columns,
+)
 from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, has_date_constraint, resolve
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -35,6 +38,45 @@ RAW_HELP = (
 )
 
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
+
+# Number formats offered by name, so nobody has to know Python format specs.
+# The labels ARE the samples — you pick the output you want to see.
+SAMPLE_VALUE = 1234.567
+
+NUMBER_FORMATS: dict[str, str] = {
+    "1,235": ",.0f",
+    "1,234.6": ",.1f",
+    "1,234.57": ",.2f",
+    "1235": ".0f",
+    "1234.57": ".2f",
+    "61.4%  (value is a fraction 0–1)": ".1%",
+    "1.23e+03": ".2e",
+    "No formatting": "",
+}
+CUSTOM_FORMAT = "Custom…"
+
+
+def format_sample(spec: str, value: float = SAMPLE_VALUE) -> str:
+    """What ``spec`` turns the sample value into — or a complaint if it is not a
+    usable format spec, so a typo shows up immediately instead of at render."""
+    if not spec:
+        return str(value)
+    try:
+        return format(value, spec)
+    except (TypeError, ValueError):
+        return "invalid format"
+
+
+def is_valid_format(spec: str) -> bool:
+    return format_sample(spec) != "invalid format"
+
+
+def format_label_for(spec: str) -> str:
+    """The catalogue entry matching a stored spec, else Custom."""
+    for label, value in NUMBER_FORMATS.items():
+        if value == (spec or ""):
+            return label
+    return CUSTOM_FORMAT
 
 
 # --- pure helpers (unit-tested) -------------------------------------------
@@ -66,30 +108,6 @@ def dataset_columns(ds: Dataset, conn) -> list[str]:
     return list(dict.fromkeys(cols))
 
 
-# Spec fields a widget cannot render without. Anything not listed is optional.
-REQUIRED_SPEC: dict[str, tuple[str, ...]] = {
-    "kpi": ("column", "agg"),
-    "table": (),
-    "text": ("markdown",),
-    "bar": ("x", "y"),
-    "line": ("x", "y"),
-    "scatter": ("x", "y"),
-    "hist": ("x",),
-    "box": ("y",),
-    "heatmap": ("rows", "cols", "value"),
-    "pie": ("by", "value"),
-}
-
-
-def _blank(value) -> bool:
-    """A field the user has not actually filled in."""
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return not value.strip()
-    if isinstance(value, (list, tuple, dict)):
-        return len(value) == 0
-    return False
 
 
 def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
@@ -215,22 +233,27 @@ def validate(draft: Dashboard, store) -> list[str]:
             if w.width <= 0:
                 problems.append(f"{label} has a non-positive width.")
 
-            missing = [f for f in REQUIRED_SPEC.get(w.type, ())
-                       if _blank(w.spec.get(f))]
+            missing = missing_spec_fields(w)
             if missing:
-                problems.append(f"{label} is missing "
-                                f"{', '.join(repr(m) for m in missing)}.")
+                named = ", ".join(FIELD_LABELS.get(f, f) for f in missing)
+                problems.append(f"{label} has no {named} set.")
+
+            fmt = w.spec.get("fmt")
+            if isinstance(fmt, str) and fmt and not is_valid_format(fmt):
+                problems.append(f"{label}: '{fmt}' is not a usable number format.")
+            for col, col_fmt in (w.spec.get("formats") or {}).items():
+                if col_fmt and not is_valid_format(col_fmt):
+                    problems.append(f"{label}: number format '{col_fmt}' for column "
+                                    f"'{col}' is not usable.")
 
             # Catch a column that stopped existing — e.g. a group-by was changed
             # after the widget was bound to one of its outputs.
             ds = by_name[w.dataset]
             known = dataset_columns(ds, _connection_for(store, ds))
             if known:
-                for field in REQUIRED_SPEC.get(w.type, ()):
-                    value = w.spec.get(field)
-                    if isinstance(value, str) and value and field != "agg" \
-                            and value not in known:
-                        problems.append(f"{label}: column '{value}' is not produced "
+                for column in referenced_columns(w):
+                    if column not in known:
+                        problems.append(f"{label}: column '{column}' is not produced "
                                         f"by dataset '{ds.name}'.")
     return problems
 
@@ -497,6 +520,31 @@ def _pick(container, label: str, columns: list[str], current: str, key: str) -> 
     return container.selectbox(label, options, index=index, key=key)
 
 
+def _format_picker(container, label: str, current: str, key: str,
+                   show_label: bool = True) -> str:
+    """Choose a number format by its sample output rather than typing a spec.
+
+    ``show_label`` collapses the label for repeated rows — an empty label string
+    would still reserve space and leave the help icon floating on its own.
+    """
+    options = list(NUMBER_FORMATS) + [CUSTOM_FORMAT]
+    current_label = format_label_for(current)
+    chosen = container.selectbox(
+        label, options, index=options.index(current_label), key=f"{key}_pick",
+        label_visibility="visible" if show_label else "collapsed",
+        help=("Pick how the number should read. Each option shows what "
+              f"{SAMPLE_VALUE} would look like.") if show_label else None)
+    if chosen != CUSTOM_FORMAT:
+        return NUMBER_FORMATS[chosen]
+
+    spec = container.text_input(
+        "Custom format", value=current, key=f"{key}_custom",
+        placeholder=",.0f",
+        help="A Python format spec, e.g. ,.0f or .2%")
+    container.caption(f"{SAMPLE_VALUE} → **{format_sample(spec)}**")
+    return spec
+
+
 def _widget_form(w: Widget, columns: list[str], key: str) -> None:
     s = w.spec
     if w.type == "kpi":
@@ -505,10 +553,11 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         s["agg"] = c[1].selectbox("Aggregate", AGG_FUNCS,
                                   index=AGG_FUNCS.index(s.get("agg", "sum")),
                                   key=f"{key}_a")
-        s["fmt"] = c[2].text_input("Format", value=s.get("fmt", ",.0f"),
-                                   help="Python format spec, e.g. ,.0f or .1f",
-                                   key=f"{key}_f")
+        s["fmt"] = _format_picker(c[2], "Number format", s.get("fmt", ",.0f"),
+                                  f"{key}_f")
         s["suffix"] = c[3].text_input("Suffix", value=s.get("suffix", ""),
+                                      placeholder="%, bps, sh",
+                                      help="Appended after the number.",
                                       key=f"{key}_sfx")
         red = st.checkbox("Turn red when above zero", key=f"{key}_thr",
                           value=bool(s.get("thresholds")))
@@ -519,6 +568,28 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         s["columns"] = st.multiselect("Columns (empty = all)", columns,
                                       default=[c for c in s.get("columns", [])
                                                if c in columns], key=f"{key}_cols")
+
+        shown = s["columns"] or columns
+        if shown:
+            st.caption("Header text and number format, per column. Leave the "
+                       "header blank to keep the column's own name.")
+            labels = dict(s.get("labels", {}))
+            formats = dict(s.get("formats", {}))
+            for i, col in enumerate(shown):
+                cc = st.columns([1.6, 2.2, 2.6], vertical_alignment="bottom")
+                cc[0].markdown(f"`{col}`")
+                labels[col] = cc[1].text_input(
+                    "Header", value=labels.get(col, ""), placeholder=col,
+                    key=f"{key}_lbl{i}",
+                    label_visibility="visible" if i == 0 else "collapsed")
+                formats[col] = _format_picker(
+                    cc[2], "Format", formats.get(col, ""), f"{key}_fmt{i}",
+                    show_label=i == 0)
+            # Drop empties so the stored spec stays clean and diffable.
+            s["labels"] = {k: v for k, v in labels.items()
+                           if k in shown and v.strip()}
+            s["formats"] = {k: v for k, v in formats.items() if k in shown and v}
+
         hl_opts = ["(none)"] + columns
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
         hl = st.selectbox("Highlight when above zero", hl_opts,
@@ -730,9 +801,9 @@ def render(store, mgr) -> None:
         st.query_params["dash"] = str(dashboard_id)
         st.rerun()
 
-    if head[4].button("All dashboards", icon=":material/arrow_back:",
+    if head[4].button("Back", icon=":material/arrow_back:",
                       use_container_width=True,
-                      help="Discard nothing — just leave the editor"):
+                      help="Leave the editor and return to the dashboard list"):
         _close()
         back_to_gallery()
 

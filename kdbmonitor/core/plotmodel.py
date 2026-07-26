@@ -29,6 +29,69 @@ _OPS = {"=": operator.eq, "==": operator.eq, "!=": operator.ne,
         "<>": operator.ne, "<": operator.lt, "<=": operator.le,
         ">": operator.gt, ">=": operator.ge}
 
+# Spec fields a widget cannot render without, and how to name them to a human.
+# Lives here rather than in the editor so the editor's save-time check and the
+# renderer's runtime check can never disagree about what a widget needs.
+REQUIRED_SPEC: dict[str, tuple[str, ...]] = {
+    "kpi": ("column", "agg"),
+    "table": (),
+    "text": ("markdown",),
+    "bar": ("x", "y"),
+    "line": ("x", "y"),
+    "scatter": ("x", "y"),
+    "hist": ("x",),
+    "box": ("y",),
+    "heatmap": ("rows", "cols", "value"),
+    "pie": ("by", "value"),
+}
+
+FIELD_LABELS = {
+    "x": "X axis", "y": "Y axis", "column": "column", "agg": "aggregate",
+    "markdown": "text", "rows": "row grouping", "cols": "column grouping",
+    "value": "value column", "by": "slice-by column",
+}
+
+# Which spec fields actually name a column. Distinct from REQUIRED_SPEC: a text
+# widget requires 'markdown', but that is prose, not a column — checking it
+# against the dataset's columns would flag every sentence as a missing column.
+COLUMN_SPEC_FIELDS: dict[str, tuple[str, ...]] = {
+    "kpi": ("column",),
+    "table": (),          # its 'columns' list is checked separately
+    "text": (),
+    "bar": ("x", "y", "hue"),
+    "line": ("x", "y", "hue"),
+    "scatter": ("x", "y", "hue"),
+    "hist": ("x",),
+    "box": ("x", "y"),
+    "heatmap": ("rows", "cols", "value"),
+    "pie": ("by", "value"),
+}
+
+
+def referenced_columns(widget: Widget) -> list[str]:
+    """Column names this widget binds to, for checking they still exist."""
+    named = [widget.spec.get(f) for f in COLUMN_SPEC_FIELDS.get(widget.type, ())]
+    if widget.type == "table":
+        named += list(widget.spec.get("columns") or [])
+    return [c for c in named if isinstance(c, str) and c.strip()]
+
+
+def is_blank(value) -> bool:
+    """A field the user never actually filled in."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def missing_spec_fields(widget: Widget) -> list[str]:
+    """Required spec fields this widget has not been given."""
+    return [f for f in REQUIRED_SPEC.get(widget.type, ())
+            if is_blank(widget.spec.get(f))]
+
 
 @dataclass
 class Series:
@@ -125,6 +188,10 @@ def _table(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     columns = spec.get("columns") or list(df.columns)
     _need(df, *columns)
     formats = spec.get("formats", {})
+    # Display labels are presentation only — formats and highlight rules keep
+    # keying off the real column names, so renaming a header breaks nothing.
+    labels = spec.get("labels", {})
+    headers = [str(labels.get(c) or c) for c in columns]
     rows = [[_fmt(r[c], formats.get(c, "")) for c in columns]
             for _, r in df.iterrows()]
 
@@ -143,7 +210,7 @@ def _table(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
             except TypeError:
                 continue
 
-    return PlotModel(kind="table", title=title, columns=list(columns),
+    return PlotModel(kind="table", title=title, columns=headers,
                      rows=rows, cell_colors=cell_colors)
 
 
@@ -269,6 +336,14 @@ def build_plot_model(widget: Widget, results: dict) -> PlotModel:
         return _err(title, result.error)
     if result.df is None:
         return _err(title, f"dataset '{widget.dataset}' produced no rows")
+
+    # Say what is unset before trying to draw — otherwise a missing 'x' surfaces
+    # as a bare KeyError reading just "x", which tells the reader nothing.
+    missing = missing_spec_fields(widget)
+    if missing:
+        named = ", ".join(FIELD_LABELS.get(f, f) for f in missing)
+        return _err(title, f"this {widget.type} widget has no {named} set — "
+                           f"choose one in the editor")
 
     try:
         if widget.type == "text":

@@ -89,3 +89,38 @@ def test_the_short_sell_example_matches_the_acceptance_definition():
     shipped, built = _load(SHORT_SELL), short_sell_dashboard()
     shipped.id = built.id = None
     assert shipped == built
+
+
+# --- the shipped examples must pass the editor's own validation -------------
+
+def test_the_demo_example_reports_no_problems(demo_store):
+    """It ships with the app; if the editor flags it, the editor is wrong."""
+    from kdbmonitor.ui.dashboard_editor import validate
+    assert validate(_load(DEMO), demo_store) == []
+
+
+def test_the_short_sell_example_reports_no_problems(tmp_path):
+    from kdbmonitor.core.models import Connection
+    from kdbmonitor.ui.dashboard_editor import validate
+    from tests.test_short_sell_acceptance import RAW
+
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    real_schema = {"target": list(RAW.columns)}
+    s.add_connection(Connection(id=None, name="rdb", host="h", port=1,
+                                kind="realtime", env="orders",
+                                schema=real_schema))
+    s.add_connection(Connection(id=None, name="hdb", host="h", port=2,
+                                kind="historical", env="orders",
+                                schema={"target": ["date"] + list(RAW.columns)}))
+    assert validate(_load(SHORT_SELL), s) == []
+
+
+def test_a_text_widgets_markdown_is_not_mistaken_for_a_column(demo_store):
+    """Regression: 'markdown' is required but is prose, so the column-existence
+    check flagged the whole sentence as a missing column."""
+    from kdbmonitor.ui.dashboard_editor import validate
+    dash = _load(DEMO)
+    assert any(w.type == "text" for r in dash.rows for w in r.widgets), \
+        "the demo example should still contain a text widget"
+    assert not [m for m in validate(dash, demo_store) if "is not produced by" in m]

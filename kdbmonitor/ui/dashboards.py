@@ -273,9 +273,10 @@ def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
 def _render_view(store, mgr, dashboard: Dashboard) -> None:
     # The way back lives here, first and on its own line, because the sidebar
     # nav cannot get you out (it keeps ?dash).
-    nav = st.columns([2, 6], vertical_alignment="center")
+    nav = st.columns([1.15, 6.85], vertical_alignment="center")
+    # Sized to its content — a full-width button here reads as a banner, not a
+    # back control.
     if nav[0].button("All dashboards", icon=":material/arrow_back:",
-                     use_container_width=True,
                      help="Back to the dashboard list"):
         back_to_gallery()
 

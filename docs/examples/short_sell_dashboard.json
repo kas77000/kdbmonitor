@@ -161,8 +161,18 @@
                   "completion_pct",
                   "n_rejections"
                 ],
+                "labels": {
+                  "market": "Market",
+                  "n_orders": "Orders",
+                  "order_qty": "Order qty",
+                  "executed_qty": "Executed",
+                  "completion_pct": "Completion",
+                  "n_rejections": "Rejections"
+                },
                 "formats": {
-                  "completion_pct": ".1f"
+                  "completion_pct": ".1f",
+                  "order_qty": ",.0f",
+                  "executed_qty": ",.0f"
                 },
                 "highlight": [
                   {
