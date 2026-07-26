@@ -377,7 +377,12 @@ dashboard's queries at KDB continuously. The open dashboard is in the URL
 
 *Generate PDF* renders the frames **already on screen** — it never re-queries, so
 the downloaded page shows the numbers you were looking at, not a fresh fetch taken
-a moment later. *Preview page* shows the real printed page inline first.
+a moment later. *Preview pages* shows the real printed pages inline first, with
+Previous/Next and a slider to step through a multi-page report.
+
+Only page 1 carries a title band. Continuation pages start straight into the
+content — a repeated "<name> (continued)" header says nothing the footer's page
+number does not, and reclaims a third of an inch on every later page.
 
 On screen the charts are interactive Plotly (hover a line chart to read every
 series at that x); in the PDF the same resolved plot model is drawn by

@@ -248,8 +248,14 @@ title band and footer repeated.
 downloaded page shows the numbers the user is looking at, not a fresh fetch taken
 a moment later.
 
-The dashboard view also offers **Preview PDF**, rendering page 1 to a PNG inline
-so the printed output can be checked before downloading.
+The dashboard view also offers **Preview pages**, rendering any page to a PNG
+inline — Previous/Next plus a slider — so a multi-page report can be checked
+before downloading. Pages are cached per `(page, as_of)`, so paging back and
+forth does not re-render but new data does.
+
+Only page 1 carries a title band; continuation pages have no header. A repeated
+"<name> (continued)" band duplicates the footer's page number and costs a third
+of an inch of every later page.
 
 Filename: `<dashboard_slug>_<YYYY-MM-DD_HHMM>.pdf`, delivered by
 `st.download_button` — the same shape as the Excel download in `ui/reports.py`.

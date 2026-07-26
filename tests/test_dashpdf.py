@@ -4,8 +4,8 @@ import pandas as pd
 
 from kdbmonitor.core.dashboard_models import Dashboard, Row, Widget
 from kdbmonitor.core.dashpdf import (
-    CONTENT_H_FIRST, dashboard_to_pdf_bytes, page_limit, paginate,
-    pdf_filename, plan_rows,
+    CONTENT_H_FIRST, dashboard_page_png_bytes, dashboard_to_pdf_bytes,
+    page_count, page_limit, paginate, pdf_filename, plan_rows,
 )
 from kdbmonitor.core.dataset import DatasetResult
 from kdbmonitor.core.timectx import ResolvedTime
@@ -168,3 +168,65 @@ def test_page_one_holds_less_than_later_pages():
 
 def test_an_empty_dashboard_plans_nothing():
     assert plan_rows([]) == []
+
+
+# --- per-page PNG preview ---------------------------------------------------
+
+def _multipage_dash() -> Dashboard:
+    rows = [Row(height_in=3.0, widgets=[
+        Widget(type="bar", dataset="by_market", title=f"Chart {i + 1}",
+               spec={"x": "market", "y": "pct"})]) for i in range(5)]
+    return _dash(rows)
+
+
+def test_the_preview_renders_more_than_one_page():
+    dash = _multipage_dash()
+    assert page_count(dash) >= 2
+
+
+def test_each_page_renders_different_content():
+    """A page argument that is accepted but ignored would look identical."""
+    dash = _multipage_dash()
+    one = dashboard_page_png_bytes(dash, _results(), RT, AS_OF, page_no=1)
+    two = dashboard_page_png_bytes(dash, _results(), RT, AS_OF, page_no=2)
+    assert one.startswith(b"\x89PNG") and two.startswith(b"\x89PNG")
+    assert one != two
+
+
+def test_an_out_of_range_page_is_clamped_not_crashed():
+    dash = _multipage_dash()
+    last = dashboard_page_png_bytes(dash, _results(), RT, AS_OF,
+                                    page_no=page_count(dash))
+    assert dashboard_page_png_bytes(dash, _results(), RT, AS_OF, page_no=99) == last
+    assert dashboard_page_png_bytes(dash, _results(), RT, AS_OF, page_no=0) == \
+        dashboard_page_png_bytes(dash, _results(), RT, AS_OF, page_no=1)
+
+
+def test_a_single_page_dashboard_previews_its_only_page():
+    dash = _dash([Row(height_in=1.0, widgets=[
+        Widget(type="kpi", dataset="by_market",
+               spec={"column": "n_orders", "agg": "sum"})])])
+    assert page_count(dash) == 1
+    assert dashboard_page_png_bytes(dash, _results(), RT, AS_OF).startswith(b"\x89PNG")
+
+
+def test_continuation_pages_carry_no_header():
+    """No repeated '<name> (continued)' band — the footer's page number is enough."""
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=False)
+    assert fig.texts == []
+    plt.close(fig)
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=True)
+    assert any("Short sell" in t.get_text() for t in fig.texts)
+    plt.close(fig)
+
+
+def test_dropping_the_header_gives_later_pages_more_room():
+    from kdbmonitor.core.dashpdf import HEADER_H_CONT
+    assert HEADER_H_CONT < 0.3
+    assert page_limit(2) > page_limit(1)

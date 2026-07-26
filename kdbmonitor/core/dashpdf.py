@@ -20,7 +20,10 @@ from kdbmonitor.core.timectx import ResolvedTime
 PAGE_W, PAGE_H = 8.27, 11.69       # A4 portrait, inches
 MARGIN = 0.6
 HEADER_H_FIRST = 1.05              # title band on page 1
-HEADER_H_CONT = 0.45               # slimmer band on continuation pages
+# Continuation pages carry no header at all — just breathing room above the
+# first row. A repeated "<name> (continued)" band says nothing the footer's
+# page number does not, and costs a third of an inch of every later page.
+HEADER_H_CONT = 0.15
 FOOTER_H = 0.45
 GUTTER = 0.28                      # between rows and between widgets
 
@@ -125,25 +128,28 @@ def _axes_rect(x: float, y_top: float, w_in: float, h_in: float,
 
 def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
             first: bool) -> None:
+    """Title band — page 1 only.
+
+    Continuation pages get no header: the report is one document, and repeating
+    its name on every page is filler. The footer's page number already says
+    where you are.
+    """
+    if not first:
+        return
+
     import matplotlib.pyplot as plt
 
-    if first:
-        fig.text(MARGIN / PAGE_W, 1 - 0.42 / PAGE_H, dashboard.name,
-                 fontsize=22, fontweight="bold", color=theme.INK, va="top")
-        subtitle = rt.label
-        if dashboard.description:
-            subtitle = f"{dashboard.description}  ·  {subtitle}"
-        if rt.mode == "realtime":
-            subtitle += f"  ·  as of {as_of:%Y-%m-%d %H:%M}"
-        fig.text(MARGIN / PAGE_W, 1 - 0.78 / PAGE_H, subtitle,
-                 fontsize=11, color=theme.INK2, va="top")
-        rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / PAGE_H
-    else:
-        fig.text(MARGIN / PAGE_W, 1 - 0.42 / PAGE_H,
-                 f"{dashboard.name} (continued)", fontsize=12,
-                 fontweight="bold", color=theme.INK2, va="top")
-        rule_y = 1 - (MARGIN + HEADER_H_CONT - 0.12) / PAGE_H
+    fig.text(MARGIN / PAGE_W, 1 - 0.42 / PAGE_H, dashboard.name,
+             fontsize=22, fontweight="bold", color=theme.INK, va="top")
+    subtitle = rt.label
+    if dashboard.description:
+        subtitle = f"{dashboard.description}  ·  {subtitle}"
+    if rt.mode == "realtime":
+        subtitle += f"  ·  as of {as_of:%Y-%m-%d %H:%M}"
+    fig.text(MARGIN / PAGE_W, 1 - 0.78 / PAGE_H, subtitle,
+             fontsize=11, color=theme.INK2, va="top")
 
+    rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / PAGE_H
     fig.add_artist(plt.Line2D([MARGIN / PAGE_W, 1 - MARGIN / PAGE_W],
                               [rule_y, rule_y], color=theme.GRID, lw=1,
                               transform=fig.transFigure))

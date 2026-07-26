@@ -403,10 +403,11 @@ def _render_export(dashboard: Dashboard) -> None:
         st.session_state[f"pdf_{dashboard.id}"] = dashboard_to_pdf_bytes(
             dashboard, payload["results"], payload["rt"], payload["as_of"])
 
-    if e[1].button("Preview page", icon=":material/preview:",
-                   use_container_width=True, disabled=not payload):
-        st.session_state[f"pdfpreview_{dashboard.id}"] = dashboard_page_png_bytes(
-            dashboard, payload["results"], payload["rt"], payload["as_of"])
+    preview_flag = f"pdfpreview_on_{dashboard.id}"
+    if e[1].button("Preview pages" if pages > 1 else "Preview page",
+                   icon=":material/preview:", use_container_width=True,
+                   disabled=not payload):
+        st.session_state[preview_flag] = True
 
     data = st.session_state.get(f"pdf_{dashboard.id}")
     if data and payload:
@@ -417,11 +418,53 @@ def _render_export(dashboard: Dashboard) -> None:
         e[3].caption("The PDF renders the numbers currently on screen — it does "
                      "not re-query.")
 
-    preview = st.session_state.get(f"pdfpreview_{dashboard.id}")
-    if preview:
-        pages = page_count(dashboard)
-        with st.expander(f"Printed page 1 of {pages}", expanded=True):
-            st.image(preview, use_container_width=True)
+    if st.session_state.get(preview_flag) and payload:
+        _render_pdf_preview(dashboard, payload, pages)
+
+
+def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None:
+    """The printed pages, one at a time — every page, not just the first."""
+    # The slider's own key IS the current page. Giving the buttons a separate
+    # state let the two disagree: the title said page 2 while the slider still
+    # read 1, because a keyed widget ignores `value=` after its first render.
+    page_key = f"pv_page_{dashboard.id}"
+    page_no = st.session_state.get(page_key, 1)
+    if not isinstance(page_no, int) or not 1 <= page_no <= pages:
+        page_no = 1
+        st.session_state[page_key] = 1
+
+    with st.expander(f"Printed page {page_no} of {pages}", expanded=True):
+        if pages > 1:
+            nav = st.columns([1, 1, 5], vertical_alignment="center")
+            if nav[0].button("Previous", icon=":material/chevron_left:",
+                             use_container_width=True, disabled=page_no <= 1,
+                             key=f"pv_prev_{dashboard.id}"):
+                st.session_state[page_key] = page_no - 1
+                st.rerun()
+            if nav[1].button("Next", icon=":material/chevron_right:",
+                             use_container_width=True, disabled=page_no >= pages,
+                             key=f"pv_next_{dashboard.id}"):
+                st.session_state[page_key] = page_no + 1
+                st.rerun()
+            # Jumping straight to a page beats stepping through a long report.
+            # Keyed on page_key, so moving it and the buttons drive one value.
+            page_no = nav[2].select_slider(
+                "Page", options=list(range(1, pages + 1)), key=page_key,
+                label_visibility="collapsed")
+
+        # Rendering a page costs ~0.3s, so cache per (page, as_of): paging back
+        # and forth should not re-render, but new data must invalidate.
+        cache = st.session_state.setdefault(f"pdfpages_{dashboard.id}", {})
+        stamp = payload["as_of"]
+        if cache.get("as_of") != stamp:
+            cache = {"as_of": stamp, "pages": {}}
+            st.session_state[f"pdfpages_{dashboard.id}"] = cache
+        if page_no not in cache["pages"]:
+            cache["pages"][page_no] = dashboard_page_png_bytes(
+                dashboard, payload["results"], payload["rt"], stamp,
+                page_no=page_no)
+
+        st.image(cache["pages"][page_no], use_container_width=True)
 
 
 # --- entry point -----------------------------------------------------------
