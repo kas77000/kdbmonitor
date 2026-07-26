@@ -60,10 +60,15 @@ class ConnectionManager:
         key = (conn.host, conn.port)
         if key not in self._cache:
             if conn.host == "demo":
-                if self._mock_factory is None:
-                    from kdbmonitor.core.mock import MockKdbClient
-                    self._mock_factory = MockKdbClient
-                self._cache[key] = self._mock_factory()
+                self._cache[key] = self._make_mock(conn)
             else:
                 self._cache[key] = self._factory(conn.host, conn.port)
         return self._cache[key]
+
+    def _make_mock(self, conn: Connection):
+        """Pick the mock matching the connection's kind. A custom
+        ``mock_factory`` (tests) wins and receives the connection."""
+        if self._mock_factory is not None:
+            return self._mock_factory(conn)
+        from kdbmonitor.core.mock import MockHdbClient, MockKdbClient
+        return MockHdbClient() if conn.kind == "historical" else MockKdbClient()
