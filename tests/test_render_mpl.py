@@ -130,3 +130,20 @@ def test_a_drawer_blowing_up_becomes_an_error_card(ax):
                        series=[Series("n", ["HK", "JP", "KR"], [1, 2],
                                       theme.BLUE)]))
     assert any(t.get_color() == theme.CRITICAL for t in ax.texts)
+
+
+def test_single_series_bars_are_labelled_with_their_values(ax):
+    draw(ax, PlotModel(kind="bar", series=[_series(y=[61.4, 88.2])]))
+    assert "61.4" in _texts(ax) and "88.2" in _texts(ax)
+
+
+def test_value_labels_share_one_format_across_the_series(ax):
+    # 12.0 must not print as "12" next to "88.2" in the same chart
+    draw(ax, PlotModel(kind="bar",
+                       series=[_series(x=["A", "B", "C"], y=[88.2, 61.4, 12.0])]))
+    assert "12.0" in _texts(ax)
+
+
+def test_whole_numbers_get_no_decimals(ax):
+    draw(ax, PlotModel(kind="bar", series=[_series(y=[12.0, 30.0])]))
+    assert "12" in _texts(ax) and "12.0" not in _texts(ax)
