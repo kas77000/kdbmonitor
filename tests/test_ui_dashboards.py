@@ -140,7 +140,8 @@ def test_historical_guided_dataset_needs_no_date_of_its_own(tmp_path):
                   time_context={"mode": "historical",
                                 "range": {"kind": "preset", "name": "last_30d"}},
                   datasets=[Dataset(name="o", env="orders", table="target")])
-    assert ed.validate(d, s) == []
+    # Concern-specific: an incomplete draft has other problems (no widgets yet).
+    assert not [m for m in ed.validate(d, s) if "date" in m]
 
 
 def test_environment_without_a_historical_side_is_reported(tmp_path):
@@ -177,7 +178,7 @@ def test_a_backward_dataset_reference_is_fine(tmp_path):
         Dataset(name="first", env="orders", table="target"),
         Dataset(name="second", env="orders", mode="raw",
                 raw_qsql="select from t where id in {{first.id}}")])
-    assert ed.validate(d, _store(tmp_path)) == []
+    assert not [m for m in ed.validate(d, _store(tmp_path)) if "references" in m]
 
 
 def test_a_row_may_not_hold_more_than_four_widgets(tmp_path):
@@ -216,3 +217,111 @@ def test_table_height_is_a_value_streamlit_accepts():
     from streamlit.elements.lib.layout_utils import validate_height
     for n in (0, 3, 50):
         validate_height(dashboards.table_height(n, 182), allow_content=True)
+
+
+# --- unfilled inputs --------------------------------------------------------
+
+def _complete(tmp_path):
+    """A dashboard with nothing missing, to mutate one field at a time."""
+    return Dashboard(
+        id=1, name="D",
+        datasets=[Dataset(name="o", env="orders", table="target")],
+        rows=[Row(widgets=[Widget(type="kpi", dataset="o", title="Total",
+                                  spec={"column": "size", "agg": "sum"})])])
+
+
+def test_the_complete_fixture_really_is_complete(tmp_path):
+    assert ed.validate(_complete(tmp_path), _store(tmp_path)) == []
+
+
+def test_a_nameless_dashboard_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.name = "  "
+    assert any("no name" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_dashboard_with_no_datasets_is_reported(tmp_path):
+    d = Dashboard(id=1, name="D")
+    assert any("No datasets yet" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_dashboard_with_no_widgets_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows = []
+    assert any("No widgets yet" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_an_empty_row_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows.append(Row(widgets=[]))
+    assert any("is empty" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_raw_dataset_with_no_query_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.datasets[0].mode = "raw"
+    d.datasets[0].raw_qsql = ""
+    assert any("query is empty" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_filter_with_no_value_is_reported(tmp_path):
+    from kdbmonitor.core.models import Filter
+    d = _complete(tmp_path)
+    d.datasets[0].filters = [Filter(column="side", op="=", value="",
+                                    value_type="symbol")]
+    assert any("no value entered" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_kpi_without_a_column_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows[0].widgets[0].spec = {"agg": "sum"}
+    assert any("'column'" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_bar_without_axes_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows[0].widgets[0] = Widget(type="bar", dataset="o", title="B", spec={})
+    problems = ed.validate(d, _store(tmp_path))
+    assert any("'x'" in m and "'y'" in m for m in problems)
+
+
+def test_a_text_widget_with_no_markdown_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows[0].widgets[0] = Widget(type="text", dataset="o", spec={"markdown": ""})
+    assert any("'markdown'" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_widget_bound_to_a_vanished_column_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.rows[0].widgets[0].spec["column"] = "gone"
+    assert any("not produced by dataset" in m
+               for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_derive_transform_with_no_expression_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.datasets[0].transforms = [Transform(kind="derive", params={
+        "column": "notional", "kind": "arithmetic", "expr": ""})]
+    assert any("no expression" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_a_groupby_with_no_keys_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.datasets[0].transforms = [Transform(kind="groupby",
+                                          params={"keys": [], "aggs": []})]
+    problems = ed.validate(d, _store(tmp_path))
+    assert any("nothing to group by" in m for m in problems)
+    assert any("no aggregations" in m for m in problems)
+
+
+def test_a_sort_with_no_columns_is_reported(tmp_path):
+    d = _complete(tmp_path)
+    d.datasets[0].transforms = [Transform(kind="sort", params={"columns": []})]
+    assert any("no sort columns" in m for m in ed.validate(d, _store(tmp_path)))
+
+
+def test_problem_messages_say_where_the_problem_is(tmp_path):
+    d = _complete(tmp_path)
+    d.datasets[0].transforms = [Transform(kind="sort", params={"columns": []})]
+    assert all(m.startswith(("Dataset", "Row", "The dashboard", "No ", "Duplicate", "A "))
+               for m in ed.validate(d, _store(tmp_path)))

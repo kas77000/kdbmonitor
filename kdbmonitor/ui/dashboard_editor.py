@@ -19,7 +19,7 @@ from kdbmonitor.core.dataset import run_datasets
 from kdbmonitor.core.models import Filter
 from kdbmonitor.core.plotmodel import build_plot_model
 from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, has_date_constraint, resolve
-from kdbmonitor.ui.dashboards import render_widget, row_height_px
+from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 VALUE_TYPES = ["symbol", "number", "string"]
@@ -66,16 +66,109 @@ def dataset_columns(ds: Dataset, conn) -> list[str]:
     return list(dict.fromkeys(cols))
 
 
+# Spec fields a widget cannot render without. Anything not listed is optional.
+REQUIRED_SPEC: dict[str, tuple[str, ...]] = {
+    "kpi": ("column", "agg"),
+    "table": (),
+    "text": ("markdown",),
+    "bar": ("x", "y"),
+    "line": ("x", "y"),
+    "scatter": ("x", "y"),
+    "hist": ("x",),
+    "box": ("y",),
+    "heatmap": ("rows", "cols", "value"),
+    "pie": ("by", "value"),
+}
+
+
+def _blank(value) -> bool:
+    """A field the user has not actually filled in."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
+    where = f"Dataset '{ds_name}', transform {index} ({t.kind})"
+    p, out = t.params, []
+    if t.kind == "derive":
+        if _blank(p.get("column")):
+            out.append(f"{where}: the new column has no name.")
+        if p.get("kind", "arithmetic") == "arithmetic":
+            if _blank(p.get("expr")):
+                out.append(f"{where}: no expression entered.")
+        else:
+            if _blank(p.get("source")):
+                out.append(f"{where}: no source column chosen.")
+            if _blank(p.get("mapping")):
+                out.append(f"{where}: no suffix mappings entered.")
+    elif t.kind == "filter":
+        if _blank(p.get("column")):
+            out.append(f"{where}: no column chosen.")
+        if _blank(p.get("value")):
+            out.append(f"{where}: no value entered.")
+    elif t.kind == "groupby":
+        if _blank(p.get("keys")):
+            out.append(f"{where}: nothing to group by.")
+        if _blank(p.get("aggs")):
+            out.append(f"{where}: no aggregations added.")
+        for a in p.get("aggs", []):
+            if _blank(a.get("column")) or _blank(a.get("as")):
+                out.append(f"{where}: an aggregation is missing its column or name.")
+                break
+    elif t.kind == "sort":
+        if _blank(p.get("columns")):
+            out.append(f"{where}: no sort columns chosen.")
+    elif t.kind == "rename":
+        if _blank(p.get("mapping")):
+            out.append(f"{where}: no renames entered.")
+    return out
+
+
 def validate(draft: Dashboard, store) -> list[str]:
-    """Everything wrong with this dashboard, in plain English. Empty when fine."""
+    """Everything wrong with this dashboard, in plain English. Empty when fine.
+
+    Covers both invalid configurations and inputs simply left unfilled, so the
+    editor can warn while you build rather than only when you press Save.
+    """
     problems: list[str] = []
     envs = store.list_environments()
     dashboard_time = resolve(draft.time_context, date.today())
 
+    if _blank(draft.name):
+        problems.append("The dashboard has no name.")
+    if not draft.datasets:
+        problems.append("No datasets yet — add one in the Data section.")
+    elif not any(row.widgets for row in draft.rows):
+        problems.append("No widgets yet — add a row and a widget in the Layout "
+                        "section.")
+
     seen: list[str] = []
     for ds in draft.datasets:
+        if _blank(ds.name):
+            problems.append("A dataset has no name.")
         if ds.name in seen:
             problems.append(f"Duplicate dataset name '{ds.name}'.")
+        if _blank(ds.env):
+            problems.append(f"Dataset '{ds.name}' has no environment selected.")
+
+        if ds.mode == "raw" and _blank(ds.raw_qsql):
+            problems.append(f"Dataset '{ds.name}' is set to raw q but the query is "
+                            f"empty.")
+
+        for i, f in enumerate(ds.filters, start=1):
+            if _blank(f.column):
+                problems.append(f"Dataset '{ds.name}', filter {i}: no column chosen.")
+            if _blank(f.value):
+                problems.append(f"Dataset '{ds.name}', filter {i} on "
+                                f"'{f.column}': no value entered.")
+
+        for i, t in enumerate(ds.transforms, start=1):
+            problems += _transform_problems(ds.name, i, t)
 
         if ds.time_mode == "realtime":
             rt = resolve({"mode": "realtime"}, date.today())
@@ -106,18 +199,39 @@ def validate(draft: Dashboard, store) -> list[str]:
                                 f"not defined above it.")
         seen.append(ds.name)
 
-    names = {ds.name for ds in draft.datasets}
+    by_name = {ds.name: ds for ds in draft.datasets}
     for i, row in enumerate(draft.rows, start=1):
         if len(row.widgets) > 4:
             problems.append(f"Row {i} has {len(row.widgets)} widgets — a row holds "
                             f"at most 4 widgets.")
+        if not row.widgets:
+            problems.append(f"Row {i} is empty — add a widget or delete the row.")
+
         for w in row.widgets:
-            if w.dataset not in names:
-                problems.append(f"Row {i}: widget '{w.title or w.type}' uses unknown "
-                                f"dataset '{w.dataset}'.")
+            label = f"Row {i}: {w.type} '{w.title}'" if w.title else f"Row {i}: {w.type}"
+            if w.dataset not in by_name:
+                problems.append(f"{label} uses unknown dataset '{w.dataset}'.")
+                continue
             if w.width <= 0:
-                problems.append(f"Row {i}: widget '{w.title or w.type}' has a "
-                                f"non-positive width.")
+                problems.append(f"{label} has a non-positive width.")
+
+            missing = [f for f in REQUIRED_SPEC.get(w.type, ())
+                       if _blank(w.spec.get(f))]
+            if missing:
+                problems.append(f"{label} is missing "
+                                f"{', '.join(repr(m) for m in missing)}.")
+
+            # Catch a column that stopped existing — e.g. a group-by was changed
+            # after the widget was bound to one of its outputs.
+            ds = by_name[w.dataset]
+            known = dataset_columns(ds, _connection_for(store, ds))
+            if known:
+                for field in REQUIRED_SPEC.get(w.type, ()):
+                    value = w.spec.get(field)
+                    if isinstance(value, str) and value and field != "agg" \
+                            and value not in known:
+                        problems.append(f"{label}: column '{value}' is not produced "
+                                        f"by dataset '{ds.name}'.")
     return problems
 
 
@@ -525,13 +639,16 @@ def _render_layout(store, draft: Dashboard) -> None:
                         row.widgets[w_i - 1], row.widgets[w_i] = \
                             row.widgets[w_i], row.widgets[w_i - 1]
                         st.rerun()
-                    if c[5].button("", icon=":material/close:", key=f"{key}_x"):
+                    if c[5].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
                         st.rerun()
 
                     ds = by_name.get(w.dataset)
+                    # Namespaced: the card's own controls live under "{key}_*",
+                    # so an axis field called "_x" would collide with the remove
+                    # button. Keep the spec form in its own key space.
                     _widget_form(w, dataset_columns(ds, _connection_for(store, ds)),
-                                 key)
+                                 f"{key}_spec")
 
             if st.button("Add widget", icon=":material/add:", key=f"r{r_i}_add",
                          disabled=len(row.widgets) >= 4):
@@ -565,6 +682,24 @@ def _render_preview(store, mgr, draft: Dashboard) -> None:
 
 # --- entry point -----------------------------------------------------------
 
+def _render_problems(problems: list[str]) -> None:
+    """A standing list of what is unfilled or wrong, shown while you build.
+
+    Expanded by default: a collapsed warning is one a user scrolls past, and the
+    whole point is that nobody saves a dashboard with a field they never filled.
+    """
+    if not problems:
+        st.success("Ready to save — every field is filled in.",
+                   icon=":material/check_circle:")
+        return
+
+    noun = "problem" if len(problems) == 1 else "problems"
+    with st.expander(f":red[{len(problems)} {noun} to fix before saving]",
+                     expanded=True, icon=":material/error:"):
+        for p in problems:
+            st.markdown(f":red[·] {p}")
+
+
 def render(store, mgr) -> None:
     draft = _draft(store)
 
@@ -572,20 +707,21 @@ def render(store, mgr) -> None:
     draft.name = head[0].text_input("Dashboard name", value=draft.name)
     draft.description = head[1].text_input("Description", value=draft.description)
 
-    if head[2].button("Save", icon=":material/save:", type="primary",
-                      use_container_width=True):
-        problems = validate(draft, store)
-        if problems:
-            for p in problems:
-                st.error(p, icon=":material/error:")
+    # Validate on every rerun, not just on Save, so a half-filled field is
+    # visible while you build rather than only when you try to leave.
+    problems = validate(draft, store)
+
+    if head[2].button(f"Save ({len(problems)})" if problems else "Save",
+                      icon=":material/save:", type="primary",
+                      use_container_width=True, disabled=bool(problems),
+                      help="Fix the listed problems first" if problems else None):
+        if draft.id:
+            store.update_dashboard(draft)
         else:
-            if draft.id:
-                store.update_dashboard(draft)
-            else:
-                draft.id = store.add_dashboard(draft)
-            st.toast(f"Saved '{draft.name}'", icon=":material/check:")
-            _close()
-            st.rerun()
+            draft.id = store.add_dashboard(draft)
+        st.toast(f"Saved '{draft.name}'", icon=":material/check:")
+        _close()
+        st.rerun()
 
     if head[3].button("Open", icon=":material/open_in_new:",
                       use_container_width=True, disabled=draft.id is None):
@@ -594,9 +730,13 @@ def render(store, mgr) -> None:
         st.query_params["dash"] = str(dashboard_id)
         st.rerun()
 
-    if head[4].button("Close", icon=":material/close:", use_container_width=True):
+    if head[4].button("All dashboards", icon=":material/arrow_back:",
+                      use_container_width=True,
+                      help="Discard nothing — just leave the editor"):
         _close()
-        st.rerun()
+        back_to_gallery()
+
+    _render_problems(problems)
 
     section = st.segmented_control("Section", ["Data", "Layout", "Preview"],
                                    default="Data", key="dash_edit_section")

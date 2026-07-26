@@ -144,6 +144,19 @@ def _open(dashboard_id: int) -> None:
     st.rerun()
 
 
+def back_to_gallery() -> None:
+    """Leave the open dashboard and return to the list.
+
+    Clearing ``?dash`` is the only way back: Streamlit's sidebar page link keeps
+    existing query params, so clicking 'Dashboards' in the nav while a dashboard
+    is open lands on that same dashboard again. Hence a prominent in-page
+    control rather than relying on the nav.
+    """
+    st.query_params.pop("dash", None)
+    st.session_state.pop("dash_pills", None)
+    st.rerun()
+
+
 # --- gallery ---------------------------------------------------------------
 
 def _render_gallery(store) -> None:
@@ -258,13 +271,22 @@ def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
 
 
 def _render_view(store, mgr, dashboard: Dashboard) -> None:
+    # The way back lives here, first and on its own line, because the sidebar
+    # nav cannot get you out (it keeps ?dash).
+    nav = st.columns([2, 6], vertical_alignment="center")
+    if nav[0].button("All dashboards", icon=":material/arrow_back:",
+                     use_container_width=True,
+                     help="Back to the dashboard list"):
+        back_to_gallery()
+
     names = {d.name: d.id for d in store.list_dashboards()}
-    picked = st.pills("Dashboards", list(names), default=dashboard.name,
-                      label_visibility="collapsed", key="dash_pills")
+    with nav[1]:
+        picked = st.pills("Dashboards", list(names), default=dashboard.name,
+                          label_visibility="collapsed", key="dash_pills")
     if picked and names[picked] != dashboard.id:
         _open(names[picked])
 
-    top = st.columns([4, 1.3, 1.2, 1.3], vertical_alignment="bottom")
+    top = st.columns([4.5, 1.3, 1.2], vertical_alignment="bottom")
     top[0].subheader(dashboard.name)
 
     labels = list(REFRESH_OPTIONS)
@@ -281,9 +303,6 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         st.session_state["dash_edit_id"] = dashboard.id
         st.session_state["dash_mode"] = "edit"
         st.session_state.pop("dash_draft", None)
-        st.rerun()
-    if top[3].button("Gallery", icon=":material/grid_view:", use_container_width=True):
-        st.query_params.pop("dash", None)
         st.rerun()
 
     _render_period(store, dashboard, st.session_state.get(frames_key(dashboard.id)))
