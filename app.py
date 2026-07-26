@@ -75,7 +75,10 @@ def dashboards_page():
     dashboards.render(store, mgr)
 
 
-monitor_pg = st.Page(monitor_page, title="Monitor", url_path="monitor",
+# No url_path: st.navigation serves the default page at "/" and never registers
+# its url_path, so declaring one promised a /monitor URL that answered
+# "Page not found". The sidebar link points at "/" either way.
+monitor_pg = st.Page(monitor_page, title="Monitor",
                      icon=":material/monitoring:", default=True)
 builder_pg = st.Page(builder_page, title="Builder", url_path="builder",
                      icon=":material/build:")
