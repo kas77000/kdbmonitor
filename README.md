@@ -251,7 +251,16 @@ answers "tell me when this happens", a dashboard answers "show me the state of
 this, continuously".
 
 **Try it:** Admin → *Load demo servers*, then Dashboards → *Import* and pick
-`docs/examples/short_sell_dashboard.json`.
+`docs/examples/demo_orders_dashboard.json`. It runs against the demo `orders`
+environment, so it works with no real KDB — open it, then switch the period to
+*Last 7 days* to watch the same dashboard re-query the historical server.
+
+`docs/examples/short_sell_dashboard.json` is the second example: the
+`short_sell_report.py` one-pager rebuilt as a dashboard. It expects the **real**
+order schema (`target` with `id_target`, `size`, `executed`, `nReject` and
+market-suffixed syms), so import it once you have a real `orders` environment
+registered — it will show error panels against the demo tables, which do not have
+those columns.
 
 ### Datasets — query plus shaping
 
