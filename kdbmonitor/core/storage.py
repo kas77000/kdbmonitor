@@ -45,7 +45,9 @@ class Storage:
                 host TEXT NOT NULL,
                 port INTEGER NOT NULL,
                 schema_json TEXT NOT NULL DEFAULT '{}',
-                last_introspected_at TEXT
+                last_introspected_at TEXT,
+                kind TEXT NOT NULL DEFAULT 'realtime',
+                env TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +95,14 @@ class Storage:
         if "result_hash" not in cols:
             self.conn.execute("ALTER TABLE alert_runs ADD COLUMN result_hash TEXT")
 
+        ccols = {r["name"] for r in self.conn.execute("PRAGMA table_info(connections)")}
+        if "kind" not in ccols:
+            self.conn.execute(
+                "ALTER TABLE connections ADD COLUMN kind TEXT NOT NULL DEFAULT 'realtime'")
+        if "env" not in ccols:
+            self.conn.execute(
+                "ALTER TABLE connections ADD COLUMN env TEXT NOT NULL DEFAULT ''")
+
     # --- connections ---
     def add_connection(self, c: Connection) -> int:
         r = self.conn.execute(
@@ -101,8 +111,10 @@ class Storage:
         if r is not None:
             raise ValueError(f"A connection named '{c.name}' already exists.")
         cur = self.conn.execute(
-            "INSERT INTO connections(name, host, port, schema_json, last_introspected_at) VALUES (?,?,?,?,?)",
-            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at),
+            "INSERT INTO connections(name, host, port, schema_json, last_introspected_at,"
+            " kind, env) VALUES (?,?,?,?,?,?,?)",
+            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
+             c.kind, c.env),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -112,6 +124,7 @@ class Storage:
             id=r["id"], name=r["name"], host=r["host"], port=r["port"],
             schema=json.loads(r["schema_json"]),
             last_introspected_at=r["last_introspected_at"],
+            kind=r["kind"], env=r["env"],
         )
 
     def list_connections(self) -> list[Connection]:
@@ -128,14 +141,29 @@ class Storage:
 
     def update_connection(self, c: Connection) -> None:
         self.conn.execute(
-            "UPDATE connections SET name=?, host=?, port=?, schema_json=?, last_introspected_at=? WHERE id=?",
-            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at, c.id),
+            "UPDATE connections SET name=?, host=?, port=?, schema_json=?,"
+            " last_introspected_at=?, kind=?, env=? WHERE id=?",
+            (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
+             c.kind, c.env, c.id),
         )
         self.conn.commit()
 
     def delete_connection(self, cid: int) -> None:
         self.conn.execute("DELETE FROM connections WHERE id=?", (cid,))
         self.conn.commit()
+
+    def list_environments(self) -> dict[str, dict[str, Optional[Connection]]]:
+        """Group connections into {env: {"realtime": Conn|None, "historical": Conn|None}}.
+
+        A connection with a blank ``env`` forms its own single-sided environment
+        named after itself, so pre-existing connections keep working untouched.
+        """
+        envs: dict[str, dict[str, Optional[Connection]]] = {}
+        for c in self.list_connections():
+            slot = envs.setdefault(c.env or c.name,
+                                   {"realtime": None, "historical": None})
+            slot[c.kind] = c
+        return envs
 
     # --- alerts ---
     def alert_name_exists(self, name: str, exclude_id: Optional[int] = None) -> bool:

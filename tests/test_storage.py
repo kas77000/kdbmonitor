@@ -297,3 +297,85 @@ def test_last_triggered_hash_returns_latest_triggered_run_hash():
     assert store.last_triggered_hash(aid) == "A"                  # ignores the later armed run
     store.record_run(aid, "2026-07-21T10:02:00+00:00", "triggered", True, True, 2, "m", result_hash="B")
     assert store.last_triggered_hash(aid) == "B"
+
+
+# --- environments (realtime / historical pairing) ---------------------------
+
+def test_connection_roundtrips_kind_and_env(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="order-hdb", host="h", port=5011,
+                                kind="historical", env="orders"))
+    got = s.list_connections()[0]
+    assert got.kind == "historical"
+    assert got.env == "orders"
+
+
+def test_connection_defaults_to_realtime(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="rdb", host="h", port=5010))
+    got = s.list_connections()[0]
+    assert got.kind == "realtime"
+    assert got.env == ""
+
+
+def test_update_connection_persists_kind_and_env(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    cid = s.add_connection(Connection(id=None, name="rdb", host="h", port=5010))
+    got = s.get_connection(cid)
+    got.kind = "historical"
+    got.env = "orders"
+    s.update_connection(got)
+    assert s.get_connection(cid).kind == "historical"
+    assert s.get_connection(cid).env == "orders"
+
+
+def test_migration_adds_columns_to_an_old_db(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    raw = sqlite3.connect(path)
+    raw.execute(
+        "CREATE TABLE connections (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "name TEXT UNIQUE NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, "
+        "schema_json TEXT NOT NULL DEFAULT '{}', last_introspected_at TEXT)"
+    )
+    raw.execute("INSERT INTO connections(name, host, port) VALUES ('legacy','h',5010)")
+    raw.commit()
+    raw.close()
+
+    s = Storage(path)
+    s.init_db()
+    got = s.list_connections()[0]
+    assert got.name == "legacy"
+    assert got.kind == "realtime"
+    assert got.env == ""
+
+
+def test_list_environments_pairs_by_env(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="order-rdb", host="h", port=5010,
+                                kind="realtime", env="orders"))
+    s.add_connection(Connection(id=None, name="order-hdb", host="h", port=5011,
+                                kind="historical", env="orders"))
+    envs = s.list_environments()
+    assert set(envs) == {"orders"}
+    assert envs["orders"]["realtime"].name == "order-rdb"
+    assert envs["orders"]["historical"].name == "order-hdb"
+
+
+def test_list_environments_reports_missing_side(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="rdb-only", host="h", port=5010,
+                                kind="realtime", env="orders"))
+    assert s.list_environments()["orders"]["historical"] is None
+
+
+def test_env_falls_back_to_connection_name(tmp_path):
+    s = Storage(str(tmp_path / "t.db"))
+    s.init_db()
+    s.add_connection(Connection(id=None, name="standalone", host="h", port=5010))
+    assert "standalone" in s.list_environments()

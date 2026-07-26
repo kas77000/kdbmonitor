@@ -71,6 +71,8 @@ class Connection:
     port: int
     schema: dict[str, list[str]] = field(default_factory=dict)  # table -> columns
     last_introspected_at: Optional[str] = None
+    kind: str = "realtime"       # realtime | historical
+    env: str = ""                # logical environment; "" falls back to name
 
 
 def alert_to_dict(alert: Alert) -> dict:
@@ -119,4 +121,6 @@ def connection_from_dict(d: dict) -> Connection:
         port=d["port"],
         schema=d.get("schema", {}),
         last_introspected_at=d.get("last_introspected_at"),
+        kind=d.get("kind", "realtime"),
+        env=d.get("env", ""),
     )
