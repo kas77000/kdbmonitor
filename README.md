@@ -423,6 +423,14 @@ the downloaded page shows the numbers you were looking at, not a fresh fetch tak
 a moment later. *Preview pages* shows the real printed pages inline first, with
 Previous/Next and a slider to step through a multi-page report.
 
+The report holds still while you read it. Frames are taken on the refresh
+interval — or when **Refresh** is pressed, in the header bar and beside the
+preview — and never merely because something was clicked, so turning a page
+neither re-queries KDB nor redraws the pages. Each page is drawn once and kept
+against the frames it came from; new frames replace the lot. The preview names
+the snapshot it is showing (*the 09:15:03 frames*) so it is clear what is on
+screen.
+
 The title band is the dashboard name and the period it covers, nothing else —
 `2026-06-01 → 2026-06-30` for a range, `2026-07-26 09:15` for a real-time
 snapshot. Only page 1 carries it; continuation pages start straight into the

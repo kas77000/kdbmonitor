@@ -156,13 +156,51 @@ def frames_key(dashboard_id: int) -> str:
     return f"dash_frames_{dashboard_id}"
 
 
+def is_due(as_of: datetime, refresh_secs: int,
+           now: datetime | None = None) -> bool:
+    """Whether frames taken at ``as_of`` have aged past the refresh interval.
+
+    Refresh 'Off' never comes due: the numbers then change only when asked for.
+    A half-second of slack keeps the timer from missing its own beat — it fires
+    *on* the interval, and insisting on the full span would push every other
+    tick to the one after.
+    """
+    if not refresh_secs:
+        return False
+    now = now or datetime.now()
+    return (now - as_of).total_seconds() >= refresh_secs - 0.5
+
+
 def refresh(store, mgr, dashboard: Dashboard) -> dict:
-    """Run every dataset and cache the frames, stamped with when they were taken."""
+    """The dashboard's frames, re-querying only when they are actually due.
+
+    A rerun is not a reason to re-query. Every button on the page reruns the
+    whole script, and running the datasets again each time restamped the frames
+    — which hit KDB for numbers nobody asked to change and, because the printed
+    pages are cached against that stamp, threw away the rendered PDF preview on
+    every page turn. Frames are taken again on the interval, or when the
+    Refresh button drops them.
+    """
+    cached = st.session_state.get(frames_key(dashboard.id))
+    if cached and not is_due(cached["as_of"], dashboard.refresh_secs):
+        return cached
+
     payload = {"results": run_datasets(dashboard, store, mgr, date.today()),
                "as_of": datetime.now(),
                "rt": resolve(dashboard.time_context, date.today())}
     st.session_state[frames_key(dashboard.id)] = payload
     return payload
+
+
+def force_refresh(dashboard_id: int) -> None:
+    """Drop the frames so the next pass re-queries, and the PDF built from them.
+
+    Used by every Refresh control: dropping the state is the whole action, so
+    the button cannot disagree with what the fragment then does.
+    """
+    st.session_state.pop(frames_key(dashboard_id), None)
+    st.session_state.pop(f"pdf_{dashboard_id}", None)
+    st.rerun()
 
 
 def _active_id(store) -> int | None:
@@ -330,9 +368,7 @@ def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
     if spec != dashboard.time_context:
         dashboard.time_context = spec
         store.update_dashboard(dashboard)
-        st.session_state.pop(frames_key(dashboard.id), None)
-        st.session_state.pop(f"pdf_{dashboard.id}", None)
-        st.rerun()
+        force_refresh(dashboard.id)      # a new period is new data by definition
 
     if payload:
         bar[3].markdown(f":gray[{payload['rt'].label}]<br>"
@@ -357,20 +393,27 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
     if picked and names[picked] != dashboard.id:
         _open(names[picked])
 
-    top = st.columns([4.5, 1.3, 1.2], vertical_alignment="bottom")
+    top = st.columns([3.5, 1.3, 1.2, 1.0], vertical_alignment="bottom")
     top[0].subheader(dashboard.name)
 
     labels = list(REFRESH_OPTIONS)
     current = next((k for k, v in REFRESH_OPTIONS.items()
                     if v == dashboard.refresh_secs), "15s")
-    chosen = top[1].selectbox("Refresh", labels, index=labels.index(current),
+    chosen = top[1].selectbox("Auto-refresh", labels, index=labels.index(current),
                               key=f"rf_{dashboard.id}")
     if REFRESH_OPTIONS[chosen] != dashboard.refresh_secs:
         dashboard.refresh_secs = REFRESH_OPTIONS[chosen]
         store.update_dashboard(dashboard)
         st.rerun()
 
-    if top[2].button("Edit", icon=":material/edit:"):
+    # The numbers now hold still between interval ticks, so there has to be a
+    # way to ask for new ones without waiting for the next one.
+    if top[2].button("Refresh", icon=":material/refresh:",
+                     key=f"rf_now_{dashboard.id}",
+                     help="Run every dataset again now"):
+        force_refresh(dashboard.id)
+
+    if top[3].button("Edit", icon=":material/edit:"):
         st.session_state["dash_edit_id"] = dashboard.id
         st.session_state["dash_mode"] = "edit"
         st.session_state.pop("dash_draft", None)
@@ -434,6 +477,10 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
     Shown plainly rather than inside an expander: collapsing it left a stub
     across the page that still had to be scrolled past. Close puts the
     dashboard back, and the button that opened it says Hide while it is up.
+
+    Turning a page never redraws the report: the pages are cached against the
+    frames they were drawn from, and those only change on the refresh interval
+    or when Refresh is pressed.
     """
     # The slider's own key IS the current page. Giving the buttons a separate
     # state let the two disagree: the title said page 2 while the slider still
@@ -444,9 +491,16 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
         page_no = 1
         st.session_state[page_key] = 1
 
-    head = st.columns([5, 1.2], vertical_alignment="center")
-    head[0].markdown(f"**Printed page {page_no} of {pages}**")
-    if head[1].button("Close", icon=":material/close:",
+    head = st.columns([4.2, 1.3, 1.2], vertical_alignment="center")
+    head[0].markdown(f"**Printed page {page_no} of {pages}** "
+                     f":gray[— the {payload['as_of']:%H:%M:%S} frames]")
+    # Paging holds the report still on purpose, so the way to newer numbers is
+    # here rather than implied by turning a page.
+    if head[1].button("Refresh", icon=":material/refresh:",
+                      key=f"pv_refresh_{dashboard.id}",
+                      help="Re-query and draw the pages again"):
+        force_refresh(dashboard.id)
+    if head[2].button("Close", icon=":material/close:",
                       key=f"pv_close_{dashboard.id}"):
         st.session_state[f"pdfpreview_on_{dashboard.id}"] = False
         st.rerun()
@@ -471,7 +525,8 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
                 label_visibility="collapsed")
 
         # Rendering a page costs ~0.3s, so cache per (page, as_of): paging back
-        # and forth should not re-render, but new data must invalidate.
+        # and forth never re-renders, while frames taken on the interval — or by
+        # Refresh — invalidate every page at once.
         cache = st.session_state.setdefault(f"pdfpages_{dashboard.id}", {})
         stamp = payload["as_of"]
         if cache.get("as_of") != stamp:
