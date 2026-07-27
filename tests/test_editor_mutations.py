@@ -314,6 +314,38 @@ def test_moving_a_widget_left_carries_its_spec(guided_db):
 
 # --- a deletion must not disturb its neighbours ----------------------------
 
+def test_deleting_a_widget_leaves_the_other_rows_alone(guided_db):
+    """Forgetting the shifted controls has to stop at the row it happened in:
+    clear too much and the rows below are re-read from a draft they never
+    wrote to; clear too little and they inherit each other's values."""
+    at = _click(_open(guided_db, "Layout"), "r0w0_del")
+    rows = _draft(at).rows
+
+    assert [w.title for w in rows[0].widgets] == ["Two"]
+    assert rows[1].height_in == 2.0
+    assert [w.title for w in rows[1].widgets] == ["Three"]
+    assert rows[1].widgets[0].spec["columns"] == ["sym", "qty"]
+
+
+def test_deleting_a_transform_leaves_the_other_datasets_alone(tmp_path):
+    """Each dataset card has its own key space; only the one that renumbered
+    may be forgotten."""
+    dash = _raw_dashboard()
+    dash.datasets.append(Dataset(
+        name="second", env="orders", mode="raw", raw_qsql="select from workorder",
+        transforms=[
+            Transform(kind="limit", params={"n": 5}),
+            Transform(kind="sort", params={"columns": ["sym"],
+                                           "ascending": False})]))
+    at = _click(_open(_store(tmp_path, dash, "two.db")), "ds1_tx_0")
+
+    first, second = _draft(at).datasets
+    assert [t.kind for t in second.transforms] == ["sort"]
+    assert second.transforms[0].params["columns"] == ["sym"]
+    assert second.transforms[0].params["ascending"] is False
+    _assert_nothing_lost([t.params for t in _market_transforms()],
+                         [t.params for t in first.transforms], "ds0.transforms")
+
 def test_deleting_the_first_of_three_identical_kinds(tmp_path):
     dash = _raw_dashboard()
     dash.datasets[0].transforms = [

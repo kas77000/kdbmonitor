@@ -398,6 +398,36 @@ def _close() -> None:
         st.session_state.pop(key, None)
 
 
+def _forget(pattern: str) -> None:
+    """Drop the widget state stored under keys matching ``pattern``.
+
+    Every control here is keyed by *position* — ``r2w1_ti`` is "row 2, widget
+    1's title" — and writes its value straight back into the draft on each
+    rerun. Move or delete an element and those positions renumber underneath
+    keys that do not: the widget that shuffled up is drawn from the value of
+    the one that used to sit there, and writes it into the draft. Deleting a
+    row left the survivor holding the deleted row's height; swapping two
+    widgets wrote them straight back the way they were, so the move appeared
+    not to happen at all.
+
+    Forgetting the keys makes the next pass read from the draft, which is the
+    thing that actually changed. Call it for the whole span that renumbers,
+    not just the element touched.
+    """
+    for key in [k for k in list(st.session_state) if re.match(pattern, str(k))]:
+        st.session_state.pop(key, None)
+
+
+# One transform's controls: the kind selectbox (``ds0_tk_2``) and its form,
+# which lives under its own index (``ds0_t2_gc_0``). Deliberately no match for
+# the dataset's own ``_t`` / ``_tm`` / ``_tc`` keys — those do not renumber.
+_TRANSFORM_KEYS = r"%s_t(?:k_|\d)"
+
+# Every row's controls, and every widget's inside them (``r1_h``, ``r1w0_ti``,
+# ``r1w0_spec_cols``). A row that moves or goes renumbers all of them.
+_ROW_KEYS = r"r\d+"
+
+
 def learned_columns(name: str) -> list[str]:
     """The columns this dataset's query returned the last time it was run here.
 
@@ -457,6 +487,7 @@ def _filters_form(ds: Dataset, columns: list[str], key: str) -> None:
         f.negated = c[4].checkbox("not", value=f.negated, key=f"{key}_fn_{i}")
         if c[5].button("", icon=":material/close:", key=f"{key}_fx_{i}"):
             ds.filters.pop(i)
+            _forget(rf"{key}_f")               # every filter below shuffles up
             st.rerun()
 
     if st.button("Add filter", icon=":material/add:", key=f"{key}_addf"):
@@ -529,6 +560,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
             a["as"] = c[2].text_input("As", value=a["as"], key=f"{key}_ga_{i}")
             if c[3].button("", icon=":material/close:", key=f"{key}_gx_{i}"):
                 p["aggs"].pop(i)
+                _forget(rf"{key}_g")           # every aggregation below shuffles up
                 st.rerun()
         if st.button("Add aggregation", icon=":material/add:", key=f"{key}_gadd"):
             p.setdefault("aggs", []).append(
@@ -580,6 +612,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                                                ds.max_rows, step=100, key=f"{key}_mr"))
         if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
             draft.datasets.pop(index)
+            _forget(r"ds\d+")                  # every card below renumbers
             st.rerun()
 
         if ds.time_mode == "custom":
@@ -634,15 +667,18 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                                key=f"{key}_tu_{i}", disabled=i == 0):
                     ds.transforms[i - 1], ds.transforms[i] = \
                         ds.transforms[i], ds.transforms[i - 1]
+                    _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
                 if c[3].button("", icon=":material/arrow_downward:",
                                key=f"{key}_td_{i}",
                                disabled=i == len(ds.transforms) - 1):
                     ds.transforms[i + 1], ds.transforms[i] = \
                         ds.transforms[i], ds.transforms[i + 1]
+                    _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
                 if c[4].button("", icon=":material/close:", key=f"{key}_tx_{i}"):
                     ds.transforms.pop(i)
+                    _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
                 # Columns available to a transform are those produced by the
                 # ones before it, not the dataset's final shape.
@@ -982,13 +1018,16 @@ def _render_layout(store, draft: Dashboard) -> None:
             if head[2].button("", icon=":material/arrow_upward:", key=f"r{r_i}_u",
                               disabled=r_i == 0):
                 draft.rows[r_i - 1], draft.rows[r_i] = draft.rows[r_i], draft.rows[r_i - 1]
+                _forget(_ROW_KEYS)
                 st.rerun()
             if head[3].button("", icon=":material/arrow_downward:", key=f"r{r_i}_d",
                               disabled=r_i == len(draft.rows) - 1):
                 draft.rows[r_i + 1], draft.rows[r_i] = draft.rows[r_i], draft.rows[r_i + 1]
+                _forget(_ROW_KEYS)
                 st.rerun()
             if head[4].button("", icon=":material/delete:", key=f"r{r_i}_x"):
                 draft.rows.pop(r_i)
+                _forget(_ROW_KEYS)
                 st.rerun()
 
             for w_i, w in enumerate(list(row.widgets)):
@@ -1011,9 +1050,11 @@ def _render_layout(store, draft: Dashboard) -> None:
                                    disabled=w_i == 0):
                         row.widgets[w_i - 1], row.widgets[w_i] = \
                             row.widgets[w_i], row.widgets[w_i - 1]
+                        _forget(rf"r{r_i}w\d+")
                         st.rerun()
                     if c[5].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
+                        _forget(rf"r{r_i}w\d+")
                         st.rerun()
 
                     ds = by_name.get(w.dataset)
