@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import operator
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -117,6 +117,10 @@ class PlotModel:
     columns: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     cell_colors: dict = field(default_factory=dict)      # (row, col) -> hex
+    # One part of a table printed across several pages: how many rows a full
+    # part holds, so a short last part draws its rows the same height as the
+    # rest instead of stretching to fill the slot. 0 = not part of anything.
+    row_capacity: int = 0
 
     # charts
     series: list[Series] = field(default_factory=list)
@@ -370,6 +374,20 @@ _RESOLVERS: dict[str, Callable] = {
     "scatter": _scatter, "hist": _hist, "box": _box, "heatmap": _heatmap,
     "pie": _pie,
 }
+
+
+def slice_table(pm: PlotModel, start: int, count: int, capacity: int) -> PlotModel:
+    """The rows ``start..start+count`` of a table, as its own model.
+
+    Used to print a long table over several pages: the headers and the column
+    formatting come along unchanged, and the highlight colours are re-indexed
+    onto the rows this part actually shows.
+    """
+    rows = pm.rows[start:start + count]
+    colors = {(r - start, c): colour
+              for (r, c), colour in pm.cell_colors.items()
+              if start <= r < start + len(rows)}
+    return replace(pm, rows=rows, cell_colors=colors, row_capacity=capacity)
 
 
 def build_plot_model(widget: Widget, results: dict) -> PlotModel:

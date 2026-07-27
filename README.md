@@ -425,12 +425,22 @@ both. Pages paginate automatically, and a dataset that failed prints a visible
 error panel rather than being silently dropped — a missing chart in a printed
 report reads as "nothing to report".
 
-A printed table has a fixed height, so rows and type size trade off. The type
-shrinks to fit first; once it would drop below what is legible the row count
-gives way instead, and the table says so — `showing 19 of 60 rows` under its last
-line. Nothing is ever dropped silently. To print more of a long table, give its
-row more inches in the Layout editor, which shows you where the page breaks land
-as you drag; for the whole result, read it on screen, where the table scrolls.
+**A table longer than its row carries on over the following pages.** The type
+shrinks to fit first — a dozen rows print at full size, eighteen tighten a
+little — and once it would drop below legible, the table continues instead, under
+a repeated header and a `(continued)` title. Chunks landing on the same page join
+into one block, so the report reads as a single table rather than the same header
+stamped every twenty rows. Everything else in the row prints once, with the
+first chunk.
+
+The page count therefore follows the data, and the Dashboards page states it
+before you generate. The Layout editor can only count the layout, since it has
+no results in hand, so it shows a floor: *prints on N pages at least*.
+
+A table needing more than 50 chunks is treated as a data dump rather than a
+report: it stops there and the last chunk says `showing 950 of 20,000 rows`.
+Nothing is ever dropped silently. If you hit that, narrow the query or lower the
+dataset's **Max rows** — a thousand-page PDF helps nobody.
 
 ### Sharing
 

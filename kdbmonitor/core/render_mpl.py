@@ -66,6 +66,23 @@ def _axes_height_in(ax) -> float:
     return ax.get_position().height * figure.get_figheight()
 
 
+def table_capacity(height_in: float) -> int:
+    """How many rows fit in ``height_in`` at the smallest legible size.
+
+    No room is kept for a "showing X of Y" note: this is the capacity used when
+    a table is being *continued* onto another page, where nothing is dropped
+    and so there is nothing to declare.
+    """
+    if height_in <= 0:
+        return 0
+    return max(int(height_in / (TABLE_MIN_FONT * LINE_SPACING / 72)) - 1, 1)
+
+
+def _font_for(height_in: float, cells: int) -> float:
+    return min(TABLE_FONT,
+               max(TABLE_MIN_FONT, height_in / max(cells, 1) * 72 / LINE_SPACING))
+
+
 def table_layout(height_in: float, n_rows: int) -> tuple[int, float, bool]:
     """How to print ``n_rows`` in ``height_in``: (rows shown, font size, noted).
 
@@ -73,21 +90,14 @@ def table_layout(height_in: float, n_rows: int) -> tuple[int, float, bool]:
     dropped only once the type would fall below :data:`TABLE_MIN_FONT`, and
     dropping any at all buys a line to say so.
     """
-    def fits(height: float) -> int:
-        cell = TABLE_MIN_FONT * LINE_SPACING / 72
-        return max(int(height / cell) - 1, 1)          # -1 for the header row
-
-    def font(height: float, cells: int) -> float:
-        return min(TABLE_FONT, max(TABLE_MIN_FONT, height / cells * 72 / LINE_SPACING))
-
     if height_in <= 0:                                  # unknown geometry
         return n_rows, TABLE_FONT, False
-    if n_rows <= fits(height_in):
-        return n_rows, font(height_in, n_rows + 1), False
+    if n_rows <= table_capacity(height_in):
+        return n_rows, _font_for(height_in, n_rows + 1), False
 
     body = height_in - NOTE_H_IN
-    shown = min(n_rows, fits(body))
-    return shown, font(body, shown + 1), True
+    shown = min(n_rows, table_capacity(body))
+    return shown, _font_for(body, shown + 1), True
 
 
 def _column_widths(columns: list[str], rows: list[list[str]]) -> list[float]:
@@ -111,21 +121,31 @@ def _table(ax, pm: PlotModel) -> None:
         return
 
     height_in = _axes_height_in(ax)
-    shown, font_size, noted = table_layout(height_in, len(pm.rows))
-    rows = pm.rows[:shown]
 
-    bottom = 0.0
-    if noted:
-        bottom = NOTE_H_IN / height_in
-        ax.text(1, bottom / 2, f"showing {shown:,} of {len(pm.rows):,} rows",
-                fontsize=8.5, color=theme.MUTED, transform=ax.transAxes,
-                ha="right", va="center")
+    if pm.row_capacity:
+        # One part of a table continued across pages. Every part lays out to the
+        # same capacity, so a short last part keeps the row height of the others
+        # instead of stretching to fill the slot.
+        rows, noted = pm.rows, False
+        capacity = max(pm.row_capacity, len(rows))
+        font_size = _font_for(height_in, capacity + 1)
+        used = (len(rows) + 1) / (capacity + 1)
+        bbox = [0, 1 - used, 1, used]
+    else:
+        shown, font_size, noted = table_layout(height_in, len(pm.rows))
+        rows = pm.rows[:shown]
+        bottom = (NOTE_H_IN / height_in) if noted and height_in > 0 else 0.0
+        bbox = [0, bottom, 1, 1 - bottom]
+        if noted:
+            ax.text(1, bottom / 2, f"showing {shown:,} of {len(pm.rows):,} rows",
+                    fontsize=8.5, color=theme.MUTED, transform=ax.transAxes,
+                    ha="right", va="center")
 
-    # bbox makes the table fill its axes exactly (no internal gap), less the
+    # bbox makes the table fill its axes exactly (no internal gap), less any
     # strip kept for the note.
     table = ax.table(cellText=rows, colLabels=pm.columns, cellLoc="right",
                      colLoc="right", colWidths=_column_widths(pm.columns, rows),
-                     bbox=[0, bottom, 1, 1 - bottom])
+                     bbox=bbox)
     table.auto_set_font_size(False)
     table.set_fontsize(font_size)
     for (row, col), cell in table.get_celld().items():

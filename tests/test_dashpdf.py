@@ -5,7 +5,7 @@ import pandas as pd
 from kdbmonitor.core.dashboard_models import Dashboard, Row, Widget
 from kdbmonitor.core.dashpdf import (
     CONTENT_H_FIRST, dashboard_page_png_bytes, dashboard_to_pdf_bytes,
-    page_count, page_limit, paginate, pdf_filename, plan_rows,
+    page_count, page_limit, paginate, pdf_filename, plan_rows, split_rows,
 )
 from kdbmonitor.core.dataset import DatasetResult
 from kdbmonitor.core.timectx import ResolvedTime
@@ -110,6 +110,127 @@ def test_a_multi_page_dashboard_renders_every_page():
     out = dashboard_to_pdf_bytes(_dash(rows), _results(), RT, AS_OF)
     assert out.startswith(b"%PDF")
     assert out.count(b"/Type /Page\n") >= 2 or b"/Count 2" in out or len(out) > 20000
+
+
+# --- a long table carries on over the pages --------------------------------
+
+def _long_results(n: int) -> dict:
+    df = pd.DataFrame([{"market": f"M{i}", "n_orders": i, "pct": float(i)}
+                       for i in range(n)])
+    return {"by_market": DatasetResult("by_market", df, "q", None, row_count=n)}
+
+
+def _table_dash(height_in: float = 3.4) -> Dashboard:
+    return _dash([Row(height_in=height_in, widgets=[
+        Widget(type="table", dataset="by_market", title="Affected orders")])])
+
+
+def _rows_printed(parts) -> int:
+    """Every table row the parts between them will print."""
+    seen = set()
+    for part in parts:
+        for start, count in part.slices.values():
+            seen.update(range(start, start + count))
+    return len(seen)
+
+
+def test_a_table_that_fits_is_one_part():
+    parts = split_rows(_table_dash().rows, _long_results(8))
+    assert len(parts) == 1
+    assert parts[0].slices == {}
+
+
+def test_a_long_table_is_split_into_parts():
+    parts = split_rows(_table_dash().rows, _long_results(60))
+    assert len(parts) > 1
+    assert all(p.slices for p in parts)
+
+
+def test_every_row_of_a_long_table_is_printed_somewhere():
+    """The point of the whole exercise: nothing is left out."""
+    for n in (25, 60, 200):
+        parts = split_rows(_table_dash().rows, _long_results(n))
+        printed = _rows_printed(parts)
+        assert printed >= n, f"{n} rows -> only {printed} printed"
+
+
+def test_the_parts_run_in_order_and_do_not_overlap():
+    parts = split_rows(_table_dash().rows, _long_results(60))
+    starts = [p.slices[0][0] for p in parts]
+    assert starts == sorted(starts)
+    assert len(set(starts)) == len(starts)
+    assert starts[0] == 0
+
+
+def test_a_longer_table_needs_more_pages():
+    short = page_count(_table_dash(), _long_results(10))
+    long = page_count(_table_dash(), _long_results(120))
+    assert long > short
+
+
+def test_the_row_height_stops_mattering_once_a_table_flows():
+    """Continuations coalesce to fill each page, so the report's length follows
+    the data and the page — not the slot the table happened to start in."""
+    short, tall = _table_dash(2.5), _table_dash(7.0)
+    assert abs(page_count(short, _long_results(90))
+               - page_count(tall, _long_results(90))) <= 1
+    for dash in (short, tall):
+        assert _rows_printed(split_rows(dash.rows, _long_results(90))) >= 90
+
+
+def test_page_count_without_results_counts_only_the_layout():
+    """The editor has no data at layout time; it must not guess."""
+    assert page_count(_table_dash()) == 1
+
+
+def test_a_runaway_table_is_bounded_and_says_so():
+    """A dataset capped at 20,000 rows must not try to print 1,000 pages."""
+    from kdbmonitor.core.dashpdf import MAX_TABLE_PARTS
+    parts = split_rows(_table_dash().rows, _long_results(20_000))
+    assert len(parts) == MAX_TABLE_PARTS
+    # The renderer declares the shortfall, because rows are being left out.
+    assert _rows_printed(parts) < 20_000
+
+
+def test_consecutive_parts_on_one_page_become_a_single_block():
+    """Two chunks of the same table under two headers read as two tables."""
+    pages = paginate(_table_dash(2.0).rows, _long_results(60))
+    for page in pages:
+        rows_on_page = [p for p, _ in page]
+        assert len(rows_on_page) == len(set(id(p) for p in rows_on_page))
+        for part, _ in page:
+            assert part.height_in >= 2.0        # merged blocks are taller
+
+
+def test_a_merged_block_still_prints_every_row():
+    pages = paginate(_table_dash(2.0).rows, _long_results(60))
+    printed = _rows_printed([p for page in pages for p, _ in page])
+    assert printed >= 60
+
+
+def test_a_long_table_renders_to_a_multi_page_pdf():
+    out = dashboard_to_pdf_bytes(_table_dash(), _long_results(80), RT, AS_OF)
+    assert out.startswith(b"%PDF")
+    assert page_count(_table_dash(), _long_results(80)) >= 2
+
+
+def test_each_page_of_a_flowing_table_looks_different():
+    dash, results = _table_dash(), _long_results(80)
+    one = dashboard_page_png_bytes(dash, results, RT, AS_OF, page_no=1)
+    two = dashboard_page_png_bytes(dash, results, RT, AS_OF, page_no=2)
+    assert one != two
+
+
+def test_other_widgets_print_once_not_on_every_page():
+    """A chart beside a flowing table belongs to the first part only."""
+    rows = [Row(height_in=3.4, widgets=[
+        Widget(type="table", dataset="by_market", title="Rows"),
+        Widget(type="bar", dataset="by_market", title="Chart",
+               spec={"x": "market", "y": "pct"})])]
+    parts = split_rows(rows, _long_results(120))
+    assert len(parts) > 1
+    assert all(set(p.slices) == {0} for p in parts)      # only the table carries
+    assert parts[0].part == 0 and parts[1].part == 1
 
 
 # --- filename --------------------------------------------------------------

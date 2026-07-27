@@ -960,8 +960,10 @@ def _render_layout(store, draft: Dashboard) -> None:
     total_pages = max((p.page for p in placements.values()), default=1)
     if draft.rows:
         st.caption(f":material/picture_as_pdf: Prints on **{total_pages}** A4 "
-                   f"page(s). Row heights are printed inches — reorder or resize "
-                   f"rows to change where the page breaks fall.")
+                   f"page(s) at least. Row heights are printed inches — reorder "
+                   f"or resize rows to change where the page breaks fall. A "
+                   f"table with more rows than its slot holds carries on over "
+                   f"further pages, which only the data can tell you.")
 
     for r_i, row in enumerate(list(draft.rows)):
         placed = placements.get(r_i)

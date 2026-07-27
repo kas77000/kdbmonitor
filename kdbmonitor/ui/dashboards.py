@@ -390,10 +390,12 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
 def _render_export(dashboard: Dashboard) -> None:
     payload = st.session_state.get(frames_key(dashboard.id))
     st.divider()
-    pages = page_count(dashboard)
+    # Counted against the rows on screen: a table longer than its slot carries
+    # on over further pages, so only the data knows how long the report is.
+    pages = page_count(dashboard, payload["results"] if payload else None)
     st.caption(f":material/picture_as_pdf: This dashboard prints on "
-               f"**{pages}** A4 page(s) — the Layout editor shows which row "
-               f"lands on which page.")
+               f"**{pages}** A4 page(s) — a table longer than its row continues "
+               f"onto the next one, so the count follows the data.")
     e = st.columns([1.6, 1.5, 1.5, 3], vertical_alignment="center")
 
     if e[0].button("Generate PDF", icon=":material/picture_as_pdf:", type="primary",
