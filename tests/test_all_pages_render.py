@@ -138,6 +138,52 @@ def test_the_builder_renders_while_editing_an_alert(db):
     assert not at.exception, [str(e.value) for e in at.exception]
 
 
+# --- button widths ----------------------------------------------------------
+
+def _buttons_with_width(block, fraction, out):
+    """Every button in the tree, with its share of the page width.
+
+    Columns nest, so a button's width is the product of every column share
+    between it and the page.
+    """
+    children = list(getattr(block, "children", {}).values())
+    weights = [getattr(getattr(c, "proto", None), "weight", 0.0) for c in children]
+    total = sum(weights) or 1.0
+    for child, weight in zip(children, weights):
+        if hasattr(child, "children"):
+            _buttons_with_width(child, fraction * ((weight / total) if weight else 1.0),
+                                out)
+        elif getattr(child, "type", "") == "button":
+            out.append((fraction, child))
+    return out
+
+
+PAGE_PX = 1400          # a wide-layout content area on a large monitor
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_no_button_is_far_wider_than_its_label(db, page):
+    """A lone action button stretched across its column printed a 636px
+    'Generate report'. Only a row of sibling buttons should fill its columns,
+    and even then not by a mile.
+
+    The width in question is the *container's*: a button only takes all of it
+    when it asks to, which is exactly the setting under review. A content-width
+    button in a wide column is fine and is not counted.
+    """
+    at = AppTest.from_string(_script(db, page), default_timeout=90).run()
+    too_wide = []
+    for fraction, el in _buttons_with_width(at._tree, 1.0, []):
+        label = (el.label or "").strip()
+        if not label or not getattr(el.proto, "use_container_width", False):
+            continue                       # icon-only, or sized to its label
+        natural = 9 * len(label) + 60      # roughly: glyphs plus padding
+        if fraction * PAGE_PX > 2 * natural:
+            too_wide.append(f"{label!r} stretched to {fraction * PAGE_PX:.0f}px "
+                            f"for ~{natural}px of label")
+    assert not too_wide, f"{page}: over-wide buttons: {too_wide}"
+
+
 # --- navigation config ------------------------------------------------------
 
 def test_the_default_page_declares_no_url_path():

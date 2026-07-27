@@ -242,8 +242,7 @@ def render(store, mgr: ConnectionManager) -> None:
         else:
             g[1].caption(_partner_hint(store, picked, kind))
 
-        if g[2].button("Add", icon=":material/add:", use_container_width=True,
-                       type="primary", key="ac_add"):
+        if g[2].button("Add", icon=":material/add:", type="primary", key="ac_add"):
             if not name:
                 st.error("Connection needs a name.", icon=":material/error:")
             elif not env:

@@ -32,14 +32,14 @@ def _today_strip(store) -> None:
     today = datetime.now(timezone.utc).date().isoformat()
     d = store.daily_stats(today)
     st.markdown(f":gray[**Today** · {today} UTC — cumulative, survives restarts]")
-    k = st.columns(4)
+    # No "Armed today": a count of checks that found nothing is the day doing
+    # what it should, and it crowded out the three totals worth reading.
+    k = st.columns(3)
     _kpi(k[0], "Triggered today", d["triggered_events"], color="red",
          caption=f"{pluralize(d['triggered_alerts'], 'alert')}")
-    _kpi(k[1], "Armed today", d["armed_events"], color="green",
-         caption=f"{pluralize(d['armed_alerts'], 'alert')}")
-    _kpi(k[2], "Errors today", d["error_events"], color="orange",
+    _kpi(k[1], "Errors today", d["error_events"], color="orange",
          caption=f"{pluralize(d['error_alerts'], 'alert')}")
-    _kpi(k[3], "Notifications today", d["notifications"],
+    _kpi(k[2], "Notifications today", d["notifications"],
          caption=f"{d['total_checks']} checks run")
 
 

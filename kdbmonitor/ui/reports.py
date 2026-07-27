@@ -27,7 +27,7 @@ def render(store, mgr) -> None:
                         help="For today with no stored snapshot yet, re-run each "
                              "triggered alert to include its current rows.")
     generate = c[2].button("Generate report", type="primary",
-                           icon=":material/play_arrow:", use_container_width=True)
+                           icon=":material/play_arrow:")
 
     if not generate:
         return

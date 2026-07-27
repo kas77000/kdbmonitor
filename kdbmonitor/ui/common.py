@@ -36,6 +36,11 @@ UNGROUPED = "Ungrouped"
 # them. One ratio for the whole app so every form lines up.
 FORM_RATIO = [2.15, 1]
 
+# Button widths follow one rule: a button on its own is as wide as its label,
+# and only a *row of sibling buttons* stretches to fill its columns, because
+# there the equal blocks are the point. use_container_width=True on a lone
+# button in a generous column is what produced a 636px "Generate report".
+
 
 def form_area():
     """A column narrow enough that form inputs stay a sensible size.

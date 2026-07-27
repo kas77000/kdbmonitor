@@ -199,8 +199,7 @@ def _render_gallery(store) -> None:
     head = st.columns([6, 1.6], vertical_alignment="center")
     head[0].caption("Saved views built from KDB queries. Open one to watch it "
                     "live, or export the current state as a PDF.")
-    if head[1].button("New dashboard", icon=":material/add:", type="primary",
-                      use_container_width=True):
+    if head[1].button("New dashboard", icon=":material/add:", type="primary"):
         new_id = store.add_dashboard(Dashboard(id=None, name="New dashboard"))
         st.session_state["dash_edit_id"] = new_id
         st.session_state["dash_mode"] = "edit"
@@ -263,8 +262,7 @@ def _render_gallery(store) -> None:
         st.download_button(
             f"Export all ({len(saved)})", data=export_dashboards_json(saved),
             file_name="kdbmonitor_dashboards.json", mime="application/json",
-            icon=":material/download:", use_container_width=True,
-            disabled=not saved,
+            icon=":material/download:", disabled=not saved,
             help="Every dashboard in one file. Use a card's Export button for "
                  "just one.")
 
@@ -372,7 +370,7 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         store.update_dashboard(dashboard)
         st.rerun()
 
-    if top[2].button("Edit", icon=":material/edit:", use_container_width=True):
+    if top[2].button("Edit", icon=":material/edit:"):
         st.session_state["dash_edit_id"] = dashboard.id
         st.session_state["dash_mode"] = "edit"
         st.session_state.pop("dash_draft", None)
@@ -403,11 +401,17 @@ def _render_export(dashboard: Dashboard) -> None:
         st.session_state[f"pdf_{dashboard.id}"] = dashboard_to_pdf_bytes(
             dashboard, payload["results"], payload["rt"], payload["as_of"])
 
+    # One button both ways: opened, the only thing you want from it is to get
+    # the page back, and a preview with no way out is a preview you regret.
     preview_flag = f"pdfpreview_on_{dashboard.id}"
-    if e[1].button("Preview pages" if pages > 1 else "Preview page",
-                   icon=":material/preview:", use_container_width=True,
-                   disabled=not payload):
-        st.session_state[preview_flag] = True
+    showing = bool(st.session_state.get(preview_flag))
+    if e[1].button("Hide preview" if showing
+                   else ("Preview pages" if pages > 1 else "Preview page"),
+                   icon=":material/visibility_off:" if showing
+                   else ":material/preview:",
+                   use_container_width=True, disabled=not payload):
+        st.session_state[preview_flag] = not showing
+        st.rerun()
 
     data = st.session_state.get(f"pdf_{dashboard.id}")
     if data and payload:
@@ -423,7 +427,12 @@ def _render_export(dashboard: Dashboard) -> None:
 
 
 def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None:
-    """The printed pages, one at a time — every page, not just the first."""
+    """The printed pages, one at a time — every page, not just the first.
+
+    Shown plainly rather than inside an expander: collapsing it left a stub
+    across the page that still had to be scrolled past. Close puts the
+    dashboard back, and the button that opened it says Hide while it is up.
+    """
     # The slider's own key IS the current page. Giving the buttons a separate
     # state let the two disagree: the title said page 2 while the slider still
     # read 1, because a keyed widget ignores `value=` after its first render.
@@ -433,7 +442,14 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
         page_no = 1
         st.session_state[page_key] = 1
 
-    with st.expander(f"Printed page {page_no} of {pages}", expanded=True):
+    head = st.columns([5, 1.2], vertical_alignment="center")
+    head[0].markdown(f"**Printed page {page_no} of {pages}**")
+    if head[1].button("Close", icon=":material/close:",
+                      key=f"pv_close_{dashboard.id}"):
+        st.session_state[f"pdfpreview_on_{dashboard.id}"] = False
+        st.rerun()
+
+    with st.container(border=True):
         if pages > 1:
             nav = st.columns([1, 1, 5], vertical_alignment="center")
             if nav[0].button("Previous", icon=":material/chevron_left:",

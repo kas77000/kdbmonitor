@@ -645,8 +645,7 @@ def render(store, mgr) -> None:
         hdr[0].markdown(
             f"### :material/{'edit_note' if editing else 'add_circle'}: "
             f"{'Edit alert' if editing else 'Create a new alert'}")
-        if editing and hdr[1].button("Start new", icon=":material/add:",
-                                     use_container_width=True):
+        if editing and hdr[1].button("Start new", icon=":material/add:"):
             _clear_builder()
             st.rerun()
         st.caption("Name it and pick a group, build the query chain, set the trigger, "
@@ -675,8 +674,7 @@ def render(store, mgr) -> None:
             nsteps = int(st.session_state["b_nsteps"])
             steps = [_step_block(store, i, servers) for i in range(nsteps)]
             sc = st.columns([1.4, 5])
-            if nsteps < 8 and sc[0].button("Add step", icon=":material/add:",
-                                           use_container_width=True):
+            if nsteps < 8 and sc[0].button("Add step", icon=":material/add:"):
                 st.session_state[f"b_nf_{nsteps}"] = 0
                 st.session_state["b_nsteps"] = nsteps + 1
                 st.rerun()
@@ -711,8 +709,7 @@ def render(store, mgr) -> None:
     st.divider()
     foot = st.columns([2, 4], vertical_alignment="center")
     save = foot[0].button("Save alert" if not editing else "Update alert",
-                          type="primary", icon=":material/save:",
-                          use_container_width=True)
+                          type="primary", icon=":material/save:")
     if editing:
         foot[1].caption(":material/edit: Editing an existing alert — Update overwrites it.")
     elif errors:
