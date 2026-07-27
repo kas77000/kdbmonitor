@@ -54,13 +54,27 @@ def test_admin_widget_keys_are_unique(db):
     assert not duplicates, f"duplicate keys: {sorted(duplicates)}"
 
 
-def test_the_kind_picker_offers_all_three_kinds(db):
+def test_the_add_form_offers_only_realtime_and_historical(db):
+    """Market data is no longer a registrable kind (real-time + historical only)."""
     at = AppTest.from_string(_script(db), default_timeout=60).run()
-    kind_boxes = [b for b in at.selectbox if b.key and b.key.endswith("kind")]
-    assert kind_boxes, "no Kind selectbox rendered"
-    for box in kind_boxes:
-        assert list(box.options) == [
-            "Real-time", "Historical", "Market data"], box.options
+    add = [b for b in at.selectbox if b.key == "ac_kind"]
+    assert add, "no Add-connection Kind selectbox rendered"
+    assert list(add[0].options) == ["Real-time", "Historical"], add[0].options
+
+
+def test_no_form_offers_market_data_except_a_legacy_market_data_server(db):
+    """A registered market-data server (e.g. imported) stays editable and keeps
+    its kind, but every other picker offers only the two registrable kinds."""
+    at = AppTest.from_string(_script(db), default_timeout=60).run()
+    edit_boxes = [b for b in at.selectbox
+                  if b.key and b.key.endswith("kind") and b.key != "ac_kind"]
+    assert edit_boxes, "no edit Kind selectboxes rendered"
+    for box in edit_boxes:
+        if "Market data" in box.options:            # only the refdata edit form
+            assert list(box.options) == [
+                "Real-time", "Historical", "Market data"], box.options
+        else:
+            assert list(box.options) == ["Real-time", "Historical"], box.options
 
 
 def test_an_edit_form_exists_for_every_connection(db):

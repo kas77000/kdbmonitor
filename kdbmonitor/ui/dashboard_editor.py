@@ -36,10 +36,12 @@ WIDGET_TYPES = ["kpi", "table", "text", "bar", "line", "scatter", "hist",
 RAW_HELP = (
     "Raw q. In historical mode you MUST constrain `date` — use "
     "`{{date_from}}` / `{{date_to}}` / `{{date_list}}`. Reference another "
-    "dataset with `{{name.column}}`."
+    "dataset with `{{name.column}}`. To query a second KDB process in the same "
+    "query, list it under *Also connect* below and `hopen` it via `{{conn:ENV}}`."
 )
 
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
+_CONN_REF = re.compile(r"\{\{conn:([^{}]+)\}\}")
 
 # Number formats offered by name, so nobody has to know Python format specs.
 # The labels ARE the samples — you pick the output you want to see.
@@ -227,6 +229,16 @@ def validate(draft: Dashboard, store) -> list[str]:
             if ref not in seen:
                 problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
                                 f"not defined above it.")
+        # Cross-process connections: every declared extra env, and every
+        # {{conn:ENV}} the query hopens, must name a known environment.
+        for env in ds.extra_connections:
+            if env not in envs:
+                problems.append(f"Dataset '{ds.name}' also-connects to unknown "
+                                f"environment '{env}'.")
+        for env in _CONN_REF.findall(ds.raw_qsql or ""):
+            if env.strip() not in envs:
+                problems.append(f"Dataset '{ds.name}' opens {{{{conn:{env.strip()}}}}}"
+                                f", which is not a known environment.")
         seen.append(ds.name)
 
     by_name = {ds.name: ds for ds in draft.datasets}
@@ -473,6 +485,19 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         else:
             ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
                                        help=RAW_HELP, key=f"{key}_q")
+            others = [e for e in sorted(store.list_environments()) if e != ds.env]
+            ds.extra_connections = st.multiselect(
+                "Also connect (for hopen)", others,
+                default=[e for e in ds.extra_connections if e in others],
+                key=f"{key}_xc",
+                help="Extra environments this query opens with hopen, so one "
+                     "query can span two KDB processes. Reference one in your q "
+                     "as {{conn:ENV}} — it becomes that server's `:host:port.")
+            if ds.extra_connections:
+                st.caption("Use in your q: "
+                           + "  ".join(f"`{{{{conn:{e}}}}}`"
+                                       for e in ds.extra_connections))
+
 
         st.markdown("**Transforms**")
         for i, t in enumerate(list(ds.transforms)):

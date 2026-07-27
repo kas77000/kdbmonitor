@@ -52,3 +52,18 @@ def test_dataset_defaults():
     assert ds.time_mode == "inherit"
     assert ds.mode == "guided"
     assert ds.max_rows == 5000
+    assert ds.extra_connections == []
+
+
+def test_extra_connections_survive_a_json_roundtrip():
+    d = Dashboard(id=1, name="x", datasets=[Dataset(
+        name="lim", env="orders", mode="raw",
+        raw_qsql="hopen {{conn:quotes}}", extra_connections=["quotes"])])
+    back = dashboard_from_json(dashboard_to_json(d))
+    assert back.datasets[0].extra_connections == ["quotes"]
+
+
+def test_a_dataset_without_extra_connections_in_json_defaults_to_empty():
+    d = dashboard_from_json(
+        '{"id": null, "name": "x", "datasets": [{"name": "d", "env": "orders"}]}')
+    assert d.datasets[0].extra_connections == []

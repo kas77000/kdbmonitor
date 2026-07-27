@@ -33,6 +33,10 @@ class Dataset:
     table: str = ""              # guided only
     filters: list[Filter] = field(default_factory=list)      # guided only
     raw_qsql: Optional[str] = None                            # raw only
+    # Extra environments this raw query opens with hopen, so a single query can
+    # span two KDB processes (e.g. join OMS orders against a quote server).
+    # Referenced in the q as {{conn:ENV}}, replaced with the server's `:host:port.
+    extra_connections: list[str] = field(default_factory=list)  # raw only
     transforms: list[Transform] = field(default_factory=list)
     max_rows: int = 5000
 
@@ -77,6 +81,7 @@ def _dataset_from_dict(d: dict) -> Dataset:
         table=d.get("table", ""),
         filters=[Filter(**f) for f in d.get("filters", [])],
         raw_qsql=d.get("raw_qsql"),
+        extra_connections=list(d.get("extra_connections", [])),
         transforms=[Transform(kind=t["kind"], params=t.get("params", {}))
                     for t in d.get("transforms", [])],
         max_rows=d.get("max_rows", 5000),

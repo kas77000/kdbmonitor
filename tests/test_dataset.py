@@ -7,6 +7,7 @@ from kdbmonitor.core.client import ConnectionManager, FakeClient
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset, Transform
 from kdbmonitor.core.dataset import (
     build_qsql, effective_time, resolve_connection, run_datasets,
+    substitute_connections,
 )
 from kdbmonitor.core.models import Connection, Filter
 from kdbmonitor.core.storage import Storage
@@ -347,3 +348,86 @@ def test_an_unguarded_placeholder_is_refused_in_realtime(store):
     res = run_datasets(dash, store, mgr, TODAY)["o"]
     assert res.df is None
     assert "{{#historical}}" in res.error
+
+
+# --- cross-process federation ({{conn:ENV}} -> hopen) -----------------------
+
+def _with_quotes(store, historical: bool = False):
+    """Add a 'quotes' environment (a second KDB process) to the orders store."""
+    store.add_connection(Connection(id=None, name="quote-rdb", host="qhost",
+                                    port=9, kind="realtime", env="quotes"))
+    if historical:
+        store.add_connection(Connection(id=None, name="quote-hdb", host="qhdb",
+                                        port=10, kind="historical", env="quotes"))
+    return store
+
+
+def test_substitute_connections_resolves_a_handle(store):
+    _with_quotes(store)
+    q = 'h:hopen {{conn:quotes}}; h"select from qatt"'
+    assert substitute_connections(q, store, RT) == \
+        'h:hopen `:qhost:9; h"select from qatt"'
+
+
+def test_build_qsql_injects_the_federated_handle(store):
+    _with_quotes(store)
+    ds = Dataset(name="d", env="orders", mode="raw",
+                 raw_qsql='q1:(hopen {{conn:quotes}})"select from qatt"')
+    assert build_qsql(ds, RT, {}, store) == \
+        'q1:(hopen `:qhost:9)"select from qatt"'
+
+
+def test_build_qsql_without_a_store_leaves_the_conn_token(store):
+    """build_qsql stays pure when no store is passed (existing callers/tests)."""
+    ds = Dataset(name="d", env="orders", mode="raw",
+                 raw_qsql="hopen {{conn:quotes}}")
+    assert build_qsql(ds, RT, {}) == "hopen {{conn:quotes}}"
+
+
+def test_a_federated_env_follows_the_period_to_its_historical_twin(store):
+    _with_quotes(store, historical=True)
+    ds = Dataset(name="d", env="orders", mode="raw",
+                 raw_qsql="hopen {{conn:quotes}}")
+    assert build_qsql(ds, HIST, {}, store) == "hopen `:qhdb:10"
+
+
+def test_run_dataset_federates_across_two_processes(store):
+    _with_quotes(store)
+    resolved = 'q1:(hopen `:qhost:9)"select state from qatt"; q1'
+    mgr = _mgr({resolved: pd.DataFrame({"sym": ["A"], "state": ["up"]})})
+    dash = Dashboard(id=1, name="d", datasets=[
+        Dataset(name="lim", env="orders", mode="raw",
+                raw_qsql='q1:(hopen {{conn:quotes}})"select state from qatt"; q1',
+                extra_connections=["quotes"])])
+
+    res = run_datasets(dash, store, mgr, TODAY)
+    assert res["lim"].error is None
+    assert res["lim"].df["state"].tolist() == ["up"]
+
+
+def test_an_unknown_federated_env_is_captured_as_a_panel_error(store):
+    mgr = _mgr({})
+    dash = Dashboard(id=1, name="d", datasets=[
+        Dataset(name="lim", env="orders", mode="raw",
+                raw_qsql="hopen {{conn:nope}}")])
+
+    res = run_datasets(dash, store, mgr, TODAY)
+    assert res["lim"].df is None
+    assert "unknown environment" in res["lim"].error
+
+
+def test_a_federated_env_missing_the_historical_side_errors_clearly(store):
+    _with_quotes(store, historical=False)          # only a realtime quote server
+    mgr = _mgr({})
+    dash = Dashboard(
+        id=1, name="d",
+        time_context={"mode": "historical",
+                      "range": {"kind": "absolute",
+                                "from": "2026-06-01", "to": "2026-06-30"}},
+        datasets=[Dataset(name="lim", env="orders", mode="raw",
+                          raw_qsql="select date from target where date within "
+                                   "({{date_from}};{{date_to}}); hopen {{conn:quotes}}")])
+
+    res = run_datasets(dash, store, mgr, TODAY)
+    assert res["lim"].df is None
+    assert "no historical server" in res["lim"].error

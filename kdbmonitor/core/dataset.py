@@ -7,6 +7,7 @@ flipping a dataset between environments lossless.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
@@ -84,10 +85,35 @@ def effective_time(ds: Dataset, dashboard_time: ResolvedTime,
     return dashboard_time
 
 
-def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict) -> str:
-    """The query for this dataset, with dates and dataset references resolved."""
+# A cross-process handle reference: {{conn:ENV}} is replaced with the
+# `:host:port hsym of that environment's server, so a raw query can `hopen` it
+# and pull a second database's tables across in the same query.
+_CONN_REF = re.compile(r"\{\{conn:([^{}]+)\}\}")
+
+
+def substitute_connections(qsql: str, store, rt: ResolvedTime) -> str:
+    r"""Resolve every ``{{conn:ENV}}`` to that environment's ``\`:host:port``.
+
+    The environment is resolved under the same time context as the dataset, so a
+    historical dashboard federates to the historical twin and a market-data env
+    to its (always real-time) server. An unknown env or a missing side raises,
+    which ``run_dataset`` captures as the panel's error.
+    """
+    def repl(m: re.Match) -> str:
+        env = m.group(1).strip()
+        conn, _ = resolve_target(store, env, rt)
+        return f"`:{conn.host}:{conn.port}"
+
+    return _CONN_REF.sub(repl, qsql)
+
+
+def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None) -> str:
+    """The query for this dataset, with dates, dataset refs and cross-process
+    connection handles resolved. ``store`` is needed only to resolve
+    ``{{conn:ENV}}`` handles; omit it and those tokens are left untouched."""
     if ds.mode == "raw":
-        return substitute_refs(substitute_dates(ds.raw_qsql or "", rt), outputs)
+        q = substitute_refs(substitute_dates(ds.raw_qsql or "", rt), outputs)
+        return substitute_connections(q, store, rt) if store is not None else q
 
     clauses: list[str] = []
     if rt.mode == "historical":
@@ -117,7 +143,7 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
 
     qsql = ""
     try:
-        qsql = build_qsql(ds, effective, outputs)
+        qsql = build_qsql(ds, effective, outputs, store)
         if unresolved_date_refs(qsql):
             # Only reachable in real-time, where nothing fills them. Sending
             # '{{date_from}}' to KDB would be a baffling parse error.

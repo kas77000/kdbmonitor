@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from kdbmonitor.core.models import (
-    CONNECTION_KINDS, KIND_LABELS, Connection,
+    KIND_LABELS, Connection,
 )
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.schema import introspect
@@ -24,6 +24,12 @@ def _fmt_ts(ts: str | None) -> str:
 
 
 NEW_ENV = "＋ New environment…"
+
+# Kinds a user can register from the Admin page. Market data is intentionally
+# not offered — a KDB connection is either today's data (real-time) or the
+# partitioned HDB (historical). Legacy or imported market-data servers still
+# work and stay editable; there is just no way to create a new one here.
+REGISTERABLE_KINDS = ("realtime", "historical")
 
 
 
@@ -138,7 +144,9 @@ def _render_edit(store, c: Connection) -> None:
     host = a[1].text_input("Host", value=c.host, key=f"{key}_host")
     port = int(a[2].number_input("Port", 1, 65535, c.port, key=f"{key}_port"))
 
-    kinds = list(CONNECTION_KINDS)
+    kinds = list(REGISTERABLE_KINDS)
+    if c.kind not in kinds:            # a legacy market-data server keeps its kind
+        kinds.append(c.kind)
     kind = st.selectbox("Kind", kinds, index=kinds.index(c.kind),
                         format_func=lambda k: KIND_LABELS[k], key=f"{key}_kind")
 
@@ -216,11 +224,10 @@ def render(store, mgr: ConnectionManager) -> None:
         host = f[1].text_input("Host", value="localhost", key="ac_host")
         port = f[2].number_input("Port", 1, 65535, 5010, key="ac_port")
         kind = f[3].selectbox(
-            "Kind", list(CONNECTION_KINDS), key="ac_kind",
+            "Kind", list(REGISTERABLE_KINDS), key="ac_kind",
             format_func=lambda k: KIND_LABELS[k],
             help="Real-time = today's data. Historical = the partitioned HDB "
-                 "(same tables plus a date column). Market data = reference "
-                 "data such as instruments, which no date range applies to.")
+                 "(the same tables plus a date column).")
 
         g = st.columns([3, 3, 1.2], vertical_alignment="bottom")
         options = _env_options(store, kind) + [NEW_ENV]
@@ -232,7 +239,7 @@ def render(store, mgr: ConnectionManager) -> None:
         if picked == NEW_ENV:
             env = g[1].text_input("New environment name",
                                   placeholder="e.g. orders", key="ac_newenv").strip()
-        elif kind != "marketdata":
+        else:
             g[1].caption(_partner_hint(store, picked, kind))
 
         if g[2].button("Add", icon=":material/add:", use_container_width=True,
