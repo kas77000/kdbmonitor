@@ -407,6 +407,51 @@ def test_a_typo_in_a_custom_format_is_reported_not_raised():
     assert not ed.is_valid_format("qq")
 
 
+# --- dates and timestamps ---------------------------------------------------
+
+def test_every_date_format_is_valid_and_shows_its_own_sample():
+    for label, spec in ed.DATE_FORMATS.items():
+        assert ed.is_valid_format(spec), f"{label} -> {spec!r}"
+        assert ed.format_sample(spec) == label
+        assert ed.format_label_for(spec) == label
+
+
+def test_a_date_spec_is_told_apart_from_a_percentage():
+    """'.1%' ends in a bare percent sign; '%d' is a strftime directive. Reading
+    them the same way would sample a date format against 1234.567."""
+    assert ed.is_date_format("%Y-%m-%d")
+    assert ed.is_date_format("%H:%M")
+    assert not ed.is_date_format(".1%")
+    assert not ed.is_date_format(",.0f")
+    assert not ed.is_date_format("")
+
+
+def test_a_date_spec_is_sampled_against_a_date():
+    assert ed.format_sample("%Y-%m-%d") == "2026-07-27"
+    assert ed.format_sample(",.0f") == "1,235"
+
+
+def test_an_unknown_date_directive_is_refused():
+    """datetime hands an unknown directive straight back instead of raising, so
+    a typo would otherwise look like a working format."""
+    assert not ed.is_valid_format("%Q")
+    assert ed.format_sample("%Q") == "invalid format"
+
+
+def test_numbers_and_dates_share_one_catalogue():
+    assert ed.VALUE_FORMATS[",.0f" and "1,235"] == ",.0f"
+    assert ed.VALUE_FORMATS["09:30:15"] == "%H:%M:%S"
+    assert ed.VALUE_FORMATS[ed.NO_FORMAT] == ""
+    assert set(ed.NUMBER_FORMATS) | set(ed.DATE_FORMATS) < set(ed.VALUE_FORMATS)
+
+
+def test_a_column_key_survives_whatever_kdb_calls_a_column():
+    """Widget keys are per column name, so the name has to be key-safe."""
+    assert ed._slug("stateStart") == "stateStart"
+    assert ed._slug("last price") != ed._slug("last.price")   # no collisions
+    assert " " not in ed._slug("last price")
+
+
 def test_a_widget_with_an_unusable_format_is_reported(tmp_path):
     d = _complete(tmp_path)
     d.rows[0].widgets[0].spec["fmt"] = "not-a-format"

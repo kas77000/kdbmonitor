@@ -9,6 +9,7 @@ from __future__ import annotations
 import operator
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Optional
 
 import pandas as pd
@@ -163,6 +164,18 @@ def format_time_of_day(td: pd.Timedelta) -> str:
     return f"{stamp}.{millis:03d}" if millis else stamp
 
 
+# Which strftime directives make sense for a duration since midnight — a q
+# ``time`` column knows an hour, never a year.
+_TIME_DIRECTIVES = set("HIMSfp")
+_DIRECTIVE = re.compile(r"%(.)")
+
+
+def is_time_of_day_format(spec: str) -> bool:
+    """Whether ``spec`` asks only for a time of day, e.g. '%H:%M'."""
+    found = _DIRECTIVE.findall(spec or "")
+    return bool(found) and all(d in _TIME_DIRECTIVES for d in found)
+
+
 def _fmt(value: Any, spec: str = "") -> str:
     # pd.NaT is not a float and not a Timedelta, so check nullness generically
     # before anything else.
@@ -174,6 +187,14 @@ def _fmt(value: Any, spec: str = "") -> str:
     except (TypeError, ValueError):        # arrays and the like are never null
         pass
     if isinstance(value, pd.Timedelta):
+        # A q time is a duration, so strftime cannot touch it directly. Anchor
+        # it to a date to honour a time-of-day format; anything else (a year, a
+        # month) means nothing here, so the default HH:MM:SS stands.
+        if is_time_of_day_format(spec):
+            try:
+                return format(datetime.min + value.to_pytimedelta(), spec)
+            except (TypeError, ValueError, OverflowError):
+                pass
         return format_time_of_day(value)
     try:
         return format(value, spec) if spec else str(value)

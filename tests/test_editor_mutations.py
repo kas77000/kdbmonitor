@@ -325,6 +325,78 @@ def test_deleting_the_first_of_three_identical_kinds(tmp_path):
         ("b", "size * 2"), ("c", "size * 3")]
 
 
+# --- a table's headers and formats belong to their columns -----------------
+
+TABLE_SPEC = {"columns": ["sym", "size", "price", "state"],
+              "labels": {"sym": "Symbol", "size": "Qty", "price": "Px",
+                         "state": "State"},
+              "formats": {"size": ",.0f", "price": ",.2f",
+                          "state": "%H:%M:%S"}}
+
+
+@pytest.fixture()
+def table_db(tmp_path):
+    dash = Dashboard(
+        id=1, name="Table",
+        datasets=[Dataset(name="d", env="orders", table="target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows",
+                                  spec=dict(TABLE_SPEC))], height_in=2.0)])
+    return _store(tmp_path, dash, "tbl.db")
+
+
+def _spec(at: AppTest) -> dict:
+    return _draft(at).rows[0].widgets[0].spec
+
+
+def _drop_column(at: AppTest, keep: list[str]) -> AppTest:
+    picker = next(el for el in at.multiselect if el.key == "r0w0_spec_cols")
+    picker.set_value(keep).run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def test_each_header_box_belongs_to_its_own_column(table_db):
+    """Keyed by row number, the boxes shifted when a column went and a header
+    could land on the column below it."""
+    at = _open(table_db, "Layout")
+    boxes = {el.key: el.value for el in at.text_input if "_lbl" in (el.key or "")}
+    assert boxes == {"r0w0_spec_col_sym_lbl": "Symbol",
+                     "r0w0_spec_col_size_lbl": "Qty",
+                     "r0w0_spec_col_price_lbl": "Px",
+                     "r0w0_spec_col_state_lbl": "State"}
+
+
+def test_removing_a_column_leaves_every_other_header_where_it_was(table_db):
+    at = _drop_column(_open(table_db, "Layout"), ["size", "price", "state"])
+
+    assert _spec(at)["columns"] == ["size", "price", "state"]
+    boxes = {el.key: el.value for el in at.text_input if "_lbl" in (el.key or "")}
+    assert boxes == {"r0w0_spec_col_size_lbl": "Qty",
+                     "r0w0_spec_col_price_lbl": "Px",
+                     "r0w0_spec_col_state_lbl": "State"}
+
+
+def test_removing_a_column_leaves_every_other_format_where_it_was(table_db):
+    at = _drop_column(_open(table_db, "Layout"), ["size", "price", "state"])
+    assert _spec(at)["formats"] == {"size": ",.0f", "price": ",.2f",
+                                    "state": "%H:%M:%S"}
+
+
+def test_a_removed_column_keeps_its_header_for_when_it_comes_back(table_db):
+    """Deselecting a column to try another must not throw away the header you
+    typed for it — putting it back would mean typing it again."""
+    at = _drop_column(_open(table_db, "Layout"), ["size", "price", "state"])
+    assert _spec(at)["labels"]["sym"] == "Symbol"
+
+
+def test_swapping_a_column_gives_the_new_one_a_blank_header(table_db):
+    at = _drop_column(_open(table_db, "Layout"),
+                      ["size", "price", "state", "when"])
+    boxes = {el.key: el.value for el in at.text_input if "_lbl" in (el.key or "")}
+    assert boxes["r0w0_spec_col_when_lbl"] == ""       # not 'Symbol'
+    assert boxes["r0w0_spec_col_size_lbl"] == "Qty"
+
+
 def test_deleting_a_transform_leaves_the_widgets_alone(raw_db):
     before = copy.deepcopy(dashboard_to_dict(_raw_dashboard())["rows"])
     at = _click(_open(raw_db), "ds0_tx_3")

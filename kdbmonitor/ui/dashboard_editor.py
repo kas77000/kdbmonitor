@@ -8,7 +8,7 @@ a half-built dataset never reaches the view.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 import streamlit as st
 
@@ -44,9 +44,10 @@ RAW_HELP = (
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
 _CONN_REF = re.compile(r"\{\{conn:([^{}]+)\}\}")
 
-# Number formats offered by name, so nobody has to know Python format specs.
+# Formats offered by name, so nobody has to know Python format specs.
 # The labels ARE the samples — you pick the output you want to see.
 SAMPLE_VALUE = 1234.567
+SAMPLE_MOMENT = datetime(2026, 7, 27, 9, 30, 15)
 
 NUMBER_FORMATS: dict[str, str] = {
     "1,235": ",.0f",
@@ -56,20 +57,62 @@ NUMBER_FORMATS: dict[str, str] = {
     "1234.57": ".2f",
     "61.4%  (value is a fraction 0–1)": ".1%",
     "1.23e+03": ".2e",
-    "No formatting": "",
 }
+
+# Dates, timestamps and q time columns. Same idea: the label is what prints.
+DATE_FORMATS: dict[str, str] = {
+    "2026-07-27": "%Y-%m-%d",
+    "27/07/2026": "%d/%m/%Y",
+    "27 Jul 2026": "%d %b %Y",
+    "2026-07-27 09:30": "%Y-%m-%d %H:%M",
+    "2026-07-27 09:30:15": "%Y-%m-%d %H:%M:%S",
+    "09:30": "%H:%M",
+    "09:30:15": "%H:%M:%S",
+}
+
+NO_FORMAT = "No formatting"
 CUSTOM_FORMAT = "Custom…"
 
+# One catalogue for the picker: numbers, then dates, then the two escapes.
+VALUE_FORMATS: dict[str, str] = {**NUMBER_FORMATS, **DATE_FORMATS, NO_FORMAT: ""}
 
-def format_sample(spec: str, value: float = SAMPLE_VALUE) -> str:
-    """What ``spec`` turns the sample value into — or a complaint if it is not a
-    usable format spec, so a typo shows up immediately instead of at render."""
+# A strftime directive is '%' followed by a letter. The numeric '.1%' ends in a
+# bare '%', which is why "does it contain a percent sign" is not the test.
+_STRFTIME = re.compile(r"%[a-zA-Z]")
+
+
+def is_date_format(spec: str) -> bool:
+    """Whether ``spec`` formats a date/time rather than a number."""
+    return bool(_STRFTIME.search(spec or ""))
+
+
+def _slug(name: str) -> str:
+    """A widget-key-safe stand-in for a column name.
+
+    Column names come from KDB and can hold anything; the key only has to be
+    stable and unique per column, so unusual characters become their code point.
+    """
+    return "".join(c if c.isalnum() or c == "_" else f"_{ord(c)}_" for c in str(name))
+
+
+def format_sample(spec: str, value=None) -> str:
+    """What ``spec`` turns a sample value into — or a complaint if it is not a
+    usable format spec, so a typo shows up immediately instead of at render.
+
+    The sample follows the kind of spec, since '%Y-%m-%d' says nothing about
+    1234.567 and ',.0f' says nothing about a timestamp.
+    """
     if not spec:
-        return str(value)
+        return str(SAMPLE_VALUE if value is None else value)
+    if value is None:
+        value = SAMPLE_MOMENT if is_date_format(spec) else SAMPLE_VALUE
     try:
-        return format(value, spec)
+        formatted = format(value, spec)
     except (TypeError, ValueError):
         return "invalid format"
+    # datetime.__format__ hands an unknown spec straight back rather than
+    # raising, which would otherwise pass a typo off as a valid format.
+    return "invalid format" if formatted == spec else formatted
 
 
 def is_valid_format(spec: str) -> bool:
@@ -78,7 +121,7 @@ def is_valid_format(spec: str) -> bool:
 
 def format_label_for(spec: str) -> str:
     """The catalogue entry matching a stored spec, else Custom."""
-    for label, value in NUMBER_FORMATS.items():
+    for label, value in VALUE_FORMATS.items():
         if value == (spec or ""):
             return label
     return CUSTOM_FORMAT
@@ -752,26 +795,31 @@ def _pick_many(container, label: str, columns: list[str], current, key: str,
 
 def _format_picker(container, label: str, current: str, key: str,
                    show_label: bool = True) -> str:
-    """Choose a number format by its sample output rather than typing a spec.
+    """Choose a format by its sample output rather than typing a spec.
+
+    Numbers and dates share one list because a column is one or the other and
+    the samples say which is which: '1,234.57' and '2026-07-27 09:30' need no
+    further explanation.
 
     ``show_label`` collapses the label for repeated rows — an empty label string
     would still reserve space and leave the help icon floating on its own.
     """
-    options = list(NUMBER_FORMATS) + [CUSTOM_FORMAT]
+    options = list(VALUE_FORMATS) + [CUSTOM_FORMAT]
     current_label = format_label_for(current)
     chosen = container.selectbox(
         label, options, index=options.index(current_label), key=f"{key}_pick",
         label_visibility="visible" if show_label else "collapsed",
-        help=("Pick how the number should read. Each option shows what "
-              f"{SAMPLE_VALUE} would look like.") if show_label else None)
+        help=("Pick how the value should read — each option is a sample of what "
+              "prints. Date formats apply to date, timestamp and q time "
+              "columns.") if show_label else None)
     if chosen != CUSTOM_FORMAT:
-        return NUMBER_FORMATS[chosen]
+        return VALUE_FORMATS[chosen]
 
     spec = container.text_input(
         "Custom format", value=current, key=f"{key}_custom",
         placeholder=",.0f",
-        help="A Python format spec, e.g. ,.0f or .2%")
-    container.caption(f"{SAMPLE_VALUE} → **{format_sample(spec)}**")
+        help="A Python format spec (,.0f or .2%) or a date pattern (%Y-%m-%d).")
+    container.caption(f"→ **{format_sample(spec)}**")
     return spec
 
 
@@ -800,24 +848,29 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
 
         shown = s["columns"] or columns
         if shown:
-            st.caption("Header text and number format, per column. Leave the "
-                       "header blank to keep the column's own name.")
+            st.caption("Header text and format, per column. Leave the header "
+                       "blank to keep the column's own name.")
             labels = dict(s.get("labels", {}))
             formats = dict(s.get("formats", {}))
             for i, col in enumerate(shown):
                 cc = st.columns([1.6, 2.2, 2.6], vertical_alignment="bottom")
                 cc[0].markdown(f"`{col}`")
+                # Keyed by column name, never by row number: drop a column and
+                # every remaining row keeps its own header and format instead of
+                # inheriting whatever sat at that position before.
+                slot = f"{key}_col_{_slug(col)}"
                 labels[col] = cc[1].text_input(
                     "Header", value=labels.get(col, ""), placeholder=col,
-                    key=f"{key}_lbl{i}",
+                    key=f"{slot}_lbl",
                     label_visibility="visible" if i == 0 else "collapsed")
                 formats[col] = _format_picker(
-                    cc[2], "Format", formats.get(col, ""), f"{key}_fmt{i}",
+                    cc[2], "Format", formats.get(col, ""), f"{slot}_fmt",
                     show_label=i == 0)
-            # Drop empties so the stored spec stays clean and diffable.
-            s["labels"] = {k: v for k, v in labels.items()
-                           if k in shown and v.strip()}
-            s["formats"] = {k: v for k, v in formats.items() if k in shown and v}
+            # Empties go, but a column that is merely not shown keeps what it
+            # was given: deselecting a column to try another must not throw its
+            # header away, or putting it back means typing it again.
+            s["labels"] = {k: v for k, v in labels.items() if v and v.strip()}
+            s["formats"] = {k: v for k, v in formats.items() if v}
 
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
         hl_opts = ["(none)"] + with_stored(columns, current if current != "(none)"

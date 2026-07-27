@@ -367,10 +367,19 @@ A dashboard is rows of 1–4 widgets, each row with a printed height in inches.
 | Widget | Notes |
 |---|---|
 | `kpi` | one aggregate, formatted, optionally turning red past a threshold |
-| `table` | column picker, per-column formats, conditional highlighting |
+| `table` | column picker, per-column headers and formats, conditional highlighting |
 | `bar` `line` `scatter` | x/y, optional split-by series, sorting, trend line |
 | `hist` `box` `heatmap` `pie` | distributions, spreads, grids, composition |
 | `text` | markdown with `{{dataset.agg.column}}` placeholders that update with the data |
+
+Formats are picked by **sample rather than by spec** — you choose `1,234.57` or
+`27 Jul 2026` or `09:30:15`, not `,.2f` or `%d %b %Y`. The catalogue covers
+numbers, dates, timestamps and q `time` columns (which arrive as durations, so
+they take a time-of-day format and otherwise print to the millisecond), with a
+Custom entry for anything else and a live sample of what your spec produces. A
+table's headers and formats are keyed to the **column**, not to its position, so
+removing one column never shifts another's settings onto it, and a column you
+deselect keeps what you gave it in case you put it back.
 
 The **Layout** editor shows where the page breaks will fall before you generate
 anything: a `page N` badge on every row, a `page break` marker where a new page

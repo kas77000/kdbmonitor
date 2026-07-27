@@ -329,3 +329,53 @@ def test_a_kpi_over_times_is_unaffected():
     pm = build_plot_model(Widget(type="kpi", dataset="by_market",
                                  spec={"column": "n", "agg": "sum"}), _ok(df))
     assert pm.value == "6"
+
+
+# --- dates, timestamps and q times in a table -------------------------------
+
+def _moments() -> pd.DataFrame:
+    return pd.DataFrame({
+        "d": [pd.Timestamp("2026-07-27").date()],
+        "ts": [pd.Timestamp("2026-07-27 09:30:15")],
+        "t": [pd.Timedelta(hours=9, minutes=30, seconds=15, milliseconds=250)],
+    })
+
+
+def _cells(spec: dict) -> list[str]:
+    pm = build_plot_model(Widget(type="table", dataset="by_market", spec=spec),
+                          _ok(_moments()))
+    return pm.rows[0]
+
+
+def test_a_date_column_takes_a_date_format():
+    assert _cells({"columns": ["d"], "formats": {"d": "%d %b %Y"}})[0] == "27 Jul 2026"
+
+
+def test_a_timestamp_can_print_as_just_its_date():
+    assert _cells({"columns": ["ts"], "formats": {"ts": "%Y-%m-%d"}})[0] == "2026-07-27"
+
+
+def test_a_timestamp_can_print_to_the_minute():
+    assert _cells({"columns": ["ts"],
+                   "formats": {"ts": "%Y-%m-%d %H:%M"}})[0] == "2026-07-27 09:30"
+
+
+def test_a_q_time_column_honours_a_time_format():
+    """q times arrive as durations, which strftime cannot touch directly — they
+    print to the millisecond unless a format says otherwise."""
+    assert _cells({"columns": ["t"], "formats": {"t": "%H:%M"}})[0] == "09:30"
+    assert _cells({"columns": ["t"], "formats": {"t": "%H:%M:%S"}})[0] == "09:30:15"
+
+
+def test_a_q_time_ignores_a_format_that_asks_for_a_date():
+    """A duration has no year to print, so the default rendering stands rather
+    than inventing one."""
+    assert _cells({"columns": ["t"], "formats": {"t": "%Y-%m-%d"}})[0] == "09:30:15.250"
+
+
+def test_an_unformatted_moment_is_unchanged():
+    assert _cells({"columns": ["t"]})[0] == "09:30:15.250"
+
+
+def test_a_number_format_on_a_moment_does_not_raise():
+    assert _cells({"columns": ["ts"], "formats": {"ts": ",.2f"}})[0]
