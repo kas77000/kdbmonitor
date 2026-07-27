@@ -16,13 +16,14 @@ from kdbmonitor.core.dashboard_models import (
     Dashboard, Dataset, Row, Transform, Widget,
 )
 from kdbmonitor.core.dashpdf import plan_rows
-from kdbmonitor.core.dataset import is_marketdata_env, run_datasets
+from kdbmonitor.core.dataset import is_marketdata_env, run_datasets, trace_datasets
 from kdbmonitor.core.models import Filter
 from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
     referenced_columns,
 )
 from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, has_date_constraint, resolve
+from kdbmonitor.core.transform import Step
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -94,12 +95,38 @@ def unique_name(base: str, taken: list[str]) -> str:
     return f"{base}_{i}"
 
 
-def dataset_columns(ds: Dataset, conn) -> list[str]:
-    """The columns a dataset is expected to produce, so widget forms can offer a
-    picker instead of a free-text box. Raw datasets are unpredictable."""
-    if ds is None or ds.mode == "raw" or conn is None:
+def table_columns(ds: Dataset, conn) -> list[str]:
+    """The columns of the table a guided dataset selects from.
+
+    This is what a *filter* addresses: filters become the query's where clause,
+    so they see the table as KDB has it, before any transform reshapes it.
+    """
+    if ds is None or conn is None or ds.mode == "raw":
         return []
-    cols = list(getattr(conn, "schema", {}).get(ds.table, []))
+    return list(getattr(conn, "schema", {}).get(ds.table, []))
+
+
+def dataset_columns(ds: Dataset, conn, learned: list[str] | None = None) -> list[str]:
+    """The columns a dataset is expected to produce, so widget forms can offer a
+    picker instead of a free-text box.
+
+    A raw query's columns cannot be known without running it — ``learned`` is
+    what a real run returned (the query's own columns, before transforms), which
+    the editor remembers from the last preview.
+
+    Even with an unknown starting point the transforms themselves are known: a
+    derive names its new column and a group-by replaces the frame outright with
+    its keys and aggregations. So a raw dataset that groups by market still
+    offers market and every aggregate downstream of it, run or not. The list is
+    then a lower bound, never a complete one — callers must leave stored
+    settings alone rather than treat "not offered" as "not wanted".
+    """
+    if ds is None:
+        return []
+    if ds.mode == "raw" or conn is None:
+        cols = list(learned or [])
+    else:
+        cols = list(getattr(conn, "schema", {}).get(ds.table, []))
     for t in ds.transforms:
         p = t.params
         if t.kind == "derive" and p.get("column"):
@@ -112,6 +139,26 @@ def dataset_columns(ds: Dataset, conn) -> list[str]:
     return list(dict.fromkeys(cols))
 
 
+def suffix_length(mapping: dict) -> int:
+    """The length every key in a suffix map shares, or 0 when they differ.
+
+    Used to fill in the length for a map built before the length was a setting:
+    ``.HK``/``.JP``/``.KS`` are all 3, so the answer is the same either way.
+    """
+    lengths = {len(k) for k in (mapping or {})}
+    return lengths.pop() if len(lengths) == 1 else 0
+
+
+def with_stored(columns: list[str], stored) -> list[str]:
+    """``columns`` plus any stored value it does not contain, order preserved.
+
+    A picker must always be able to show what is configured. Offering only the
+    columns we happen to know about would make a selectbox fall back to its
+    first option and a multiselect drop the value entirely — silently rewriting
+    the dashboard just because someone opened it.
+    """
+    extra = [stored] if isinstance(stored, str) else list(stored or [])
+    return list(dict.fromkeys(list(columns) + [c for c in extra if c]))
 
 
 def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
@@ -128,6 +175,11 @@ def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
                 out.append(f"{where}: no source column chosen.")
             if _blank(p.get("mapping")):
                 out.append(f"{where}: no suffix mappings entered.")
+            length = int(p.get("length") or 0)
+            odd = [k for k in (p.get("mapping") or {}) if len(k) != length]
+            if length and odd:
+                out.append(f"{where}: the suffix length is {length}, so "
+                           f"{', '.join(sorted(odd))} can never match.")
     elif t.kind == "filter":
         if _blank(p.get("column")):
             out.append(f"{where}: no column chosen.")
@@ -229,6 +281,7 @@ def validate(draft: Dashboard, store) -> list[str]:
             if ref not in seen:
                 problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
                                 f"not defined above it.")
+
         # Cross-process connections: every declared extra env, and every
         # {{conn:ENV}} the query hopens, must name a known environment.
         for env in ds.extra_connections:
@@ -271,9 +324,13 @@ def validate(draft: Dashboard, store) -> list[str]:
                                     f"'{col}' is not usable.")
 
             # Catch a column that stopped existing — e.g. a group-by was changed
-            # after the widget was bound to one of its outputs.
+            # after the widget was bound to one of its outputs. Only a dataset
+            # whose table schema is known has a *complete* column list; for a raw
+            # query we know some of what it produces but never all of it, and
+            # guessing there would flag columns that are perfectly real.
             ds = by_name[w.dataset]
-            known = dataset_columns(ds, _connection_for(store, ds))
+            conn = _connection_for(store, ds)
+            known = dataset_columns(ds, conn) if table_columns(ds, conn) else []
             if known:
                 for column in referenced_columns(w):
                     if column not in known:
@@ -294,8 +351,22 @@ def _draft(store) -> Dashboard:
 
 
 def _close() -> None:
-    for key in ("dash_draft", "dash_mode", "dash_edit_id"):
+    for key in ("dash_draft", "dash_mode", "dash_edit_id", "dash_learned_cols"):
         st.session_state.pop(key, None)
+
+
+def learned_columns(name: str) -> list[str]:
+    """The columns this dataset's query returned the last time it was run here.
+
+    A raw q query's shape is only knowable by running it, so the editor keeps
+    what each preview returned and offers it to the column pickers. Cleared with
+    the draft, since it belongs to one editing session.
+    """
+    return list(st.session_state.get("dash_learned_cols", {}).get(name, []))
+
+
+def _remember_columns(name: str, columns: list[str]) -> None:
+    st.session_state.setdefault("dash_learned_cols", {})[name] = list(columns)
 
 
 def _connection_for(store, ds: Dataset):
@@ -328,10 +399,7 @@ def _filters_form(ds: Dataset, columns: list[str], key: str) -> None:
     st.caption("Filters — combined with AND, sent to KDB as the where clause.")
     for i, f in enumerate(list(ds.filters)):
         c = st.columns([2, 1.2, 2, 1.4, 1, 0.6], vertical_alignment="bottom")
-        opts = columns or [f.column]
-        f.column = c[0].selectbox("Column", opts,
-                                  index=opts.index(f.column) if f.column in opts else 0,
-                                  key=f"{key}_fc_{i}")
+        f.column = _pick(c[0], "Column", columns, f.column, f"{key}_fc_{i}")
         f.op = c[1].selectbox("Op", OPS, index=OPS.index(f.op) if f.op in OPS else 0,
                               key=f"{key}_fo_{i}")
         raw = c[2].text_input("Value",
@@ -369,36 +437,49 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
                                         placeholder="100 * executed / size",
                                         key=f"{key}_de")
         else:
-            opts = columns or [p.get("source", "")]
-            p["source"] = c[2].selectbox("From column", opts, key=f"{key}_ds")
+            p["source"] = _pick(c[2], "From column", columns,
+                                p.get("source", ""), f"{key}_ds")
             p["mapping"] = _kv_lines(st.text_area(
                 "Suffix = label (one per line, e.g. `.HK = Hong Kong`)",
                 value="\n".join(f"{k} = {v}" for k, v in p.get("mapping", {}).items()),
                 key=f"{key}_dm", height=90))
-            p["default"] = st.text_input("Fallback", value=p.get("default", "Unknown"),
-                                         key=f"{key}_dd")
+            cc = st.columns([1.4, 2], vertical_alignment="bottom")
+            # Default from the map itself, so a map written before this setting
+            # existed keeps matching exactly what it matched before.
+            current = int(p.get("length") or suffix_length(p["mapping"]) or 3)
+            p["length"] = int(cc[0].number_input(
+                "Suffix length", 1, 12, current, key=f"{key}_dl",
+                help="How many characters at the end of the value make the "
+                     "suffix. 3 reads '700.HK' as '.HK'; write the suffixes "
+                     "above exactly that long."))
+            p["default"] = cc[1].text_input("Fallback",
+                                            value=p.get("default", "Unknown"),
+                                            key=f"{key}_dd")
+            odd = [k for k in p["mapping"] if len(k) != p["length"]]
+            if odd:
+                them = "it" if len(odd) == 1 else "them"
+                st.caption(f":orange[{', '.join(odd)} — not {p['length']} "
+                           f"characters, so nothing will match {them}.]")
 
     elif t.kind == "filter":
         c = st.columns([2, 1, 2], vertical_alignment="bottom")
-        opts = columns or [p.get("column", "")]
-        p["column"] = c[0].selectbox("Column", opts, key=f"{key}_fc")
-        p["op"] = c[1].selectbox("Op", ["=", "!=", "<", "<=", ">", ">="],
-                                 key=f"{key}_fo")
+        p["column"] = _pick(c[0], "Column", columns, p.get("column", ""),
+                            f"{key}_fc")
+        ops = ["=", "!=", "<", "<=", ">", ">="]
+        p["op"] = c[1].selectbox("Op", ops,
+                                 index=ops.index(p["op"]) if p.get("op") in ops
+                                 else 0, key=f"{key}_fo")
         p["value"] = _coerce(c[2].text_input("Value", value=str(p.get("value", "")),
                                              key=f"{key}_fv"), "number")
 
     elif t.kind == "groupby":
-        p["keys"] = st.multiselect("Group by", columns,
-                                   default=[k for k in p.get("keys", [])
-                                            if k in columns], key=f"{key}_gk")
+        p["keys"] = _pick_many(st, "Group by", columns, p.get("keys", []),
+                               f"{key}_gk")
         st.caption("Aggregations")
         for i, a in enumerate(list(p.get("aggs", []))):
             c = st.columns([2, 1.4, 2, 0.6], vertical_alignment="bottom")
-            opts = columns or [a["column"]]
-            a["column"] = c[0].selectbox("Column", opts,
-                                         index=opts.index(a["column"])
-                                         if a["column"] in opts else 0,
-                                         key=f"{key}_gc_{i}")
+            a["column"] = _pick(c[0], "Column", columns, a["column"],
+                                f"{key}_gc_{i}")
             a["func"] = c[1].selectbox("Func", AGG_FUNCS,
                                        index=AGG_FUNCS.index(a["func"]),
                                        key=f"{key}_gf_{i}")
@@ -414,9 +495,8 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
 
     elif t.kind == "sort":
         c = st.columns([3, 1.4], vertical_alignment="bottom")
-        p["columns"] = c[0].multiselect("Sort by", columns,
-                                        default=[x for x in p.get("columns", [])
-                                                 if x in columns], key=f"{key}_sc")
+        p["columns"] = _pick_many(c[0], "Sort by", columns,
+                                  p.get("columns", []), f"{key}_sc")
         p["ascending"] = c[1].selectbox(
             "Order", [True, False], index=0 if p.get("ascending", True) else 1,
             format_func=lambda v: "Ascending" if v else "Descending",
@@ -481,7 +561,9 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             ds.table = st.selectbox("Table", tables or [ds.table],
                                     index=tables.index(ds.table)
                                     if ds.table in tables else 0, key=f"{key}_t")
-            _filters_form(ds, dataset_columns(ds, conn), key)
+            # Filters are the query's where clause, so they address the table
+            # as KDB holds it — not the shape the transforms leave behind.
+            _filters_form(ds, table_columns(ds, conn), key)
         else:
             ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
                                        help=RAW_HELP, key=f"{key}_q")
@@ -497,7 +579,6 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 st.caption("Use in your q: "
                            + "  ".join(f"`{{{{conn:{e}}}}}`"
                                        for e in ds.extra_connections))
-
 
         st.markdown("**Transforms**")
         for i, t in enumerate(list(ds.transforms)):
@@ -524,7 +605,9 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 # ones before it, not the dataset's final shape.
                 upstream = Dataset(name=ds.name, env=ds.env, mode=ds.mode,
                                    table=ds.table, transforms=ds.transforms[:i])
-                _transform_form(t, dataset_columns(upstream, conn), f"{key}_t{i}")
+                _transform_form(t, dataset_columns(upstream, conn,
+                                                   learned_columns(ds.name)),
+                                f"{key}_t{i}")
 
         if st.button("Add transform", icon=":material/add:", key=f"{key}_taddb"):
             ds.transforms.append(Transform(
@@ -548,33 +631,123 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
             env=envs[0] if envs else ""))
         st.rerun()
 
-    if draft.datasets and st.button("Preview datasets", icon=":material/play_arrow:"):
+    if draft.datasets and st.button("Run and inspect each step",
+                                    icon=":material/play_arrow:",
+                                    key="dash_preview_run",
+                                    help="Send each dataset's query, then apply "
+                                         "its transforms one at a time so you "
+                                         "can check what every step did."):
+        # Rerun rather than render below: the run teaches the editor what a raw
+        # query returns, and the column pickers above should show that straight
+        # away rather than one interaction later.
         st.session_state["dash_preview_data"] = True
+        st.rerun()
 
 
-def _render_dataset_results(store, mgr, draft: Dashboard) -> None:
-    """Query results for the Data section — rendered outside the bounded form
-    column, because result rows want the width."""
-    if not st.session_state.pop("dash_preview_data", False):
+PREVIEW_ROWS = 200          # rows shown per step; the counts are of the full frame
+
+
+def _step_caption(step: Step) -> str:
+    """Row count, what it changed, and which columns came and went."""
+    bits = [f"{step.rows:,} row(s)"]
+    delta = step.row_delta
+    if delta:
+        bits.append(f"{delta:+,} vs previous step")
+    elif delta == 0 and step.index:
+        bits.append("same row count")
+    if step.added:
+        bits.append("+ " + ", ".join(step.added))
+    if step.dropped:
+        bits.append("− " + ", ".join(step.dropped))
+    return " · ".join(bits)
+
+
+def _render_step(step: Step) -> None:
+    marker = ":material/database:" if step.index == 0 else ":material/function:"
+    st.markdown(f"{marker} **{step.label}**")
+    if step.error:
+        st.error(f"This step failed: {step.error}", icon=":material/error:")
+        st.caption("The steps above it ran — the frame shown for the previous "
+                   "step is exactly what this one was handed.")
         return
-    for name, res in run_datasets(draft, store, mgr, date.today()).items():
+    st.caption(_step_caption(step))
+    if step.rows:
+        st.dataframe(step.df.head(PREVIEW_ROWS), use_container_width=True,
+                     height=min(240, 60 + 35 * min(step.rows, 5)))
+    else:
+        st.caption(":orange[No rows at this step.]")
+
+
+def run_preview(store, mgr, draft: Dashboard):
+    """Run every dataset stage by stage, if the Data section asked for it.
+
+    Done before the forms are drawn, not after: a run is the only way to learn a
+    raw query's columns, and the pickers are built from them.
+    """
+    if not st.session_state.pop("dash_preview_data", False):
+        return None
+    traces = trace_datasets(draft, store, mgr, date.today())
+    for name, trace in traces.items():
+        # The query's own columns are the only reliable knowledge we have of a
+        # raw dataset's shape — keep them for the column pickers.
+        if trace.steps:
+            _remember_columns(name, trace.steps[0].columns)
+    return traces
+
+
+def _render_dataset_results(traces) -> None:
+    """Dataset results for the Data section, stage by stage.
+
+    Rendered outside the bounded form column, because result rows want the
+    width. Every transform gets its own frame so you can see which step dropped
+    the rows or added the column you were expecting — a whole-pipeline result
+    only tells you that something went wrong, not where.
+    """
+    if not traces:
+        return
+
+    for name, trace in traces.items():
         with st.container(border=True):
-            st.markdown(f"**{name}**")
-            st.code(res.qsql or "(no query)", language="python")
-            if res.error:
-                st.error(res.error, icon=":material/error:")
-            else:
-                st.caption(f"{res.row_count} row(s)"
-                           + (" — capped" if res.truncated else ""))
-                st.dataframe(res.df, use_container_width=True, height=220)
+            st.markdown(f"### {name}")
+            with st.expander("Query sent", expanded=not trace.steps):
+                st.code(trace.qsql or "(no query)", language="python")
+
+            if trace.error:
+                st.error(trace.error, icon=":material/error:")
+                continue
+
+            failed = trace.failed_step
+            if failed:
+                st.warning(f"The pipeline stops at step {failed.index} — later "
+                           f"transforms never ran.", icon=":material/warning:")
+            for step in trace.steps:
+                _render_step(step)
+                if step is not trace.steps[-1]:
+                    st.divider()
 
 
 # --- widget spec forms -----------------------------------------------------
 
+COLUMN_HELP = ("Not listed? Type the name — a raw q query's columns are only "
+               "known once it has run.")
+
+
 def _pick(container, label: str, columns: list[str], current: str, key: str) -> str:
-    options = columns or ([current] if current else [""])
+    """A column picker that can always show what is already configured, and
+    always lets you name a column it has not been told about."""
+    options = with_stored(columns, current) or ([current] if current else [""])
     index = options.index(current) if current in options else 0
-    return container.selectbox(label, options, index=index, key=key)
+    return container.selectbox(label, options, index=index, key=key,
+                               accept_new_options=True, help=COLUMN_HELP)
+
+
+def _pick_many(container, label: str, columns: list[str], current, key: str,
+               **kwargs) -> list[str]:
+    """The same, for a picker that takes several columns."""
+    return container.multiselect(label, with_stored(columns, current),
+                                 default=list(current or []), key=key,
+                                 accept_new_options=True, help=COLUMN_HELP,
+                                 **kwargs)
 
 
 def _format_picker(container, label: str, current: str, key: str,
@@ -622,9 +795,8 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                            if red else [])
 
     elif w.type == "table":
-        s["columns"] = st.multiselect("Columns (empty = all)", columns,
-                                      default=[c for c in s.get("columns", [])
-                                               if c in columns], key=f"{key}_cols")
+        s["columns"] = _pick_many(st, "Columns (empty = all)", columns,
+                                  s.get("columns", []), f"{key}_cols")
 
         shown = s["columns"] or columns
         if shown:
@@ -647,11 +819,13 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                            if k in shown and v.strip()}
             s["formats"] = {k: v for k, v in formats.items() if k in shown and v}
 
-        hl_opts = ["(none)"] + columns
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
+        hl_opts = ["(none)"] + with_stored(columns, current if current != "(none)"
+                                           else "")
         hl = st.selectbox("Highlight when above zero", hl_opts,
                           index=hl_opts.index(current) if current in hl_opts else 0,
-                          key=f"{key}_hl")
+                          key=f"{key}_hl", accept_new_options=True,
+                          help=COLUMN_HELP)
         s["highlight"] = ([] if hl == "(none)"
                           else [{"column": hl, "op": ">", "value": 0,
                                  "color": "critical"}])
@@ -791,7 +965,8 @@ def _render_layout(store, draft: Dashboard) -> None:
                     # Namespaced: the card's own controls live under "{key}_*",
                     # so an axis field called "_x" would collide with the remove
                     # button. Keep the spec form in its own key space.
-                    _widget_form(w, dataset_columns(ds, _connection_for(store, ds)),
+                    _widget_form(w, dataset_columns(ds, _connection_for(store, ds),
+                                                    learned_columns(w.dataset)),
                                  f"{key}_spec")
 
             if st.button("Add widget", icon=":material/add:", key=f"r{r_i}_add",
@@ -908,6 +1083,9 @@ def render(store, mgr) -> None:
         with form_area():
             _render_layout(store, draft)
     else:
+        # Run first, draw second: the forms above the results are built from
+        # what the run just learned about each query.
+        traces = run_preview(store, mgr, draft)
         with form_area():
             _render_data(store, mgr, draft)
-        _render_dataset_results(store, mgr, draft)
+        _render_dataset_results(traces)

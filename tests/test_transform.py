@@ -2,7 +2,8 @@ import pandas as pd
 import pytest
 
 from kdbmonitor.core.dashboard_models import Transform
-from kdbmonitor.core.transform import apply_transforms
+from kdbmonitor.core.summaries import transform_summary
+from kdbmonitor.core.transform import apply_transforms, transform_steps
 
 
 def _orders() -> pd.DataFrame:
@@ -21,6 +22,39 @@ def test_derive_arithmetic():
 
 
 def test_derive_suffix_map():
+    out = apply_transforms(_orders(), [Transform(kind="derive", params={
+        "column": "market", "kind": "suffix_map", "source": "sym",
+        "mapping": {".HK": "Hong Kong", ".JP": "Japan"}, "default": "Unknown"})])
+    assert out["market"].tolist() == ["Hong Kong", "Hong Kong", "Japan"]
+
+
+def test_derive_suffix_map_takes_the_last_n_characters():
+    """The suffix is however many trailing characters you say it is, so a
+    symbology without a dot separator works the same way."""
+    df = pd.DataFrame({"sym": ["0005HK", "7203JP", "AAPLUS"]})
+    out = apply_transforms(df, [Transform(kind="derive", params={
+        "column": "market", "kind": "suffix_map", "source": "sym", "length": 2,
+        "mapping": {"HK": "Hong Kong", "JP": "Japan"}, "default": "Unknown"})])
+    assert out["market"].tolist() == ["Hong Kong", "Japan", "Unknown"]
+
+
+def test_a_suffix_length_counts_the_dot_when_the_mapping_does():
+    out = apply_transforms(_orders(), [Transform(kind="derive", params={
+        "column": "market", "kind": "suffix_map", "source": "sym", "length": 3,
+        "mapping": {".HK": "Hong Kong", ".JP": "Japan"}, "default": "Unknown"})])
+    assert out["market"].tolist() == ["Hong Kong", "Hong Kong", "Japan"]
+
+
+def test_a_value_shorter_than_the_suffix_gets_the_fallback():
+    df = pd.DataFrame({"sym": ["HK", "0005.HK"]})
+    out = apply_transforms(df, [Transform(kind="derive", params={
+        "column": "market", "kind": "suffix_map", "source": "sym", "length": 3,
+        "mapping": {".HK": "Hong Kong"}, "default": "Unknown"})])
+    assert out["market"].tolist() == ["Unknown", "Hong Kong"]
+
+
+def test_a_map_without_a_length_still_splits_on_the_last_dot():
+    """Maps built before the length existed keep the behaviour they had."""
     out = apply_transforms(_orders(), [Transform(kind="derive", params={
         "column": "market", "kind": "suffix_map", "source": "sym",
         "mapping": {".HK": "Hong Kong", ".JP": "Japan"}, "default": "Unknown"})])
@@ -123,3 +157,91 @@ def test_missing_column_names_the_transform():
     with pytest.raises(ValueError, match="sort: no column 'nope'"):
         apply_transforms(_orders(), [Transform(kind="sort",
                                                params={"columns": ["nope"]})])
+
+
+# --- step by step ----------------------------------------------------------
+
+MARKET = Transform(kind="derive", params={
+    "column": "market", "kind": "suffix_map", "source": "sym",
+    "mapping": {".HK": "Hong Kong", ".JP": "Japan"}, "default": "Unknown"})
+BY_MARKET = Transform(kind="groupby", params={"keys": ["market"], "aggs": [
+    {"column": "id_target", "func": "nunique", "as": "n_orders"},
+    {"column": "size", "func": "sum", "as": "order_qty"}]})
+BIG_ONLY = Transform(kind="filter", params={"column": "size", "op": ">",
+                                            "value": 60})
+
+
+def test_the_first_step_is_the_untouched_query_result():
+    steps = transform_steps(_orders(), [MARKET])
+    assert steps[0].index == 0
+    assert steps[0].label == "Query result"
+    assert steps[0].rows == 3
+    assert "market" not in steps[0].columns
+
+
+def test_every_transform_gets_its_own_frame():
+    steps = transform_steps(_orders(), [MARKET, BY_MARKET])
+    assert [s.index for s in steps] == [0, 1, 2]
+    assert steps[1].df["market"].tolist() == ["Hong Kong", "Hong Kong", "Japan"]
+    assert steps[2].df["n_orders"].tolist() == [2, 1]
+    assert steps[-1].df.equals(apply_transforms(_orders(), [MARKET, BY_MARKET]))
+
+
+def test_a_step_reports_the_columns_it_added_and_dropped():
+    steps = transform_steps(_orders(), [MARKET, BY_MARKET])
+    assert steps[1].added == ["market"]
+    assert steps[1].dropped == []
+    assert set(steps[2].dropped) == {"id_target", "sym", "size", "executed",
+                                     "nReject"}
+    assert steps[2].added == ["n_orders", "order_qty"]
+
+
+def test_a_step_reports_the_rows_it_gained_or_lost():
+    steps = transform_steps(_orders(), [BIG_ONLY])
+    assert steps[1].rows == 2
+    assert steps[1].rows_before == 3
+    assert steps[1].row_delta == -1
+    assert steps[0].row_delta is None       # nothing to compare the query with
+
+
+def test_a_failing_step_carries_the_error_and_stops_the_rest():
+    steps = transform_steps(_orders(), [
+        BY_MARKET,                                   # 'market' does not exist yet
+        Transform(kind="limit", params={"n": 1}),
+    ])
+    assert len(steps) == 2                           # the limit never ran
+    assert steps[1].error and "no column 'market'" in steps[1].error
+    assert steps[1].df is None
+    assert steps[0].rows == 3                        # what it was handed
+
+
+def test_stepping_does_not_mutate_the_source_frame():
+    df = _orders()
+    transform_steps(df, [MARKET, BY_MARKET])
+    assert "market" not in df.columns
+
+
+def test_steps_are_labelled_with_what_each_one_does():
+    steps = transform_steps(_orders(), [MARKET, BY_MARKET])
+    assert steps[1].label == "1. derive market from sym"
+    assert steps[2].label.startswith("2. group by market → nunique(id_target)")
+
+
+@pytest.mark.parametrize("transform, expected", [
+    (BIG_ONLY, "keep rows where size > 60"),
+    (Transform(kind="sort", params={"columns": ["size"], "ascending": False}),
+     "sort by size descending"),
+    (Transform(kind="limit", params={"n": 10}), "keep the first 10 rows"),
+    (Transform(kind="rename", params={"mapping": {"size": "qty"}}),
+     "rename size → qty"),
+    (Transform(kind="derive", params={"column": "pct", "kind": "arithmetic",
+                                      "expr": "100 * executed / size"}),
+     "derive pct = 100 * executed / size"),
+])
+def test_transform_summaries_read_as_the_action(transform, expected):
+    assert transform_summary(transform) == expected
+
+
+def test_an_unconfigured_transform_still_has_a_summary():
+    assert transform_summary(Transform(kind="sort", params={})) == \
+        "sort by ? ascending"

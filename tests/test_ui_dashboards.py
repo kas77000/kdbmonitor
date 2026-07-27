@@ -102,6 +102,57 @@ def test_raw_datasets_have_no_predictable_columns():
     assert ed.dataset_columns(ds, _FakeConn()) == []
 
 
+def test_a_raw_dataset_uses_the_columns_a_run_actually_returned():
+    """The only way to know a raw q's shape is to run it, so the editor offers
+    what the last preview came back with."""
+    ds = Dataset(name="d", env="orders", mode="raw", raw_qsql="select from t",
+                 transforms=[Transform(kind="groupby", params={
+                     "keys": ["market"], "aggs": [
+                         {"column": "size", "func": "sum", "as": "order_qty"}]})])
+    assert ed.dataset_columns(ds, _FakeConn(), ["sym", "size", "market"]) == \
+        ["market", "order_qty"]
+
+
+def test_filters_see_the_table_not_the_transformed_shape():
+    """A filter becomes the query's where clause: it runs against the table
+    before any transform, so a group-by must not narrow what it can name."""
+    ds = Dataset(name="d", env="orders", table="target", transforms=[
+        Transform(kind="groupby", params={"keys": ["sym"], "aggs": [
+            {"column": "size", "func": "sum", "as": "order_qty"}]})])
+    assert ed.table_columns(ds, _FakeConn()) == ["sym", "size", "side"]
+    assert ed.table_columns(Dataset(name="d", env="orders", mode="raw"),
+                            _FakeConn()) == []
+
+
+def test_a_raw_dataset_still_knows_what_its_transforms_produce():
+    """A group-by replaces the frame with its keys and aggregates whatever it
+    was given, so those columns are known even when the query's are not."""
+    ds = Dataset(name="d", env="orders", mode="raw", raw_qsql="select from t",
+                 transforms=[
+                     Transform(kind="derive", params={"column": "market"}),
+                     Transform(kind="groupby", params={"keys": ["market"], "aggs": [
+                         {"column": "size", "func": "sum", "as": "order_qty"}]}),
+                     Transform(kind="derive", params={"column": "pct"})])
+    assert ed.dataset_columns(ds, None) == ["market", "order_qty", "pct"]
+
+
+def test_a_suffix_length_is_inferred_from_the_map_it_is_missing_from():
+    assert ed.suffix_length({".HK": "Hong Kong", ".JP": "Japan"}) == 3
+    assert ed.suffix_length({"HK": "Hong Kong", "JP": "Japan"}) == 2
+    assert ed.suffix_length({".HK": "Hong Kong", ".HKG": "Hong Kong"}) == 0
+    assert ed.suffix_length({}) == 0
+
+
+def test_a_picker_always_offers_what_is_already_configured():
+    """Otherwise a selectbox falls back to its first option and a multiselect
+    drops the value — rewriting the dashboard just for being opened."""
+    assert ed.with_stored(["sym", "size"], "market") == ["sym", "size", "market"]
+    assert ed.with_stored(["sym"], ["market", "sym"]) == ["sym", "market"]
+    assert ed.with_stored([], ["market"]) == ["market"]
+    assert ed.with_stored(["sym"], "") == ["sym"]
+    assert ed.with_stored(["sym"], None) == ["sym"]
+
+
 def test_unique_name_avoids_collisions():
     assert ed.unique_name("orders", ["orders", "orders_2"]) == "orders_3"
     assert ed.unique_name("fills", ["orders"]) == "fills"

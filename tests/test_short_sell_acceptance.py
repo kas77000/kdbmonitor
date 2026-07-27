@@ -61,7 +61,7 @@ def short_sell_dashboard() -> Dashboard:
             transforms=[
                 Transform(kind="derive", params={
                     "column": "market", "kind": "suffix_map", "source": "sym",
-                    "mapping": MARKETS, "default": "Unknown"}),
+                    "mapping": MARKETS, "length": 3, "default": "Unknown"}),
                 Transform(kind="groupby", params={
                     "keys": ["market"], "aggs": [
                         {"column": "id_target", "func": "nunique", "as": "n_orders"},

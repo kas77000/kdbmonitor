@@ -270,13 +270,22 @@ of **transforms** shapes the result, no Python required:
 
 | Transform | What it does |
 |---|---|
-| `derive` | a new column — an arithmetic expression (`100 * executed / size`) or a suffix map (`5.HK` → Hong Kong) |
+| `derive` | a new column — an arithmetic expression (`100 * executed / size`) or a suffix map, where you say how many trailing characters make the suffix (3 reads `700.HK` as `.HK` → Hong Kong) |
 | `filter` | drop rows, including on a derived column |
 | `groupby` | keys + aggregations (count, nunique, sum, mean, min, max) |
 | `sort` / `limit` / `rename` | the usual finishing touches |
 
 Datasets run in order and can feed each other with `{{name.column}}`, the same
 substitution the alert builder uses for chained steps.
+
+**Run and inspect each step** in the Data section runs the pipeline stage by
+stage: the query's own result first, then the frame after every transform, each
+with its row count, how many rows it gained or lost, and which columns it added
+or dropped. When a transform fails, the run stops there and names it — the frame
+shown above it is exactly what it was handed, so you can see *which* step went
+wrong rather than only that the dataset did. Running a raw-q dataset also teaches
+the editor what columns that query returns, which is what the column pickers
+offer from then on.
 
 ### Environments — linking your servers
 

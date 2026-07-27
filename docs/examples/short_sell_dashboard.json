@@ -45,6 +45,7 @@
                   ".MK": "Malaysia",
                   ".TB": "Thailand"
                 },
+                "length": 3,
                 "default": "Unknown"
               }
             },

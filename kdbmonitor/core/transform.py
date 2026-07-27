@@ -7,9 +7,12 @@ Python snippet.
 from __future__ import annotations
 
 import operator
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 import pandas as pd
+
+from kdbmonitor.core.summaries import transform_summary
 
 AGG_FUNCS = ("count", "nunique", "sum", "mean", "min", "max")
 
@@ -34,10 +37,19 @@ def _derive(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     if kind == "suffix_map":
         source, mapping = p["source"], p.get("mapping", {})
         default = p.get("default", "Unknown")
+        # How many trailing characters make the suffix. Without one, fall back to
+        # the older rule of splitting on the last dot, so maps configured before
+        # the length existed keep working.
+        length = int(p.get("length") or 0)
         _need(df, source, "derive")
 
         def to_label(v: Any) -> str:
-            if isinstance(v, str) and "." in v:
+            if not isinstance(v, str):
+                return default
+            if length > 0:
+                return mapping.get(v[-length:], default) if len(v) >= length \
+                    else default
+            if "." in v:
                 return mapping.get("." + v.rsplit(".", 1)[1], default)
             return default
 
@@ -101,3 +113,64 @@ def apply_transforms(df: pd.DataFrame, transforms) -> pd.DataFrame:
             raise ValueError(f"unknown transform: {t.kind}")
         out = fn(out, t.params)
     return out
+
+
+# --- step-by-step evaluation ------------------------------------------------
+
+@dataclass
+class Step:
+    """The state of a dataset's frame at one stage of its pipeline.
+
+    Step 0 is what the query returned; step N is the frame after the Nth
+    transform. Keeping every stage lets the editor show what each configured
+    action actually did, rather than only the end result.
+    """
+    index: int                   # 0 = the query result
+    kind: str                    # "query", or the transform's kind
+    label: str                   # human description of this stage
+    df: Optional[pd.DataFrame]   # None when this step failed
+    error: Optional[str] = None
+    rows_before: Optional[int] = None      # None for the query step
+    added: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+
+    @property
+    def rows(self) -> int:
+        return 0 if self.df is None else len(self.df)
+
+    @property
+    def row_delta(self) -> Optional[int]:
+        """Rows gained (+) or lost (-) at this step, None where it means nothing."""
+        if self.df is None or self.rows_before is None:
+            return None
+        return self.rows - self.rows_before
+
+    @property
+    def columns(self) -> list[str]:
+        return [] if self.df is None else [str(c) for c in self.df.columns]
+
+
+def transform_steps(df: pd.DataFrame, transforms) -> list[Step]:
+    """Apply transforms one at a time, keeping the frame after each.
+
+    Stops at the first failure and records it on that step: the steps before it
+    are exactly the ones that succeeded, which is what makes a broken pipeline
+    diagnosable — you can see the frame the failing transform was handed.
+    """
+    steps = [Step(index=0, kind="query", label="Query result", df=df.copy())]
+    current = df
+    for i, t in enumerate(transforms, start=1):
+        before_columns, before_rows = list(current.columns), len(current)
+        label = f"{i}. {transform_summary(t)}"
+        try:
+            nxt = apply_transforms(current, [t])
+        except Exception as exc:      # noqa: BLE001 - reported, not raised
+            steps.append(Step(index=i, kind=t.kind, label=label, df=None,
+                              error=str(exc), rows_before=before_rows))
+            break
+        steps.append(Step(
+            index=i, kind=t.kind, label=label, df=nxt, rows_before=before_rows,
+            added=[str(c) for c in nxt.columns if c not in before_columns],
+            dropped=[str(c) for c in before_columns if c not in nxt.columns]))
+        current = nxt
+    return steps

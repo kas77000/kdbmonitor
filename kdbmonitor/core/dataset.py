@@ -8,7 +8,7 @@ flipping a dataset between environments lossless.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
@@ -21,7 +21,7 @@ from kdbmonitor.core.timectx import (
     ResolvedTime, date_clause, has_date_constraint, resolve, substitute_dates,
     unresolved_date_refs,
 )
-from kdbmonitor.core.transform import apply_transforms
+from kdbmonitor.core.transform import Step, apply_transforms, transform_steps
 
 
 @dataclass
@@ -32,6 +32,29 @@ class DatasetResult:
     error: Optional[str]
     row_count: int = 0              # true size before max_rows capping
     truncated: bool = False
+
+
+@dataclass
+class DatasetTrace:
+    """A dataset run kept stage by stage: the query, then each transform.
+
+    ``error`` is a failure that happened before any frame existed (no server, a
+    refused query); a transform failure lives on the step that raised it.
+    """
+    name: str
+    qsql: str
+    error: Optional[str]
+    steps: list[Step] = field(default_factory=list)
+
+    @property
+    def df(self) -> Optional[pd.DataFrame]:
+        """The frame the pipeline ends on, or None if nothing ran."""
+        return self.steps[-1].df if self.steps and self.steps[-1].df is not None \
+            else None
+
+    @property
+    def failed_step(self) -> Optional[Step]:
+        return next((s for s in self.steps if s.error), None)
 
 
 def resolve_connection(store, env: str, kind: str) -> Connection:
@@ -124,22 +147,26 @@ def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None) -> str:
     return substitute_refs(q, outputs)
 
 
-def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
-                outputs: dict) -> DatasetResult:
-    """Run one dataset, capturing any failure as an error on the result."""
+def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr,
+           outputs: dict) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
+    """Send the dataset's query — no transforms — as (qsql, frame, error).
+
+    Never raises: every failure comes back as the error, along with whatever the
+    query looked like at that point, so a caller can show it. Shared by the plain
+    run and the step-by-step trace, so both send exactly the same query.
+    """
     # Resolve first: the date guard must apply to the server actually queried,
     # and a market-data environment is never historical.
     try:
         conn, effective = resolve_target(store, ds.env, rt)
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a page
-        return DatasetResult(ds.name, None, "", str(exc))
+        return "", None, str(exc)
 
     if effective.mode == "historical" and ds.mode == "raw" \
             and not has_date_constraint(ds.raw_qsql or ""):
-        return DatasetResult(
-            ds.name, None, ds.raw_qsql or "",
-            "historical query must constrain 'date' — add a "
-            "date within ({{date_from}};{{date_to}}) clause")
+        return (ds.raw_qsql or "", None,
+                "historical query must constrain 'date' — add a "
+                "date within ({{date_from}};{{date_to}}) clause")
 
     qsql = ""
     try:
@@ -147,12 +174,23 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
         if unresolved_date_refs(qsql):
             # Only reachable in real-time, where nothing fills them. Sending
             # '{{date_from}}' to KDB would be a baffling parse error.
-            return DatasetResult(
-                ds.name, None, qsql,
-                "this query uses {{date_from}}/{{date_to}} outside a "
-                "{{#historical}}…{{/historical}} block, so it cannot run in "
-                "real-time — wrap the date predicate in that block")
-        df = mgr.get(conn).query(qsql)
+            return (qsql, None,
+                    "this query uses {{date_from}}/{{date_to}} outside a "
+                    "{{#historical}}…{{/historical}} block, so it cannot run in "
+                    "real-time — wrap the date predicate in that block")
+        return qsql, mgr.get(conn).query(qsql), None
+    except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
+        return qsql, None, str(exc)
+
+
+def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
+                outputs: dict) -> DatasetResult:
+    """Run one dataset, capturing any failure as an error on the result."""
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs)
+    if error is not None:
+        return DatasetResult(ds.name, None, qsql, error)
+
+    try:
         df = apply_transforms(df, ds.transforms)
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
         return DatasetResult(ds.name, None, qsql, str(exc))
@@ -161,6 +199,20 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
     capped = df.head(ds.max_rows).reset_index(drop=True)
     return DatasetResult(ds.name, capped, qsql, None,
                          row_count=total, truncated=total > len(capped))
+
+
+def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr,
+                      outputs: dict) -> DatasetTrace:
+    """Run one dataset keeping the frame after every transform.
+
+    Same query, same transforms, same order as :func:`run_dataset` — only the
+    intermediate frames are kept, so what you inspect step by step is what the
+    dashboard will actually show.
+    """
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs)
+    if error is not None:
+        return DatasetTrace(ds.name, qsql, error)
+    return DatasetTrace(ds.name, qsql, None, transform_steps(df, ds.transforms))
 
 
 def run_datasets(dashboard: Dashboard, store, mgr,
@@ -180,3 +232,22 @@ def run_datasets(dashboard: Dashboard, store, mgr,
         if res.df is not None:
             outputs[ds.name] = res.df
     return results
+
+
+def trace_datasets(dashboard: Dashboard, store, mgr,
+                   today: date) -> dict[str, DatasetTrace]:
+    """Run every dataset step by step, in declaration order, results by name.
+
+    Like :func:`run_datasets`, a dataset's finished frame is fed forward so a
+    later one can still reference it with ``{{name.column}}``.
+    """
+    dashboard_time = resolve(dashboard.time_context, today)
+    outputs: dict[str, pd.DataFrame] = {}
+    traces: dict[str, DatasetTrace] = {}
+    for ds in dashboard.datasets:
+        rt = effective_time(ds, dashboard_time, today)
+        trace = run_dataset_steps(ds, rt, store, mgr, outputs)
+        traces[ds.name] = trace
+        if trace.df is not None:
+            outputs[ds.name] = trace.df
+    return traces
