@@ -46,6 +46,7 @@ class Part:
     slices: dict = field(default_factory=dict)     # widget position -> (start, count)
     capacity: dict = field(default_factory=dict)   # widget position -> rows per part
     height_in: float = 0.0                         # taller than the row when merged
+    spans: int = 1                                 # parts merged into this block
 
     def sized(self) -> "Part":
         return self if self.height_in else replace(self, height_in=self.row.height_in)
@@ -59,8 +60,12 @@ def _joins(first: Part, second: Part) -> bool:
     where growing the block cannot distort a neighbour: either the earlier chunk
     is already a table-only continuation, or every widget in the row is a table
     that is flowing.
+
+    ``first`` may itself be several parts already merged, so the next part to
+    follow it is ``part + spans`` — comparing against ``part + 1`` stopped a
+    third chunk joining a block of two and printed its header again mid-page.
     """
-    if first.row is not second.row or second.part != first.part + 1:
+    if first.row is not second.row or second.part != first.part + first.spans:
         return False
     if set(first.slices) != set(second.slices):
         return False
@@ -75,7 +80,8 @@ def _join(first: Part, second: Part) -> Part:
                 for pos, (start, count) in first.slices.items()},
         capacity={pos: cap + second.capacity[pos]
                   for pos, cap in first.capacity.items()},
-        height_in=first.height_in + GUTTER + second.height_in)
+        height_in=first.height_in + GUTTER + second.height_in,
+        spans=first.spans + 1)
 
 
 # A table long enough to need more parts than this stops being a report and
@@ -323,10 +329,12 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
                 continue
 
             rect, title_h = _axes_rect(x, y_top, w_in, part.height_in, widget)
-            if title_h:
-                title = (f"{widget.title} (continued)" if part.part
-                         else widget.title)
-                fig.text(x / PAGE_W, 1 - (y_top + 0.16) / PAGE_H, title,
+            # A widget is titled where it starts and nowhere else: the pages a
+            # long table runs onto carry no heading at all. The space stays
+            # reserved so every part lays out to the same capacity and the type
+            # does not grow on the continuation pages.
+            if title_h and not part.part:
+                fig.text(x / PAGE_W, 1 - (y_top + 0.16) / PAGE_H, widget.title,
                          fontsize=12, fontweight="bold", color=theme.INK,
                          va="center")
             pm = _model(widget, results, cache)

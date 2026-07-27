@@ -445,11 +445,12 @@ report reads as "nothing to report".
 
 **A table longer than its row carries on over the following pages.** The type
 shrinks to fit first — a dozen rows print at full size, eighteen tighten a
-little — and once it would drop below legible, the table continues instead, under
-a repeated header and a `(continued)` title. Chunks landing on the same page join
-into one block, so the report reads as a single table rather than the same header
-stamped every twenty rows. Everything else in the row prints once, with the
-first chunk.
+little — and once it would drop below legible, the table continues instead. A
+widget is titled where it starts and nowhere else: the pages it runs onto carry
+no heading, only the column names above the rows. Every chunk landing on the
+same page joins into one block, however many it takes, so the report reads as a
+single table rather than the same header stamped every twenty rows. Everything
+else in the row prints once, with the first chunk.
 
 The page count therefore follows the data, and the Dashboards page states it
 before you generate. The Layout editor can only count the layout, since it has

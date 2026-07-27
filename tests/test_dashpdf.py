@@ -202,6 +202,15 @@ def test_consecutive_parts_on_one_page_become_a_single_block():
             assert part.height_in >= 2.0        # merged blocks are taller
 
 
+def test_a_page_of_one_table_holds_exactly_one_block():
+    """Merging stopped after two chunks, so a third started again under its own
+    header halfway down the page."""
+    pages = paginate(_table_dash(2.0).rows, _long_results(200))
+    for page in pages:
+        assert len([p for p, _ in page if p.slices]) == 1
+    assert any(p.spans >= 3 for page in pages for p, _ in page)
+
+
 def test_a_merged_block_still_prints_every_row():
     pages = paginate(_table_dash(2.0).rows, _long_results(60))
     printed = _rows_printed([p for page in pages for p, _ in page])
@@ -345,6 +354,39 @@ def test_continuation_pages_carry_no_header():
     _header(fig, _dash([]), RT, AS_OF, first=True)
     assert any("Short sell" in t.get_text() for t in fig.texts)
     plt.close(fig)
+
+
+def _page_texts(dash: Dashboard, results: dict, page_no: int) -> list[str]:
+    """Every string printed on one page of the report."""
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _render_page
+
+    pages = paginate(dash.rows, results)
+    fig = _render_page(dash, pages[page_no - 1], results, RT, AS_OF,
+                       page_no, len(pages))
+    out = [t.get_text() for t in fig.texts]
+    plt.close(fig)
+    return out
+
+
+def test_a_table_continuing_onto_a_page_carries_no_heading():
+    """A widget is titled where it starts. The pages it runs onto get nothing —
+    not the title again, and not a '(continued)' variant of it."""
+    dash, results = _table_dash(2.0), _long_results(200)
+    assert any("Affected orders" in t for t in _page_texts(dash, results, 1))
+
+    later = _page_texts(dash, results, 2)
+    assert not any("Affected orders" in t for t in later)
+    assert not any("continued" in t for t in later)
+
+
+def test_a_widget_that_starts_on_a_later_page_keeps_its_title():
+    """Only continuations lose the heading — a row that begins on page 2 is not
+    a continuation of anything."""
+    dash = _dash([Row(height_in=6.0, widgets=[
+        Widget(type="bar", dataset="by_market", title=f"Chart {i}",
+               spec={"x": "market", "y": "pct"})]) for i in range(2)])
+    assert any("Chart 1" in t for t in _page_texts(dash, _results(), 2))
 
 
 def test_dropping_the_header_gives_later_pages_more_room():
