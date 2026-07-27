@@ -22,7 +22,7 @@
           "mode": "raw",
           "table": "",
           "filters": [],
-          "raw_qsql": "{[]\n  o:select id_target, sym, side, size\n      from target\n      where side=`sellshort,\n        any sym like/: (\"*.HK\";\"*.JP\";\"*.KS\";\"*.MK\";\"*.TB\");\n  st:select remaining:last open, executed:last make\n       by id_target\n       from target_state\n       where id_target in exec id_target from o;\n  o:o lj st;\n  o:select from o where executed>0;\n  wo:select nReject:sum state like \"*reject*\"\n       by id_target\n       from workorder\n       where id_target in exec id_target from o;\n  o lj wo }[]",
+          "raw_qsql": "{[]\n  o:select id_target, sym, side, size\n      from target\n      where side=`sellshort,\n        any sym like/: (\"*.HK\";\"*.JP\";\"*.KS\";\"*.MK\";\"*.TB\");\n  st:select remaining:last open, executed:last make\n       by id_target\n       from target_state\n       where id_target in exec id_target from o;\n  / 0^ every joined-in number. An order with no matching row joins to a kdb\n  / null, and a null int is a large negative sentinel once summed, so a\n  / missing row must mean none rather than minus two billion.\n  o:update remaining:0^remaining, executed:0^executed from o lj st;\n  o:select from o where executed>0;\n  wo:select nReject:sum state like \"*reject*\"\n       by id_target\n       from workorder\n       where id_target in exec id_target from o;\n  update nReject:0^nReject from o lj wo }[]",
           "transforms": [
             {
               "kind": "derive",

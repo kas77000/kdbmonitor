@@ -12,6 +12,41 @@ class KdbClient(Protocol):
     def query(self, qsql: str) -> pd.DataFrame: ...
 
 
+# kdb+ has nowhere in an integer vector to put "unknown", so a null *is* a
+# value: the lowest one the width can hold. pandas has no idea, and pykx hands
+# them straight over — so an order that missed a left join arrives holding
+# -2,147,483,648, and summing a column of those gives a rejection count in the
+# billions instead of a gap. These three numbers are the nulls, never data.
+Q_INT_NULLS = {"int16": -32768,
+               "int32": -2147483648,
+               "int64": -9223372036854775808}
+
+
+def nulls_to_nan(df: pd.DataFrame) -> pd.DataFrame:
+    """kdb+ integer nulls as NaN, so nothing sums or plots them as numbers.
+
+    Only columns that actually hold a sentinel are touched, and only those
+    become floats — a frame of honest integers comes back untouched, dtypes and
+    all. Wrong-looking is recoverable; wrong-and-plausible is not, which is why
+    this happens on arrival rather than being left to each query to remember.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df
+    for col in df.columns:
+        sentinel = Q_INT_NULLS.get(str(df[col].dtype).lower())
+        if sentinel is None:
+            continue
+        hit = df[col] == sentinel
+        if not hit.any():
+            continue
+        if out is df:
+            out = df.copy()
+        out[col] = df[col].astype("float64").mask(hit)
+    return out
+
+
 class FakeClient:
     """Test double: returns canned DataFrames keyed by exact query string."""
     def __init__(self, responses: dict[str, pd.DataFrame]):
@@ -36,11 +71,11 @@ class PyKxClient:
 
     def query(self, qsql: str) -> pd.DataFrame:
         try:
-            return self._conn(qsql).pd()
+            return nulls_to_nan(self._conn(qsql).pd())
         except Exception:
             # reconnect once, then retry
             self._conn = self._kx.SyncQConnection(host=self.host, port=self.port)
-            return self._conn(qsql).pd()
+            return nulls_to_nan(self._conn(qsql).pd())
 
 
 class ConnectionManager:

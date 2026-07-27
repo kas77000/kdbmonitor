@@ -278,6 +278,16 @@ of **transforms** shapes the result, no Python required:
 Datasets run in order and can feed each other with `{{name.column}}`, the same
 substitution the alert builder uses for chained steps.
 
+**kdb integer nulls arrive as nulls, not as numbers.** An int vector has nowhere
+to put "unknown", so a q null *is* a value — the lowest the width holds. Left
+alone, an order that missed a left join reaches pandas holding
+`-2,147,483,648`, and summing that column reports rejections in the billions:
+wrong, but formatted, coloured and plottable like anything else. Every frame is
+scrubbed on arrival, so those three sentinels become blanks and a sum counts
+only the rows that have a value. Still write `0^` in your own joins where zero
+is the honest answer — a blank cell and a nought say different things to whoever
+reads the report.
+
 **Run and inspect each step** in the Data section runs the pipeline stage by
 stage: the query's own result first, then the frame after every transform, each
 with its row count, how many rows it gained or lost, and which columns it added
