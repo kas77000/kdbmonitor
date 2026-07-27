@@ -416,6 +416,13 @@ both. Pages paginate automatically, and a dataset that failed prints a visible
 error panel rather than being silently dropped — a missing chart in a printed
 report reads as "nothing to report".
 
+A printed table has a fixed height, so rows and type size trade off. The type
+shrinks to fit first; once it would drop below what is legible the row count
+gives way instead, and the table says so — `showing 19 of 60 rows` under its last
+line. Nothing is ever dropped silently. To print more of a long table, give its
+row more inches in the Layout editor, which shows you where the page breaks land
+as you drag; for the whole result, read it on screen, where the table scrolls.
+
 ### Sharing
 
 Each card has its own **Export** button (one dashboard, named after it), and

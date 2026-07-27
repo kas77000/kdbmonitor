@@ -48,6 +48,61 @@ def _kpi(ax, pm: PlotModel) -> None:
                 transform=ax.transAxes, va="center")
 
 
+# A printed table has a fixed height, so rows and type size trade off against
+# each other. Below MIN_FONT the page stops being a report and starts being a
+# smudge, so the row count gives way instead: what fits is printed at a legible
+# size and the rest is declared, never silently dropped.
+TABLE_FONT = 10.5           # preferred size, used whenever the rows fit
+TABLE_MIN_FONT = 7.0        # smallest size still worth printing
+LINE_SPACING = 1.45         # cell height as a multiple of the font size
+NOTE_H_IN = 0.17            # strip under the table for "showing X of Y rows"
+
+
+def _axes_height_in(ax) -> float:
+    """The axes' drawn height in inches — what the row budget is spent from."""
+    figure = getattr(ax, "figure", None)
+    if figure is None:
+        return 0.0
+    return ax.get_position().height * figure.get_figheight()
+
+
+def table_layout(height_in: float, n_rows: int) -> tuple[int, float, bool]:
+    """How to print ``n_rows`` in ``height_in``: (rows shown, font size, noted).
+
+    Pure, so the trade-off can be tested without rendering anything: rows are
+    dropped only once the type would fall below :data:`TABLE_MIN_FONT`, and
+    dropping any at all buys a line to say so.
+    """
+    def fits(height: float) -> int:
+        cell = TABLE_MIN_FONT * LINE_SPACING / 72
+        return max(int(height / cell) - 1, 1)          # -1 for the header row
+
+    def font(height: float, cells: int) -> float:
+        return min(TABLE_FONT, max(TABLE_MIN_FONT, height / cells * 72 / LINE_SPACING))
+
+    if height_in <= 0:                                  # unknown geometry
+        return n_rows, TABLE_FONT, False
+    if n_rows <= fits(height_in):
+        return n_rows, font(height_in, n_rows + 1), False
+
+    body = height_in - NOTE_H_IN
+    shown = min(n_rows, fits(body))
+    return shown, font(body, shown + 1), True
+
+
+def _column_widths(columns: list[str], rows: list[list[str]]) -> list[float]:
+    """Share of the width per column, proportional to the longest text in it.
+
+    Equal columns make a nine-column table overlap: 'RELIANCE.IN' spills into
+    the next cell while 'Side' leaves half its box empty.
+    """
+    pad = 2                       # breathing room, in characters, on every column
+    widest = [pad + max([len(str(c))] + [len(str(r[i])) for r in rows if i < len(r)])
+              for i, c in enumerate(columns)]
+    total = sum(widest) or 1
+    return [w / total for w in widest]
+
+
 def _table(ax, pm: PlotModel) -> None:
     ax.axis("off")
     if not pm.rows:
@@ -55,11 +110,24 @@ def _table(ax, pm: PlotModel) -> None:
                 transform=ax.transAxes)
         return
 
-    # bbox=[0,0,1,1] makes the table fill its axes exactly (no internal gap).
-    table = ax.table(cellText=pm.rows, colLabels=pm.columns, cellLoc="right",
-                     colLoc="right", bbox=[0, 0, 1, 1])
+    height_in = _axes_height_in(ax)
+    shown, font_size, noted = table_layout(height_in, len(pm.rows))
+    rows = pm.rows[:shown]
+
+    bottom = 0.0
+    if noted:
+        bottom = NOTE_H_IN / height_in
+        ax.text(1, bottom / 2, f"showing {shown:,} of {len(pm.rows):,} rows",
+                fontsize=8.5, color=theme.MUTED, transform=ax.transAxes,
+                ha="right", va="center")
+
+    # bbox makes the table fill its axes exactly (no internal gap), less the
+    # strip kept for the note.
+    table = ax.table(cellText=rows, colLabels=pm.columns, cellLoc="right",
+                     colLoc="right", colWidths=_column_widths(pm.columns, rows),
+                     bbox=[0, bottom, 1, 1 - bottom])
     table.auto_set_font_size(False)
-    table.set_fontsize(10.5)
+    table.set_fontsize(font_size)
     for (row, col), cell in table.get_celld().items():
         cell.set_edgecolor(theme.GRID)
         cell.set_linewidth(0.8)

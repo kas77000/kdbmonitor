@@ -5,7 +5,9 @@ import pytest
 
 from kdbmonitor.core import theme
 from kdbmonitor.core.plotmodel import PlotModel, Series
-from kdbmonitor.core.render_mpl import draw
+from kdbmonitor.core.render_mpl import (
+    LINE_SPACING, TABLE_FONT, TABLE_MIN_FONT, _column_widths, draw, table_layout,
+)
 
 
 @pytest.fixture()
@@ -53,6 +55,95 @@ def test_table_highlight_colours_the_right_cell(ax):
     cells = ax.tables[0].get_celld()
     assert cells[(1, 1)].get_text().get_color() == theme.CRITICAL   # +1 header row
     assert cells[(2, 1)].get_text().get_color() != theme.CRITICAL
+
+
+# --- a table has to fit the height it was given ----------------------------
+
+def _rows(n: int) -> list[list[str]]:
+    return [[f"SYM{i}.HK", f"{i * 1000:,}", "up"] for i in range(n)]
+
+
+def _table_model(n: int) -> PlotModel:
+    return PlotModel(kind="table", title="Affected orders",
+                     columns=["sym", "size", "state"], rows=_rows(n))
+
+
+def test_a_table_that_fits_prints_every_row_at_full_size():
+    shown, font, noted = table_layout(3.1, 12)
+    assert (shown, noted) == (12, False)
+    assert font == TABLE_FONT
+
+
+def test_a_table_too_tall_for_its_slot_drops_rows_rather_than_legibility():
+    """40 rows in 3.1 inches used to leave 5pt of space for 10.5pt type, which
+    printed as one unreadable smudge."""
+    shown, font, noted = table_layout(3.1, 40)
+    assert shown < 40 and noted
+    assert font >= TABLE_MIN_FONT
+    assert shown * font * LINE_SPACING / 72 <= 3.1      # the rows really fit
+
+
+def test_type_shrinks_before_rows_are_dropped():
+    """A few rows over the comfortable count should tighten the type, not lose
+    data: only once it hits the floor do rows go."""
+    _, roomy, _ = table_layout(3.1, 8)
+    _, tight, dropped_none = table_layout(3.1, 18)
+    assert roomy == TABLE_FONT
+    assert TABLE_MIN_FONT <= tight < roomy
+    assert not dropped_none
+
+
+def test_the_type_never_goes_below_the_legible_floor():
+    for n in (50, 500, 5000):
+        _, font, noted = table_layout(2.0, n)
+        assert font >= TABLE_MIN_FONT and noted
+
+
+def test_a_table_with_no_known_geometry_prints_everything():
+    """An axes with no figure behind it: guessing a cap would silently hide
+    rows, so nothing is dropped."""
+    assert table_layout(0.0, 40) == (40, TABLE_FONT, False)
+
+
+def test_the_dropped_rows_are_declared_on_the_page():
+    fig = plt.figure(figsize=(8.27, 11.69))
+    ax = fig.add_axes([0.1, 0.1, 0.8, 3.1 / 11.69])
+    draw(ax, _table_model(40))
+    note = " ".join(t.get_text() for t in ax.texts)
+    assert "of 40 rows" in note
+    # The header plus the rows it kept — never all 41.
+    printed = max(r for r, _ in ax.tables[0].get_celld()) + 1
+    assert printed < 41 and f"showing {printed - 1:,} of 40 rows" in note
+    plt.close(fig)
+
+
+def test_a_short_table_says_nothing_about_row_counts():
+    fig = plt.figure(figsize=(8.27, 11.69))
+    ax = fig.add_axes([0.1, 0.1, 0.8, 3.1 / 11.69])
+    draw(ax, _table_model(6))
+    assert "rows" not in " ".join(t.get_text() for t in ax.texts)
+    assert max(r for r, _ in ax.tables[0].get_celld()) == 6      # 6 + header
+    plt.close(fig)
+
+
+def test_columns_are_shared_out_by_how_wide_their_content_is():
+    """Equal columns made 'RELIANCE.IN' spill into the next cell while 'Side'
+    sat half empty."""
+    widths = _column_widths(["sym", "side"],
+                            [["RELIANCE.IN", "buy"], ["0005.HK", "sellshort"]])
+    assert widths[0] > widths[1]
+    assert sum(widths) == pytest.approx(1.0)
+
+
+def test_highlighting_still_lands_on_the_right_row_after_rows_are_dropped():
+    fig = plt.figure(figsize=(8.27, 11.69))
+    ax = fig.add_axes([0.1, 0.1, 0.8, 3.1 / 11.69])
+    pm = _table_model(40)
+    pm.cell_colors[(2, 1)] = theme.CRITICAL
+    draw(ax, pm)
+    cells = ax.tables[0].get_celld()
+    assert cells[(3, 1)].get_text().get_color() == theme.CRITICAL   # +1 header
+    plt.close(fig)
 
 
 def test_vertical_bar_draws_one_patch_per_value(ax):
