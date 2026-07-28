@@ -429,6 +429,53 @@ def test_swapping_a_column_gives_the_new_one_a_blank_header(table_db):
     assert boxes["r0w0_spec_col_size_lbl"] == "Qty"
 
 
+# --- a table's columns can be reordered where they stand -------------------
+
+def test_a_column_can_be_moved_later(table_db):
+    """Reordering used to mean deselecting every column and picking them all
+    again in the order you wanted."""
+    at = _click(_open(table_db, "Layout"), "r0w0_spec_col_sym_down")
+    assert _spec(at)["columns"] == ["size", "sym", "price", "state"]
+
+
+def test_a_column_can_be_moved_earlier(table_db):
+    at = _click(_open(table_db, "Layout"), "r0w0_spec_col_state_up")
+    assert _spec(at)["columns"] == ["sym", "size", "state", "price"]
+
+
+def test_the_multiselect_agrees_with_the_new_order(table_db):
+    """The picker keeps the selection in its own widget state; if it is not
+    told, the next rerun hands back the old order and undoes the move."""
+    at = _click(_open(table_db, "Layout"), "r0w0_spec_col_sym_down")
+    picker = next(el for el in at.multiselect if el.key == "r0w0_spec_cols")
+    assert picker.value == ["size", "sym", "price", "state"]
+
+
+def test_a_moved_column_takes_its_header_and_format_with_it(table_db):
+    at = _click(_open(table_db, "Layout"), "r0w0_spec_col_sym_down")
+    assert _spec(at)["labels"] == TABLE_SPEC["labels"]
+    assert _spec(at)["formats"] == TABLE_SPEC["formats"]
+
+
+def test_the_ends_cannot_be_moved_off_the_list(table_db):
+    at = _open(table_db, "Layout")
+    assert at.button(key="r0w0_spec_col_sym_up").disabled
+    assert at.button(key="r0w0_spec_col_state_down").disabled
+
+
+def test_moving_writes_down_an_all_columns_table(tmp_path):
+    """'Empty = all' has no order to move within, so the first move records the
+    columns as they stand and moves within that."""
+    dash = Dashboard(
+        id=1, name="All",
+        datasets=[Dataset(name="d", env="orders", table="target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows",
+                                  spec={"columns": []})], height_in=2.0)])
+    at = _click(_open(_store(tmp_path, dash, "all.db"), "Layout"),
+                "r0w0_spec_col_sym_down")
+    assert _spec(at)["columns"] == ["size", "sym", "side", "price"]
+
+
 def test_deleting_a_transform_leaves_the_widgets_alone(raw_db):
     before = copy.deepcopy(dashboard_to_dict(_raw_dashboard())["rows"])
     at = _click(_open(raw_db), "ds0_tx_3")

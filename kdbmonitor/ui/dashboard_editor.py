@@ -829,6 +829,23 @@ def _pick_many(container, label: str, columns: list[str], current, key: str,
                                  **kwargs)
 
 
+def _move_column(spec: dict, shown: list[str], i: int, j: int, key: str) -> None:
+    """Swap two of a table's columns, as a button callback.
+
+    An empty ``columns`` means 'all of them, in dataset order'; there is no
+    order to move within until it is written down, so the first move records
+    the list as it stands and moves within that.
+
+    Runs as an ``on_click`` rather than inline, because the multiselect holds
+    the selection in its own widget state: it has to be told the new order too,
+    and Streamlit only allows that before the widget is drawn.
+    """
+    order = list(shown)
+    order[i], order[j] = order[j], order[i]
+    spec["columns"] = order
+    st.session_state[key] = order
+
+
 def _format_picker(container, label: str, current: str, key: str,
                    show_label: bool = True) -> str:
     """Choose a format by its sample output rather than typing a spec.
@@ -884,12 +901,14 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
 
         shown = s["columns"] or columns
         if shown:
-            st.caption("Header text and format, per column. Leave the header "
-                       "blank to keep the column's own name.")
+            st.caption("Header text and format, per column, top to bottom in "
+                       "the order they print. Leave the header blank to keep "
+                       "the column's own name.")
             labels = dict(s.get("labels", {}))
             formats = dict(s.get("formats", {}))
             for i, col in enumerate(shown):
-                cc = st.columns([1.6, 2.2, 2.6], vertical_alignment="bottom")
+                cc = st.columns([1.6, 2.2, 2.6, 0.5, 0.5],
+                                vertical_alignment="bottom")
                 cc[0].markdown(f"`{col}`")
                 # Keyed by column name, never by row number: drop a column and
                 # every remaining row keeps its own header and format instead of
@@ -902,6 +921,16 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                 formats[col] = _format_picker(
                     cc[2], "Format", formats.get(col, ""), f"{slot}_fmt",
                     show_label=i == 0)
+                cc[3].button("", icon=":material/arrow_upward:",
+                             key=f"{slot}_up", disabled=i == 0,
+                             help="Print this column one place earlier.",
+                             on_click=_move_column,
+                             args=(s, shown, i, i - 1, f"{key}_cols"))
+                cc[4].button("", icon=":material/arrow_downward:",
+                             key=f"{slot}_down", disabled=i == len(shown) - 1,
+                             help="Print this column one place later.",
+                             on_click=_move_column,
+                             args=(s, shown, i, i + 1, f"{key}_cols"))
             # Empties go, but a column that is merely not shown keeps what it
             # was given: deselecting a column to try another must not throw its
             # header away, or putting it back means typing it again.

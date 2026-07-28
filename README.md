@@ -404,7 +404,10 @@ they take a time-of-day format and otherwise print to the millisecond), with a
 Custom entry for anything else and a live sample of what your spec produces. A
 table's headers and formats are keyed to the **column**, not to its position, so
 removing one column never shifts another's settings onto it, and a column you
-deselect keeps what you gave it in case you put it back.
+deselect keeps what you gave it in case you put it back. Print order is changed
+where the columns are listed — arrows move a column up or down, taking its
+header and format with it, instead of deselecting the lot and picking them again
+in the order you wanted.
 
 The **Layout** editor shows where the page breaks will fall before you generate
 anything: a `page N` badge on every row, a `page break` marker where a new page
