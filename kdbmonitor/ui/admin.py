@@ -11,6 +11,7 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.mock import demo_connection_specs
+from kdbmonitor.core.portability import export_connections_json, import_bundle_json
 from kdbmonitor.ui.common import form_area
 
 
@@ -187,6 +188,68 @@ def _render_edit(store, c: Connection) -> None:
             st.rerun()
 
 
+def _render_import_export(store, conns: list[Connection]) -> None:
+    """Move the registered servers between machines.
+
+    Connections only. Alerts travel from the Alert builder, which bundles the
+    connections they need with them — an alert without its server imports to
+    nothing, whereas a server stands on its own.
+    """
+    with st.expander("Import / export connections",
+                     icon=":material/import_export:"):
+        exp, imp = st.columns(2)
+        with exp:
+            st.markdown("**Export**")
+            st.caption("The registered servers — host, port, kind and "
+                       "environment. Cached schema is left behind: it is "
+                       "re-fetched with Introspect on the other machine.")
+            st.download_button(
+                "Export connections", icon=":material/database:",
+                data=export_connections_json(conns),
+                file_name="kdbmonitor-connections.json", mime="application/json",
+                disabled=not conns, key="admin_io_export",
+                help=f"{len(conns)} KDB connection(s), no alerts.")
+
+        with imp:
+            st.markdown("**Import**")
+            # The uploader is keyed by a nonce so a completed import clears the
+            # file, instead of offering to import the same one again.
+            nonce = st.session_state.get("admin_io_nonce", 0)
+            up = st.file_uploader("Upload an export file", type=["json"],
+                                  key=f"admin_io_file_{nonce}")
+            if up is None:
+                return
+            try:
+                inc_conns, inc_alerts = import_bundle_json(
+                    up.getvalue().decode("utf-8"))
+            except ValueError as exc:
+                st.error(str(exc), icon=":material/error:")
+                return
+
+            existing = {c.name for c in conns}
+            new_conns = [c for c in inc_conns if c.name not in existing]
+            skipped = len(inc_conns) - len(new_conns)
+            note = f"{len(new_conns)} new connection(s)"
+            if skipped:
+                note += f" · {skipped} already exist (keeping yours)"
+            st.caption(note)
+            # Any file this app writes imports here; a full bundle just leaves
+            # its alerts alone, and saying so beats silently dropping them.
+            if inc_alerts:
+                st.caption(f":gray[Also holds {len(inc_alerts)} alert(s) — "
+                           f"import those from the Alert builder.]")
+            if st.button(f"Import {len(new_conns)} connection(s)",
+                         type="primary", icon=":material/upload:",
+                         disabled=not new_conns, key="admin_io_import"):
+                for c in new_conns:
+                    store.add_connection(c)
+                st.session_state["admin_io_nonce"] = nonce + 1
+                st.toast(f"Imported {len(new_conns)} connection(s) — run "
+                         f"Introspect to load their schema",
+                         icon=":material/check:")
+                st.rerun()
+
+
 def render(store, mgr: ConnectionManager) -> None:
     st.subheader(":material/settings: Admin")
 
@@ -290,6 +353,9 @@ def render(store, mgr: ConnectionManager) -> None:
                     st.rerun()
 
     _render_environments(store)
+
+    # ---- Import / export -------------------------------------------------- #
+    _render_import_export(store, conns)
 
     # ---- SMTP ------------------------------------------------------------- #
     st.markdown("**Email (SMTP)**")

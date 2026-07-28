@@ -11,8 +11,7 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.chain import build_step_qsql, preview_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.portability import (
-    export_bundle_json, export_connections_json, import_bundle_json,
-    conflicting_alert_names,
+    export_bundle_json, import_bundle_json, conflicting_alert_names,
 )
 from kdbmonitor.ui.common import (
     form_area,
@@ -473,27 +472,17 @@ def _manage_groups(store) -> None:
 
 
 def _import_export(store) -> None:
+    """Alerts in and out. The servers alone are Admin's business — an alert
+    cannot travel without them, so they ride along here, but exporting the
+    connections on their own belongs where they are registered."""
     alerts = store.list_alerts()
     conns = store.list_connections()
-    with st.expander("Import / export (alerts & connections)",
-                     icon=":material/import_export:"):
+    with st.expander("Import / export alerts", icon=":material/import_export:"):
         exp, imp = st.columns(2)
         with exp:
             st.markdown("**Export**")
-
-            # Connections only — just the KDB servers (host/port), no alerts.
-            st.markdown(":gray[Connections]")
-            st.download_button(
-                "Export connections", icon=":material/database:",
-                data=export_connections_json(conns),
-                file_name="kdbmonitor-connections.json", mime="application/json",
-                disabled=not conns,
-                help=f"{len(conns)} KDB connection(s), no alerts.")
-
-            st.divider()
-
-            # Alerts (bundled with the connections they need, to import cleanly).
-            st.markdown(":gray[Alerts]")
+            st.caption("Alerts travel with the connections they query, so they "
+                       "import cleanly on a machine that has neither.")
             if not alerts:
                 st.caption("No alerts to export yet.")
             else:

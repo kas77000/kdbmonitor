@@ -66,9 +66,9 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 | View | Purpose |
 |------|---------|
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
-| **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export. Preview an alert's result before saving. |
+| **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export alerts. Preview an alert's result before saving. |
 | **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries, refreshing on their own interval, exportable as a PDF. |
-| **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, and set SMTP for email alerts. |
+| **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, import/export connections, and set SMTP for email alerts. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
 ---
@@ -513,15 +513,20 @@ machine whose Admin has the same environment names.
 
 ## Sharing alerts and connections
 
-**Builder → Import / export (alerts & connections)** moves a whole setup between machines or teammates.
+Each moves from the page that owns it. Both write the same file format, so
+either import accepts either file and takes the part it is responsible for.
 
-- **Export** — two independent downloads:
-  - **Export connections** — writes `kdbmonitor-connections.json` with just your KDB connections (name, host, port) and **no alerts**. Handy for handing someone the servers without any of your alerts.
-  - **Export alerts** — pick which alerts to include (defaults to all). The downloaded `kdbmonitor-export.json` contains those alerts **and all your connections**, so it imports cleanly on the other side.
-  - In both cases a connection's cached **schema is not exported** (it is derived data; re-fetch it with Introspect after importing).
-- **Import** — upload either kind of export file (both use the same format; a connections-only file simply imports zero alerts). Then:
-  - **Alert name clashes abort the import.** If any incoming alert has the same name as one you already have, nothing is imported and you're told which names conflict. Rename or delete the existing ones first.
-  - **Connections are matched by name.** New ones are added; any whose name already exists are skipped (your local connection is kept). After importing, run **Introspect** on the new connections in Admin so the guided builder knows their tables/columns.
+**Admin → Import / export connections** hands someone your KDB servers.
+
+- **Export connections** — writes `kdbmonitor-connections.json` with the registered servers (name, host, port, kind, environment) and **no alerts**.
+- **Import** — new connections are added; any whose name already exists are skipped, keeping yours. Run **Introspect** afterwards so the guided builder knows their tables and columns. Upload a full bundle here and its alerts are left alone — it says so, and the Alert builder takes those.
+
+**Builder → Import / export alerts** moves the alerts themselves.
+
+- **Export alerts** — pick which to include (defaults to all). The downloaded `kdbmonitor-export.json` carries those alerts **and all your connections**: an alert without its server would import to nothing.
+- **Import** — **alert name clashes abort the import.** If any incoming alert is named like one you already have, nothing is imported and you are told which. Rename or delete the existing ones first. Connections in the file are added or skipped by name, exactly as in Admin.
+
+A connection's cached **schema is never exported** either way — it is derived data, re-fetched with Introspect after importing.
 
 Older alert-only export files (from earlier versions) still import.
 

@@ -83,6 +83,48 @@ def test_an_edit_form_exists_for_every_connection(db):
     assert len(saves) == 3
 
 
+# --- import / export lives with the servers it moves ------------------------
+
+def _text(at: AppTest) -> str:
+    return " ".join(el.value for el in list(at.markdown) + list(at.caption))
+
+
+def _builder_at() -> AppTest:
+    def _script_fn():
+        from kdbmonitor.ui import builder
+        from kdbmonitor.core.client import ConnectionManager as _CM
+        from kdbmonitor.core.storage import Storage as _St
+        store = _St(":memory:")
+        store.init_db()
+        builder.render(store, _CM())
+
+    at = AppTest.from_function(_script_fn, default_timeout=60).run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def test_admin_offers_the_connection_import_export(db):
+    """It moved here from the Alert builder: this is where servers are
+    registered, so this is where they leave and arrive."""
+    at = AppTest.from_string(_script(db), default_timeout=60).run()
+    assert "The registered servers" in _text(at)
+    assert len(at.get("file_uploader")) == 1        # somewhere to import them
+
+
+def test_the_alert_builder_no_longer_exports_connections():
+    text = _text(_builder_at())
+    assert "Export connections" not in text
+    assert "Alerts travel with the connections" in text
+
+
+def test_the_alert_builder_still_imports_and_exports_alerts():
+    """Only the connections-alone half moved — an alert still cannot travel
+    without its servers, so the bundle stays here."""
+    at = _builder_at()
+    assert "No alerts to export yet." in _text(at)
+    assert len(at.get("file_uploader")) == 1        # the alert import, still here
+
+
 # --- environment option rules ----------------------------------------------
 
 def test_a_second_realtime_server_cannot_join_a_paired_env(tmp_path):
