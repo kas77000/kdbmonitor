@@ -6,6 +6,7 @@ is made here exactly once. The renderers only draw.
 """
 from __future__ import annotations
 
+import math
 import operator
 import re
 from dataclasses import dataclass, field, replace
@@ -190,6 +191,11 @@ def _fmt(value: Any, spec: str = "") -> str:
             return "—"
     except (TypeError, ValueError):        # arrays and the like are never null
         pass
+    # An infinity is not a null, so it survives the check above — but it is not
+    # a figure either, and format() spells it "inf" right next to real numbers.
+    # q has 0w, and any ratio taken against an empty total makes one.
+    if isinstance(value, float) and math.isinf(value):
+        return "—"
     if isinstance(value, pd.Timedelta):
         # A q time is a duration, so strftime cannot touch it directly. Anchor
         # it to a date to honour a time-of-day format; anything else (a year, a

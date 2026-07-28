@@ -122,7 +122,14 @@
                 "column": "completion_pct",
                 "agg": "mean",
                 "fmt": ".1f",
-                "suffix": "%"
+                "suffix": "%",
+                "thresholds": [
+                  {
+                    "op": "<",
+                    "value": 0,
+                    "color": "critical"
+                  }
+                ]
               },
               "width": 1.0
             },
@@ -179,6 +186,18 @@
                   {
                     "column": "n_rejections",
                     "op": ">",
+                    "value": 0,
+                    "color": "critical"
+                  },
+                  {
+                    "column": "completion_pct",
+                    "op": "<",
+                    "value": 0,
+                    "color": "critical"
+                  },
+                  {
+                    "column": "order_qty",
+                    "op": "<=",
                     "value": 0,
                     "color": "critical"
                   }

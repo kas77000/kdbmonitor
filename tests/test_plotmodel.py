@@ -379,3 +379,29 @@ def test_an_unformatted_moment_is_unchanged():
 
 def test_a_number_format_on_a_moment_does_not_raise():
     assert _cells({"columns": ["ts"], "formats": {"ts": ",.2f"}})[0]
+
+
+def test_an_infinity_reads_as_a_gap_rather_than_as_a_number():
+    """q has 0w, and format() spells an infinity 'inf' next to real figures."""
+    df = _summary()
+    df.loc[1, "completion_pct"] = float("inf")
+    w = Widget(type="table", dataset="by_market",
+               spec={"columns": ["market", "completion_pct"],
+                     "formats": {"completion_pct": ".1f"}})
+    pm = build_plot_model(w, _ok(df))
+    assert pm.rows[1][1] == "—"
+    assert pm.rows[0][1] == "61.4"
+
+
+def test_a_negative_kpi_can_be_coloured_by_a_threshold():
+    """Keeping a wrong-looking number means letting the dashboard flag it."""
+    df = _summary()
+    df["completion_pct"] = [-100.8, 88.2, 12.0]
+    w = Widget(type="kpi", dataset="by_market",
+               spec={"column": "completion_pct", "agg": "mean", "fmt": ".1f",
+                     "suffix": "%",
+                     "thresholds": [{"op": "<", "value": 0,
+                                     "color": "critical"}]})
+    pm = build_plot_model(w, _ok(df))
+    assert pm.value == "-0.2%"
+    assert pm.value_color == theme.resolve_color("critical")

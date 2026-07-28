@@ -10,6 +10,7 @@ import operator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+import numpy as np
 import pandas as pd
 
 from kdbmonitor.core.summaries import transform_summary
@@ -28,11 +29,31 @@ def _need(df: pd.DataFrame, column: str, kind: str) -> None:
                          f"{', '.join(map(str, df.columns))})")
 
 
+def _no_infinities(value: Any) -> Any:
+    """Turn ±inf into a null, because an infinity is not a figure to report.
+
+    Dividing by zero is the ordinary way to get one — a completion percentage
+    against a total that came back zero — and from there pandas will format it,
+    colour it against a threshold and plot it like any other number. "inf%"
+    reads as a measurement rather than as arithmetic that had no answer, and it
+    poisons every aggregate downstream: one infinite market makes the mean over
+    all of them infinite too.
+
+    A quantity we could not compute is a gap, which is the same answer a kdb
+    null already gets. Note this only removes results that are *not numbers* — a
+    negative is a number, and a wrong-looking one is left alone to be seen.
+    """
+    if isinstance(value, pd.Series) and value.dtype.kind == "f":
+        return value.mask(np.isinf(value))
+    return value
+
+
 def _derive(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     column, kind = p["column"], p.get("kind", "arithmetic")
     if kind == "arithmetic":
         # pandas' own expression engine: column names only, no attribute access.
-        df[column] = df.eval(p["expr"]) if len(df) else pd.Series(dtype="float64")
+        df[column] = _no_infinities(df.eval(p["expr"])) if len(df) \
+            else pd.Series(dtype="float64")
         return df
     if kind == "suffix_map":
         source, mapping = p["source"], p.get("mapping", {})

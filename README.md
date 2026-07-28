@@ -288,6 +288,21 @@ only the rows that have a value. Still write `0^` in your own joins where zero
 is the honest answer — a blank cell and a nought say different things to whoever
 reads the report.
 
+**A result that is not a number is not printed as one.** Dividing by zero is the
+ordinary way to get one — a completion percentage against a total that came back
+zero — and an infinity formats, colours against a threshold and plots like any
+other figure, besides making every aggregate over that column infinite too. A
+derived value that comes out infinite becomes a blank, the same answer a kdb null
+gets.
+
+**A negative result is left exactly as it computed.** It *is* a number, and it is
+usually the only visible sign that something upstream is wrong: a total that
+summed below zero, an unset size, a sign convention the query did not expect.
+Blanking it would hide the very thing that needs fixing. Flag it instead — a
+table `highlight` or a KPI `threshold` on `< 0` turns it red without changing it,
+which is how the short-sell example marks a market whose order quantity is not
+positive.
+
 **Run and inspect each step** in the Data section runs the pipeline stage by
 stage: the query's own result first, then the frame after every transform, each
 with its row count, how many rows it gained or lost, and which columns it added

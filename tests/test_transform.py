@@ -245,3 +245,45 @@ def test_transform_summaries_read_as_the_action(transform, expected):
 def test_an_unconfigured_transform_still_has_a_summary():
     assert transform_summary(Transform(kind="sort", params={})) == \
         "sort by ? ascending"
+
+
+# --- results that are not numbers -------------------------------------------
+#
+# The short-sell report's completion percentage is the case these guard: a
+# market's total order quantity is not always the positive number the
+# arithmetic assumes it is.
+
+def test_a_division_by_zero_is_a_gap_not_an_infinity():
+    """A market with no order quantity has no completion to report.
+
+    Left as inf it formats, colours against a threshold and plots like a real
+    figure, and it takes every aggregate over the column with it.
+    """
+    df = pd.DataFrame({"executed_qty": [50, 10], "order_qty": [100, 0]})
+    out = apply_transforms(df, [Transform(kind="derive", params={
+        "column": "completion_pct", "kind": "arithmetic",
+        "expr": "100 * executed_qty / order_qty"})])
+    assert out["completion_pct"][0] == 50.0
+    assert pd.isna(out["completion_pct"][1])
+    assert out["completion_pct"].mean() == 50.0        # not inf
+
+
+def test_a_negative_result_is_left_exactly_as_it_computed():
+    """An order quantity that summed below zero is a real problem in the data.
+
+    Blanking the percentage would hide the only sign of it anyone sees, so only
+    results that are *not numbers* are removed — a negative is a number.
+    """
+    df = pd.DataFrame({"executed_qty": [504], "order_qty": [-500]})
+    out = apply_transforms(df, [Transform(kind="derive", params={
+        "column": "completion_pct", "kind": "arithmetic",
+        "expr": "100 * executed_qty / order_qty"})])
+    assert out["completion_pct"][0] == pytest.approx(-100.8)
+
+
+def test_an_expression_with_nothing_to_scrub_keeps_its_type():
+    """No infinity means no float cast — an integer total stays an integer."""
+    out = apply_transforms(_orders(), [Transform(kind="derive", params={
+        "column": "total", "kind": "arithmetic", "expr": "size + executed"})])
+    assert out["total"].tolist() == [150, 400, 50]
+    assert str(out["total"].dtype) == "int64"
