@@ -417,10 +417,28 @@ the breaks — you can lay the report out from the app instead of exporting a PD
 to find out. The figures come from the same pagination the PDF uses, so the two
 cannot disagree.
 
-The editor has three sections — **Data**, **Layout** and **Preview** — and
-validates on save: unknown datasets or environments, duplicate dataset names,
-forward references, missing tables, over-full rows and missing date constraints
-are all reported before anything is written.
+The editor has four sections — **Data**, **Layout**, **Preview** and
+**Library** — and validates on save: unknown datasets or environments, duplicate
+dataset names, forward references, missing tables, over-full rows and missing
+date constraints are all reported before anything is written.
+
+### The component library
+
+A transform worth working out once — deriving `market` from a `sym` suffix, say
+— and a widget worth laying out once are both worth keeping. The bookmark button
+on any transform or widget saves it under a name; **From library** next to *Add
+transform* / *Add widget* adds it back, here or in any other dashboard.
+
+What lands in the dashboard is a **copy**, not a link. Edit it as freely as
+anything else you built by hand: a one-off tweak stays a one-off, and the saved
+component is untouched until you deliberately save over it. Saving offers the
+names already in the library alongside a blank to type a new one, so "keep this
+improvement" and "keep this as a variant" are the same two clicks. A saved widget
+naming a dataset the target dashboard does not have is bound to one it does.
+
+The **Library** section lists everything saved, with what each one contains, and
+renames or deletes them. Deleting affects nothing already built — those are
+copies too.
 
 ### Refresh
 

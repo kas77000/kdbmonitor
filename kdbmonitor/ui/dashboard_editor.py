@@ -13,7 +13,8 @@ from datetime import date, datetime
 import streamlit as st
 
 from kdbmonitor.core.dashboard_models import (
-    Dashboard, Dataset, Row, Transform, Widget,
+    Component, Dashboard, Dataset, Row, Transform, Widget,
+    transform_from_dict, transform_to_dict, widget_from_dict, widget_to_dict,
 )
 from kdbmonitor.core.dashpdf import plan_rows
 from kdbmonitor.core.dataset import is_marketdata_env, run_datasets, trace_datasets
@@ -588,6 +589,124 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
             key=f"{key}_rm", height=90))
 
 
+# --- the component library -------------------------------------------------
+#
+# A transform or a widget worth building once is worth keeping. Saving copies
+# it out under a name; loading copies it back in. What lands in the draft is an
+# ordinary part of that dashboard — edit it, then save it back under the same
+# name or a new one. Nothing is linked: changing a dashboard never rewrites the
+# library, and saving to the library never reaches into a dashboard.
+
+LIBRARY_KINDS = {"transform": "step", "widget": "widget"}
+
+
+def _component_summary(c: Component) -> str:
+    """A one-line 'what is in this' for the picker, so a name need not carry
+    the whole description."""
+    p = c.payload or {}
+    if c.kind == "widget":
+        return f"{p.get('type', '?')} · {p.get('title') or 'untitled'}"
+
+    kind, params = p.get("kind", "?"), p.get("params", {})
+    if kind == "derive":
+        source = params.get("source") or params.get("expr") or "?"
+        return f"derive `{params.get('column') or '?'}` from {source}"
+    if kind == "groupby":
+        return f"group by {', '.join(params.get('keys') or []) or '?'}"
+    if kind == "sort":
+        return f"sort by {', '.join(params.get('columns') or []) or '?'}"
+    if kind in ("filter", "rename"):
+        return f"{kind} `{params.get('column') or params.get('from') or '?'}`"
+    return kind
+
+
+def _save_to_library(container, store, kind: str, payload: dict, key: str,
+                     suggested: str = "") -> None:
+    """The 'keep this for next time' popover.
+
+    One control for the name, because saving something new and saving back a
+    component you loaded and improved are the same act: type a name that is not
+    in the library yet, or pick the one to replace.
+    """
+    names = [c.name for c in store.list_components(kind)]
+    noun = LIBRARY_KINDS[kind]
+    with container.popover("", icon=":material/bookmark_add:",
+                           help=f"Save this {noun} to the library, to reuse in "
+                                f"this or any other dashboard"):
+        name = st.selectbox(
+            "Save as", names, key=f"{key}_lib_name", accept_new_options=True,
+            index=names.index(suggested) if suggested in names else None,
+            placeholder="Name it, or pick one to replace",
+            help="Type a new name, or choose a saved one to overwrite.")
+        name = (name or "").strip()
+        if name in names:
+            st.caption(f":orange[Replaces the saved {noun} '{name}'.]")
+        if st.button("Save to library", icon=":material/save:", disabled=not name,
+                     key=f"{key}_lib_save"):
+            store.save_component(kind, name, payload)
+            st.toast(f"Saved {noun} '{name}'", icon=":material/bookmark_added:")
+            st.rerun()
+
+
+def _load_from_library(container, store, kind: str, key: str,
+                       disabled: bool = False) -> Component | None:
+    """Pick a saved component to add. Returns it once, on the click."""
+    saved = store.list_components(kind)
+    noun = LIBRARY_KINDS[kind]
+    if not saved:
+        return None
+    with container.popover("From library", icon=":material/bookmark:",
+                           disabled=disabled):
+        names = [c.name for c in saved]
+        pick = st.selectbox(f"Saved {noun}s", names, index=None, key=f"{key}_pick",
+                            placeholder=f"Choose a saved {noun}")
+        chosen = next((c for c in saved if c.name == pick), None)
+        if chosen:
+            st.caption(_component_summary(chosen))
+        st.caption(f"A copy is added here — edit it freely, the saved {noun} "
+                   f"stays as it is until you save over it.")
+        if st.button("Add a copy", icon=":material/add:", key=f"{key}_add",
+                     disabled=chosen is None):
+            return chosen
+    return None
+
+
+def _render_library(store) -> None:
+    saved = store.list_components()
+    st.caption("Transforms and widgets you have saved. They belong to no one "
+               "dashboard: add a copy from **Data** or **Layout**, and every "
+               "dashboard can use the same one.")
+    if not saved:
+        st.info("Nothing saved yet — use the bookmark button on a transform or "
+                "a widget.", icon=":material/bookmark:")
+        return
+
+    for c in saved:
+        with st.container(border=True):
+            cc = st.columns([2.4, 1, 3.4, 1, 0.8], vertical_alignment="bottom")
+            cc[0].markdown(f"**{c.name}**")
+            cc[1].markdown(f":blue-badge[{LIBRARY_KINDS.get(c.kind, c.kind)}]")
+            cc[2].caption(_component_summary(c))
+            with cc[3].popover("Rename", icon=":material/edit:"):
+                new = st.text_input("New name", value=c.name,
+                                    key=f"lib{c.id}_rn").strip()
+                taken = new != c.name and store.get_component_by_name(c.kind, new)
+                if taken:
+                    st.caption(f":orange[Another {LIBRARY_KINDS[c.kind]} is "
+                               f"already called '{new}'.]")
+                if st.button("Rename", key=f"lib{c.id}_rnb",
+                             disabled=not new or bool(taken)):
+                    store.rename_component(c.id, new)
+                    st.rerun()
+            with cc[4].popover("", icon=":material/delete:"):
+                st.caption(f"Delete '{c.name}'? Dashboards already using a copy "
+                           f"keep it.")
+                if st.button("Delete", icon=":material/delete:",
+                             key=f"lib{c.id}_delb"):
+                    store.delete_component(c.id)
+                    st.rerun()
+
+
 def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
     key = f"ds{index}"
     conn = _connection_for(store, ds)
@@ -659,7 +778,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         st.markdown("**Transforms**")
         for i, t in enumerate(list(ds.transforms)):
             with st.container(border=True):
-                c = st.columns([2, 5, 0.6, 0.6, 0.6], vertical_alignment="bottom")
+                c = st.columns([2, 4.4, 0.6, 0.6, 0.6, 0.6],
+                               vertical_alignment="bottom")
                 t.kind = c[0].selectbox("Kind", TRANSFORM_KINDS,
                                         index=TRANSFORM_KINDS.index(t.kind),
                                         key=f"{key}_tk_{i}")
@@ -676,7 +796,10 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                         ds.transforms[i], ds.transforms[i + 1]
                     _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
-                if c[4].button("", icon=":material/close:", key=f"{key}_tx_{i}"):
+                _save_to_library(c[4], store, "transform", transform_to_dict(t),
+                                 f"{key}_t{i}",
+                                 suggested=str(t.params.get("column") or ""))
+                if c[5].button("", icon=":material/close:", key=f"{key}_tx_{i}"):
                     ds.transforms.pop(i)
                     _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
@@ -688,10 +811,16 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                                                    learned_columns(ds.name)),
                                 f"{key}_t{i}")
 
-        if st.button("Add transform", icon=":material/add:", key=f"{key}_taddb"):
+        add = st.columns([1.6, 1.6, 4.8], vertical_alignment="bottom")
+        if add[0].button("Add transform", icon=":material/add:",
+                         key=f"{key}_taddb"):
             ds.transforms.append(Transform(
                 kind="derive",
                 params={"column": "", "kind": "arithmetic", "expr": ""}))
+            st.rerun()
+        saved = _load_from_library(add[1], store, "transform", f"{key}_tlib")
+        if saved:
+            ds.transforms.append(transform_from_dict(saved.payload))
             st.rerun()
 
 
@@ -1062,7 +1191,7 @@ def _render_layout(store, draft: Dashboard) -> None:
             for w_i, w in enumerate(list(row.widgets)):
                 key = f"r{r_i}w{w_i}"
                 with st.container(border=True):
-                    c = st.columns([1.6, 1.8, 2.4, 1.1, 0.6, 0.6],
+                    c = st.columns([1.6, 1.8, 2.2, 1.0, 0.6, 0.6, 0.6],
                                    vertical_alignment="bottom")
                     w.type = c[0].selectbox("Type", WIDGET_TYPES,
                                             index=WIDGET_TYPES.index(w.type),
@@ -1081,7 +1210,9 @@ def _render_layout(store, draft: Dashboard) -> None:
                             row.widgets[w_i], row.widgets[w_i - 1]
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
-                    if c[5].button("", icon=":material/close:", key=f"{key}_del"):
+                    _save_to_library(c[5], store, "widget", widget_to_dict(w),
+                                     key, suggested=w.title)
+                    if c[6].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
@@ -1094,9 +1225,22 @@ def _render_layout(store, draft: Dashboard) -> None:
                                                     learned_columns(w.dataset)),
                                  f"{key}_spec")
 
-            if st.button("Add widget", icon=":material/add:", key=f"r{r_i}_add",
-                         disabled=len(row.widgets) >= 4):
+            add = st.columns([1.4, 1.6, 5], vertical_alignment="bottom")
+            full = len(row.widgets) >= 4
+            if add[0].button("Add widget", icon=":material/add:",
+                             key=f"r{r_i}_add", disabled=full):
                 row.widgets.append(Widget(type="kpi", dataset=names[0], title=""))
+                st.rerun()
+            saved = _load_from_library(add[1], store, "widget", f"r{r_i}_wlib",
+                                       disabled=full)
+            if saved:
+                w = widget_from_dict(saved.payload)
+                # A saved widget names the dataset it was built against, which
+                # this dashboard may not have. Keep the name when it fits, and
+                # otherwise point it somewhere real rather than at nothing.
+                if w.dataset not in names:
+                    w.dataset = names[0]
+                row.widgets.append(w)
                 st.rerun()
 
         # Room left below this row, so you can see what will still fit before
@@ -1198,12 +1342,16 @@ def render(store, mgr) -> None:
     with form_area():
         _render_problems(problems)
 
-    section = st.segmented_control("Section", ["Data", "Layout", "Preview"],
+    section = st.segmented_control("Section",
+                                   ["Data", "Layout", "Preview", "Library"],
                                    default="Data", key="dash_edit_section")
     st.divider()
     if section == "Preview":
         # The preview IS the dashboard — it must match the real thing's width.
         _render_preview(store, mgr, draft)
+    elif section == "Library":
+        with form_area():
+            _render_library(store)
     elif section == "Layout":
         with form_area():
             _render_layout(store, draft)

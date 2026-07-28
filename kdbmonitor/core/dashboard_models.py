@@ -6,6 +6,7 @@ are, so adding a field never needs a schema migration.
 """
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Optional
@@ -67,8 +68,42 @@ class Dashboard:
     rows: list[Row] = field(default_factory=list)
 
 
+@dataclass
+class Component:
+    """One saved, reusable piece of a dashboard, kept under a name of its own.
+
+    A transform step or a whole widget, stored as the same dict the dashboard
+    itself holds. Loading one copies it into the draft, where it is an ordinary
+    part of that dashboard again: edit it freely, and save it back under this
+    name or a new one when the edit is worth keeping.
+    """
+    id: Optional[int]
+    kind: str                    # transform | widget
+    name: str
+    payload: dict = field(default_factory=dict)
+
+
 def dashboard_to_dict(d: Dashboard) -> dict:
     return asdict(d)
+
+
+def transform_to_dict(t: Transform) -> dict:
+    return asdict(t)
+
+
+def transform_from_dict(d: dict) -> Transform:
+    return Transform(kind=d["kind"], params=copy.deepcopy(d.get("params", {})))
+
+
+def widget_to_dict(w: Widget) -> dict:
+    return asdict(w)
+
+
+def widget_from_dict(d: dict) -> Widget:
+    return Widget(type=d["type"], dataset=d.get("dataset", ""),
+                  title=d.get("title", ""),
+                  spec=copy.deepcopy(d.get("spec", {})),
+                  width=d.get("width", 1.0))
 
 
 def _dataset_from_dict(d: dict) -> Dataset:
@@ -82,18 +117,14 @@ def _dataset_from_dict(d: dict) -> Dataset:
         filters=[Filter(**f) for f in d.get("filters", [])],
         raw_qsql=d.get("raw_qsql"),
         extra_connections=list(d.get("extra_connections", [])),
-        transforms=[Transform(kind=t["kind"], params=t.get("params", {}))
-                    for t in d.get("transforms", [])],
+        transforms=[transform_from_dict(t) for t in d.get("transforms", [])],
         max_rows=d.get("max_rows", 5000),
     )
 
 
 def _row_from_dict(d: dict) -> Row:
     return Row(
-        widgets=[Widget(type=w["type"], dataset=w["dataset"],
-                        title=w.get("title", ""), spec=w.get("spec", {}),
-                        width=w.get("width", 1.0))
-                 for w in d.get("widgets", [])],
+        widgets=[widget_from_dict(w) for w in d.get("widgets", [])],
         height_in=d.get("height_in", 2.5),
     )
 

@@ -11,7 +11,7 @@ from kdbmonitor.core.models import (
     CONNECTION_KINDS, Connection, Alert, alert_to_json, alert_from_json,
 )
 from kdbmonitor.core.dashboard_models import (
-    Dashboard, dashboard_from_json, dashboard_to_json,
+    Component, Dashboard, dashboard_from_json, dashboard_to_json,
 )
 
 RESULT_RETENTION_DAYS = 20   # default; overridable via the 'result_retention_days' setting
@@ -89,6 +89,13 @@ class Storage:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 dashboard_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,             -- transform | widget
+                name TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                UNIQUE (kind, name)             -- saving under a name replaces it
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -211,6 +218,54 @@ class Storage:
 
     def delete_dashboard(self, dashboard_id: int) -> None:
         self.conn.execute("DELETE FROM dashboards WHERE id=?", (dashboard_id,))
+        self.conn.commit()
+
+    # --- reusable components (saved transforms and widgets) ---
+    def save_component(self, kind: str, name: str, payload: dict) -> int:
+        """Store a component under ``name``, replacing one already saved there.
+
+        Overwriting is the point, not an accident: a component is loaded, edited
+        and saved back, and the name is how you say which one you mean.
+        """
+        self.conn.execute(
+            "INSERT INTO components(kind, name, payload_json) VALUES (?,?,?) "
+            "ON CONFLICT(kind, name) DO UPDATE SET payload_json=excluded.payload_json",
+            (kind, name, json.dumps(payload)),
+        )
+        self.conn.commit()
+        return self.get_component_by_name(kind, name).id
+
+    def _row_to_component(self, r: sqlite3.Row) -> Component:
+        return Component(id=r["id"], kind=r["kind"], name=r["name"],
+                         payload=json.loads(r["payload_json"]))
+
+    def list_components(self, kind: Optional[str] = None) -> list[Component]:
+        sql = "SELECT * FROM components"
+        args: tuple = ()
+        if kind:
+            sql += " WHERE kind=?"
+            args = (kind,)
+        sql += " ORDER BY kind, name COLLATE NOCASE"
+        return [self._row_to_component(r)
+                for r in self.conn.execute(sql, args).fetchall()]
+
+    def get_component(self, component_id: int) -> Optional[Component]:
+        r = self.conn.execute("SELECT * FROM components WHERE id=?",
+                              (component_id,)).fetchone()
+        return self._row_to_component(r) if r else None
+
+    def get_component_by_name(self, kind: str, name: str) -> Optional[Component]:
+        r = self.conn.execute("SELECT * FROM components WHERE kind=? AND name=?",
+                              (kind, name)).fetchone()
+        return self._row_to_component(r) if r else None
+
+    def rename_component(self, component_id: int, name: str) -> None:
+        self.conn.execute("UPDATE components SET name=? WHERE id=?",
+                          (name, component_id))
+        self.conn.commit()
+
+    def delete_component(self, component_id: int) -> None:
+        self.conn.execute("DELETE FROM components WHERE id=?", (component_id,))
         self.conn.commit()
 
     # --- alerts ---
