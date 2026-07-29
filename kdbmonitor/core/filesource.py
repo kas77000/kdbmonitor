@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+import pandas as pd
 
 from kdbmonitor.core.dashboard_models import FileShape
 
@@ -148,3 +151,98 @@ def data_records(grid: list[list[str]], shape: FileShape,
             continue
         records.append((offset + 1, cells))
     return records, skipped
+
+
+_TRUE = {"true", "t", "yes", "y", "1"}
+_FALSE = {"false", "f", "no", "n", "0"}
+
+
+def null_set(shape: FileShape) -> set[str]:
+    """The file's markers for "missing", folded for comparison."""
+    return {str(m).strip().lower() for m in shape.null_markers}
+
+
+def is_blank(value: Any, markers: set[str]) -> bool:
+    """Whether this cell says nothing.
+
+    Whitespace-only counts: a cell holding two spaces is a cell somebody left
+    empty, and treating it as text would put "  " in a number column.
+    """
+    return str(value).strip().lower() in markers
+
+
+def _to_number(text: str) -> float:
+    """Commas and spaces are how a person writes a number, not part of it.
+
+    ``float()`` turns an overflow like "1e400", or a literal "inf", into
+    ``inf`` rather than raising — so that has to be caught here. Left alone it
+    would sit in a number column formatting and aggregating like any other
+    value, which is the same silent-infinity failure ``transform.
+    _no_infinities`` exists to strip out of a derived column; a file should
+    not be able to smuggle the same thing in from the other end.
+    """
+    value = float(text.replace(",", "").replace(" ", ""))
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is not a finite number")
+    return value
+
+
+def _to_integer(text: str) -> int:
+    value = _to_number(text)
+    if value != int(value):
+        raise ValueError(f"{text} is not a whole number")
+    return int(value)
+
+
+def _to_boolean(text: str) -> bool:
+    folded = text.strip().lower()
+    if folded in _TRUE:
+        return True
+    if folded in _FALSE:
+        return False
+    raise ValueError(f"{text} is not true or false")
+
+
+def _to_date(text: str):
+    value = pd.to_datetime(text, errors="raise")
+    if pd.isna(value):
+        raise ValueError(f"{text} is not a date")
+    return value
+
+
+_READERS = {"number": _to_number, "integer": _to_integer,
+            "boolean": _to_boolean, "date": _to_date, "text": lambda t: t}
+
+
+def read_values(cells: list[str], type_name: str,
+                markers: set[str]) -> tuple[pd.Series, list[tuple[int, str]]]:
+    """A column read as ``type_name``, plus every value that would not read.
+
+    Checking by *reading* rather than by inferring a type and comparing labels
+    is what makes integers-where-numbers-were-expected work without a special
+    case, and it is what lets a refusal quote the value that broke.
+
+    An unrecognised type name reads as text rather than raising: it can only
+    come from a hand-edited bundle, and refusing every row of a column because
+    its declared type is misspelt helps nobody.
+    """
+    reader = _READERS.get(type_name, _READERS["text"])
+    out: list[Any] = []
+    failures: list[tuple[int, str]] = []
+    for i, cell in enumerate(cells):
+        text = str(cell).strip()
+        if is_blank(text, markers):
+            out.append(None)
+            continue
+        try:
+            out.append(reader(text))
+        except (ValueError, TypeError, OverflowError, pd.errors.ParserError):
+            out.append(None)
+            failures.append((i, text))
+
+    if type_name == "date":
+        return (pd.to_datetime(pd.Series(out, dtype="object"), errors="coerce"),
+                failures)
+    dtype = {"number": "float64", "integer": "Int64",
+             "boolean": "boolean"}.get(type_name, "object")
+    return pd.Series(out, dtype=dtype), failures
