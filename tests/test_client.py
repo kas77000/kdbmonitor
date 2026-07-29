@@ -2,9 +2,30 @@
 import numpy as np
 import pandas as pd
 from kdbmonitor.core.client import (
-    ConnectionManager, FakeClient, Q_INT_NULLS, nulls_to_nan,
+    ConnectionManager, FakeClient, PyKxClient, Q_INT_NULLS, nulls_to_nan,
 )
 from kdbmonitor.core.models import Connection
+
+
+class _QResult:
+    """What pykx hands back: an object you call .pd() on."""
+    def __init__(self, value):
+        self._value = value
+
+    def pd(self):
+        return self._value
+
+
+def pykx_client(responses: dict) -> PyKxClient:
+    """A PyKxClient wired to a scripted connection.
+
+    Built without ``__init__`` so nothing imports pykx or opens a socket. The
+    point is to exercise ``query`` itself — the one path that scrubs kdb nulls,
+    and therefore the one place a fake client cannot stand in for.
+    """
+    client = PyKxClient.__new__(PyKxClient)
+    client._conn = lambda qsql: _QResult(responses[qsql])
+    return client
 
 
 def test_fake_client_returns_canned():
@@ -85,6 +106,44 @@ def test_floats_and_symbols_are_not_searched_for_sentinels():
 def test_an_empty_frame_passes_straight_through():
     empty = pd.DataFrame(columns=["nReject"])
     assert nulls_to_nan(empty) is empty
+
+
+# --- not every result is a table --------------------------------------------
+#
+# The scrub runs on everything the real client returns, and a q *vector* comes
+# back as a 1-D Series with no columns to iterate. Asking one for .columns is
+# what broke Introspect against a live server, while every test here drove a
+# client that never reaches the scrub at all.
+
+def test_a_q_vector_result_is_not_treated_as_a_table():
+    out = nulls_to_nan(pd.Series(["target", "QATT"]))
+    assert out.tolist() == ["target", "QATT"]
+
+
+def test_a_vector_of_integers_still_loses_its_nulls():
+    out = nulls_to_nan(pd.Series(np.array([1, Q_INT_NULLS["int64"]], dtype="int64")))
+    assert out[0] == 1 and pd.isna(out[1])
+
+
+def test_a_vector_holding_no_nulls_keeps_its_dtype():
+    out = nulls_to_nan(pd.Series(np.array([1, 2], dtype="int64")))
+    assert str(out.dtype) == "int64"
+
+
+def test_a_scalar_result_passes_straight_through():
+    """`count target` is a number, not a frame and not a vector."""
+    assert nulls_to_nan(7) == 7
+
+
+def test_the_real_client_returns_a_vector_query_unharmed():
+    client = pykx_client({"tables[]": pd.Series(["target", "QATT"])})
+    assert client.query("tables[]").tolist() == ["target", "QATT"]
+
+
+def test_the_real_client_still_scrubs_a_table():
+    client = pykx_client({"select from t": pd.DataFrame(
+        {"nReject": np.array([1, Q_INT_NULLS["int32"]], dtype="int32")})})
+    assert client.query("select from t")["nReject"].sum() == 1
 
 
 def test_a_group_sum_over_nulls_counts_the_rows_it_has():

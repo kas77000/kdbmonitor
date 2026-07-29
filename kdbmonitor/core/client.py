@@ -22,28 +22,50 @@ Q_INT_NULLS = {"int16": -32768,
                "int64": -9223372036854775808}
 
 
-def nulls_to_nan(df: pd.DataFrame) -> pd.DataFrame:
+def _scrub(values: pd.Series) -> "pd.Series | None":
+    """One column's sentinels as NaN, or None when it holds none to replace.
+
+    None rather than the column back, so a caller can tell "nothing to do" from
+    "here it is" without comparing identities pandas makes no promise about.
+    """
+    sentinel = Q_INT_NULLS.get(str(values.dtype).lower())
+    if sentinel is None:
+        return None
+    hit = values == sentinel
+    return values.astype("float64").mask(hit) if hit.any() else None
+
+
+def nulls_to_nan(data):
     """kdb+ integer nulls as NaN, so nothing sums or plots them as numbers.
 
     Only columns that actually hold a sentinel are touched, and only those
     become floats — a frame of honest integers comes back untouched, dtypes and
     all. Wrong-looking is recoverable; wrong-and-plausible is not, which is why
     this happens on arrival rather than being left to each query to remember.
-    """
-    if df is None or df.empty:
-        return df
 
-    out = df
-    for col in df.columns:
-        sentinel = Q_INT_NULLS.get(str(df[col].dtype).lower())
-        if sentinel is None:
+    Every result passes through here, and not every result is a table. A q
+    *vector* — what ``tables[]`` and ``cols`` return, so what introspection is
+    made of — arrives as a 1-D Series with no columns to iterate, and a count
+    arrives as a bare scalar. They are scrubbed as they are, or handed back
+    untouched; asking a Series for its columns is what broke introspection
+    against a real server while every test drove a client that skips this.
+    """
+    if data is None:
+        return data
+    if isinstance(data, pd.Series):
+        scrubbed = _scrub(data)
+        return data if scrubbed is None else scrubbed
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        return data
+
+    out = data
+    for col in data.columns:
+        scrubbed = _scrub(data[col])
+        if scrubbed is None:
             continue
-        hit = df[col] == sentinel
-        if not hit.any():
-            continue
-        if out is df:
-            out = df.copy()
-        out[col] = df[col].astype("float64").mask(hit)
+        if out is data:
+            out = data.copy()
+        out[col] = scrubbed
     return out
 
 
