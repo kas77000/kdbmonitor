@@ -302,3 +302,25 @@ def test_a_failure_index_points_at_the_cell_within_the_column():
     position in the column it was handed, not in the file."""
     _, failures = read_values(["1", "2", "bad", "4"], "number", DEFAULTS)
     assert failures == [(2, "bad")]
+
+
+def test_a_number_too_big_to_hold_is_refused_rather_than_becoming_infinity():
+    """float() turns an overflow into inf without complaint, and an infinity
+    poisons every aggregate downstream of it — one infinite row makes the mean
+    over all of them infinite too. transform._no_infinities exists because this
+    reached a printed report once; a file must not be a second way in."""
+    values, failures = read_values(["1e400"], "number", DEFAULTS)
+    assert failures == [(0, "1e400")]
+    assert values.isna().all()
+
+
+def test_a_literal_infinity_in_a_file_is_refused_too():
+    for spelling in ("inf", "-inf", "Infinity"):
+        _, failures = read_values([spelling], "number", DEFAULTS)
+        assert failures == [(0, spelling)], spelling
+
+
+def test_a_number_merely_very_large_is_still_read():
+    """The guard is against overflow, not against big numbers."""
+    values, failures = read_values(["1e308"], "number", DEFAULTS)
+    assert failures == [] and values.tolist() == [1e308]
