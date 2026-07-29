@@ -112,3 +112,10 @@ def test_a_file_whose_headers_run_downwards_says_column_not_line():
     _, problems = header_columns([["x"]], _shape(header_axis="column",
                                                  header_row=5, data_start=6))
     assert "column 6" in problems[0].message
+
+
+def test_transposing_a_ragged_grid_loses_no_record():
+    """zip stops at the shortest row, so a ragged grid would drop whole records
+    off the end silently — the one failure this module exists to prevent."""
+    assert orient([["sym", "a", "b"], ["qty", "1"]], "column") == [
+        ["sym", "qty"], ["a", "1"], ["b", ""]]

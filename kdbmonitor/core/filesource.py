@@ -63,10 +63,18 @@ def orient(grid: list[list[str]], axis: str) -> list[list[str]]:
 
     Headers down the first column cost one transpose rather than a second set of
     rules: every index in ``FileShape`` refers to the grid after this.
+
+    Squares the grid up first. ``zip`` stops at the shortest row, so transposing
+    a ragged one drops whole records off the end without a word — the exact
+    failure this module exists to prevent. :func:`read_grid` already pads, so
+    this costs nothing on the ordinary path and makes the function safe to call
+    with a grid from anywhere else.
     """
     if axis != "column":
         return grid
-    return [list(row) for row in zip(*grid)]
+    width = max((len(row) for row in grid), default=0)
+    return [list(row) for row in
+            zip(*[row + [""] * (width - len(row)) for row in grid])]
 
 
 def header_columns(grid: list[list[str]],
