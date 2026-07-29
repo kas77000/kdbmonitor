@@ -203,6 +203,42 @@ def test_dashboard_time_context_is_preserved():
     assert back[0].time_context["range"]["name"] == "last_30d"
 
 
+def test_the_periods_a_dashboard_offers_are_preserved():
+    """Which periods it offers is part of the dashboard, not of the machine it
+    was built on — a historical-only dashboard must not arrive offering both."""
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    dash = _dash()
+    dash.periods = "historical"
+    assert import_dashboards_json(export_dashboards_json([dash]))[0].periods \
+        == "historical"
+
+
+def test_a_dashboard_exported_before_periods_existed_offers_both():
+    from kdbmonitor.core.portability import import_dashboards_json
+    raw = json.dumps({"kind": "kdbmonitor-export", "version": 2,
+                      "alerts": [], "connections": [],
+                      "dashboards": [{"name": "old", "datasets": [], "rows": []}]})
+    assert import_dashboards_json(raw)[0].periods == "both"
+
+
+def test_a_standalone_connection_stays_standalone_in_an_alert_bundle():
+    """The bundle carries connections so alerts land ready to run; a server
+    declared one-sided must not arrive looking half-configured."""
+    conns = [Connection(id=1, name="hdb", host="h", port=2, kind="historical",
+                        env="refdata", standalone=True)]
+    back, _ = import_bundle_json(export_bundle_json(conns, []))
+    assert back[0].standalone is True
+
+
+def test_a_connection_exported_before_the_flag_arrives_paired():
+    raw = json.dumps({"kind": "kdbmonitor-export", "version": 2, "alerts": [],
+                      "connections": [{"name": "old", "host": "h", "port": 1,
+                                       "kind": "historical", "env": "e"}]})
+    back, _ = import_bundle_json(raw)
+    assert back[0].standalone is False
+
+
 def test_importing_a_non_export_file_is_a_clear_error():
     import pytest
     from kdbmonitor.core.portability import import_dashboards_json
