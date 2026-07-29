@@ -1,6 +1,9 @@
 # tests/test_client.py
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
+import pytest
 from kdbmonitor.core.client import (
     ConnectionManager, FakeClient, PyKxClient, Q_INT_NULLS, nulls_to_nan,
 )
@@ -144,6 +147,60 @@ def test_the_real_client_still_scrubs_a_table():
     client = pykx_client({"select from t": pd.DataFrame(
         {"nReject": np.array([1, Q_INT_NULLS["int32"]], dtype="int32")})})
     assert client.query("select from t")["nReject"].sum() == 1
+
+
+# --- what a retry is for -----------------------------------------------------
+#
+# A dropped socket is worth reopening. A bug in our own post-processing is not:
+# retrying it runs the query a second time to raise the same error again, and
+# the one that reaches the user comes from the second attempt, saying nothing
+# about where it was raised.
+
+def _client_with(conn, reconnect=None) -> PyKxClient:
+    """A PyKxClient with a scripted connection and a scripted reopen."""
+    def _refuse(host, port):
+        raise AssertionError("reopened the connection when it was not dropped")
+
+    client = PyKxClient.__new__(PyKxClient)
+    client.host, client.port = "h", 5010
+    client._conn = conn
+    client._kx = SimpleNamespace(SyncQConnection=reconnect or _refuse)
+    return client
+
+
+def test_a_dropped_connection_is_reopened_once():
+    opened = []
+
+    def _reconnect(host, port):
+        opened.append((host, port))
+        return lambda qsql: _QResult(pd.DataFrame({"sym": ["AAPL"]}))
+
+    def _dead(qsql):
+        raise ConnectionError("socket closed")
+
+    client = _client_with(_dead, _reconnect)
+    assert client.query("select from t")["sym"].tolist() == ["AAPL"]
+    assert opened == [("h", 5010)]
+
+
+def test_an_answer_we_cannot_read_is_not_a_dropped_connection():
+    class _Unconvertible:
+        def pd(self):
+            raise ValueError("cannot convert")
+
+    client = _client_with(lambda qsql: _Unconvertible())
+    with pytest.raises(ValueError, match="cannot convert"):
+        client.query("select from t")
+
+
+def test_the_query_is_not_run_twice_to_raise_the_same_error():
+    """The scrub is outside the retry, so a bug in it costs one round trip."""
+    sent = []
+
+    client = _client_with(lambda qsql: sent.append(qsql) or "not a q object")
+    with pytest.raises(AttributeError):
+        client.query("select from t")        # a str has no .pd()
+    assert sent == ["select from t"]
 
 
 def test_a_group_sum_over_nulls_counts_the_rows_it_has():

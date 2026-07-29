@@ -92,12 +92,22 @@ class PyKxClient:
         self._conn = kx.SyncQConnection(host=host, port=port)
 
     def query(self, qsql: str) -> pd.DataFrame:
+        return nulls_to_nan(self._ask(qsql).pd())
+
+    def _ask(self, qsql: str):
+        """The round trip, reopening the connection once if it has gone.
+
+        Only the round trip. Converting the answer and scrubbing it happen
+        after this returns, where a failure is a bug in our own code rather
+        than a socket to reopen — and retrying those did the same work twice to
+        raise the same error again, from the second attempt, with nothing left
+        to say it came from here rather than from the server.
+        """
         try:
-            return nulls_to_nan(self._conn(qsql).pd())
+            return self._conn(qsql)
         except Exception:
-            # reconnect once, then retry
             self._conn = self._kx.SyncQConnection(host=self.host, port=self.port)
-            return nulls_to_nan(self._conn(qsql).pd())
+            return self._conn(qsql)
 
 
 class ConnectionManager:
