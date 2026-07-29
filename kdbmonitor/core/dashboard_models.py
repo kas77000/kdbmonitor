@@ -69,8 +69,7 @@ class FileShape:
     header_row: int = 0          # 0-based line carrying the headers
     first_col: int = 0           # 0-based column the table starts at
     data_start: int = 1          # 0-based first data line
-    null_markers: list[str] = field(default_factory=lambda:
-                                    list(DEFAULT_NULL_MARKERS))
+    null_markers: list[str] = field(default_factory=lambda: list(DEFAULT_NULL_MARKERS))
     columns: list[ColumnSpec] = field(default_factory=list)
     cells: list[NamedCell] = field(default_factory=list)
 
@@ -133,8 +132,9 @@ class Dashboard:
     # the two explicit settings are there for when you would rather decide than
     # be decided for.
     orientation: str = "auto"    # auto | portrait | landscape
-    # Where this dashboard's data comes from. A file dashboard has no
-    # environment, no period and no refresh interval — see the spec, §8.1.
+    # Where this dashboard's data comes from. A file dashboard's numbers change
+    # only at the moment somebody uploads a different file — never on a clock —
+    # so it has no environment, no period and no refresh interval.
     source: str = "kdb"          # kdb | file
     time_context: dict = field(default_factory=_default_time_context)
     datasets: list[Dataset] = field(default_factory=list)
@@ -179,6 +179,31 @@ def widget_from_dict(d: dict) -> Widget:
                   width=d.get("width", 1.0))
 
 
+def _int(value, default: int) -> int:
+    """A stored number, or the default if it is not one.
+
+    Reading a dashboard back must not raise. A bundle can be hand-edited before
+    it is imported, and a bad number in it should cost that one field its value,
+    not the whole import its error message.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dict_list(value) -> list:
+    """Only the dict entries of a stored list — never a whole list at once.
+
+    A hand-edited bundle can put anything where a list of objects belongs: a
+    string, a number, a list mixing dicts with junk. None of that should reach
+    the per-item parser, which assumes a dict.
+    """
+    if not isinstance(value, list):
+        return []
+    return [x for x in value if isinstance(x, dict)]
+
+
 def _column_from_dict(d: dict) -> ColumnSpec:
     return ColumnSpec(name=d.get("name", ""), type=d.get("type", "text"),
                       required=bool(d.get("required", True)),
@@ -186,8 +211,8 @@ def _column_from_dict(d: dict) -> ColumnSpec:
 
 
 def _cell_from_dict(d: dict) -> NamedCell:
-    return NamedCell(name=d.get("name", ""), row=int(d.get("row", 0)),
-                     col=int(d.get("col", 0)), type=d.get("type", "text"),
+    return NamedCell(name=d.get("name", ""), row=_int(d.get("row"), 0),
+                     col=_int(d.get("col"), 0), type=d.get("type", "text"),
                      allow_null=bool(d.get("allow_null", True)))
 
 
@@ -200,14 +225,17 @@ def _shape_from_dict(d: Optional[dict]) -> Optional[FileShape]:
     """
     if not d:
         return None
+    null_markers = d.get("null_markers")
+    if not isinstance(null_markers, list):
+        null_markers = list(DEFAULT_NULL_MARKERS)
     return FileShape(
         header_axis=d.get("header_axis", "row"),
-        header_row=int(d.get("header_row", 0)),
-        first_col=int(d.get("first_col", 0)),
-        data_start=int(d.get("data_start", 1)),
-        null_markers=list(d.get("null_markers") or DEFAULT_NULL_MARKERS),
-        columns=[_column_from_dict(c) for c in d.get("columns", [])],
-        cells=[_cell_from_dict(c) for c in d.get("cells", [])])
+        header_row=_int(d.get("header_row"), 0),
+        first_col=_int(d.get("first_col"), 0),
+        data_start=_int(d.get("data_start"), 1),
+        null_markers=null_markers,
+        columns=[_column_from_dict(c) for c in _dict_list(d.get("columns"))],
+        cells=[_cell_from_dict(c) for c in _dict_list(d.get("cells"))])
 
 
 def _dataset_from_dict(d: dict) -> Dataset:

@@ -94,3 +94,27 @@ def test_a_shape_left_off_a_file_dataset_reads_back_as_none():
                                 "datasets": [{"name": "d", "source": "file"}]})
     assert back.datasets[0].shape is None
     assert back.datasets[0].file_label == ""
+
+
+def test_a_hand_edited_bundle_cannot_break_reading_a_shape():
+    """An import file can be edited by hand; a bad number in one costs that
+    field its value, not the whole import its error message."""
+    back = dashboard_from_dict({"name": "X", "rows": [], "datasets": [
+        {"name": "d", "source": "file",
+         "shape": {"header_row": "two", "first_col": None, "data_start": 1.9}}]})
+    shape = back.datasets[0].shape
+    assert (shape.header_row, shape.first_col, shape.data_start) == (0, 0, 1)
+
+
+def test_a_shape_whose_columns_are_not_a_list_reads_as_no_columns():
+    back = dashboard_from_dict({"name": "X", "rows": [], "datasets": [
+        {"name": "d", "source": "file",
+         "shape": {"columns": "oops", "cells": 7}}]})
+    assert back.datasets[0].shape.columns == []
+    assert back.datasets[0].shape.cells == []
+
+
+def test_null_markers_given_as_a_string_do_not_become_single_characters():
+    back = dashboard_from_dict({"name": "X", "rows": [], "datasets": [
+        {"name": "d", "source": "file", "shape": {"null_markers": "N/A"}}]})
+    assert back.datasets[0].shape.null_markers != ["N", "/", "A"]
