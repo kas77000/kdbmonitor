@@ -22,7 +22,9 @@ from kdbmonitor.core.portability import (
     export_dashboards_json, import_dashboards_json,
 )
 from kdbmonitor.core.render_plotly import figure
-from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, resolve
+from kdbmonitor.core.timectx import (
+    PRESET_LABELS, PRESETS, coerce_spec, resolve,
+)
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
 DPI = 96
@@ -32,6 +34,20 @@ REFRESH_OPTIONS = {"Off": 0, "5s": 5, "10s": 10, "15s": 15, "30s": 30,
 
 TIME_OPTIONS = {"Real-time": None, **{PRESET_LABELS[p]: p for p in PRESETS},
                 "Custom range…": "custom"}
+
+
+def time_options(periods: str) -> dict:
+    """The periods this dashboard offers, in picker order.
+
+    Every option but "Real-time" resolves to the historical server, so a
+    historical-only dashboard keeps the whole list of ranges and loses only the
+    one that would ask for a live server it does not have.
+    """
+    if periods == "realtime":
+        return {"Real-time": None}
+    if periods == "historical":
+        return {k: v for k, v in TIME_OPTIONS.items() if k != "Real-time"}
+    return dict(TIME_OPTIONS)
 
 
 def spec_for_option(label: str) -> dict:
@@ -187,6 +203,9 @@ def refresh(store, mgr, dashboard: Dashboard) -> dict:
     if cached and not is_due(cached["as_of"], dashboard.refresh_secs):
         return cached
 
+    # Here rather than only in the picker: a PDF export and an interval refresh
+    # both reach this without anyone having touched the period control.
+    dashboard.time_context = coerce_spec(dashboard.time_context, dashboard.periods)
     payload = {"results": run_datasets(dashboard, store, mgr, date.today()),
                "as_of": datetime.now(),
                "rt": resolve(dashboard.time_context, date.today())}
@@ -349,10 +368,18 @@ def _render_gallery(store) -> None:
 def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
     bar = st.columns([2.2, 1.6, 1.6, 2.6], vertical_alignment="bottom")
 
-    options = list(TIME_OPTIONS)
-    option = bar[0].selectbox("Period", options,
-                              index=options.index(option_for_spec(dashboard.time_context)),
-                              key=f"tc_{dashboard.id}")
+    # Held to what the dashboard offers before the picker is drawn, so a period
+    # stored before it was declared one-sided cannot select a missing option.
+    dashboard.time_context = coerce_spec(dashboard.time_context, dashboard.periods)
+    options = list(time_options(dashboard.periods))
+    if len(options) == 1:
+        bar[0].markdown(f"**Period**<br>:gray[{options[0]} only]",
+                        unsafe_allow_html=True)
+        option = options[0]
+    else:
+        option = bar[0].selectbox(
+            "Period", options, key=f"tc_{dashboard.id}",
+            index=options.index(option_for_spec(dashboard.time_context)))
     spec = spec_for_option(option)
 
     if option == "Custom range…":

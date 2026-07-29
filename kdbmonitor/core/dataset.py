@@ -16,7 +16,7 @@ import pandas as pd
 
 from kdbmonitor.core.chain import filter_clause, substitute_refs
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset
-from kdbmonitor.core.models import Connection
+from kdbmonitor.core.models import KIND_LABELS, Connection
 from kdbmonitor.core.timectx import (
     ResolvedTime, date_clause, has_date_constraint, resolve, substitute_dates,
     unresolved_date_refs,
@@ -74,6 +74,29 @@ def is_marketdata_env(pair: dict) -> bool:
     return pair.get("marketdata") is not None
 
 
+def standalone_side(pair: dict) -> "str | None":
+    """The one kind this environment has, when that is all it will ever have.
+
+    An environment is normally a real-time server and its historical twin, and a
+    missing side reads as setup left half-done — worth saying so, because a
+    dashboard cannot switch period without both. Some environments are not like
+    that: a date-partitioned feed with no live counterpart is historical and
+    nothing else, and its owner has said so here.
+
+    That does not make the missing side answerable. It changes what there is to
+    say about it: not "add one in Admin", which is advice for a server nobody is
+    going to add, but that this environment only does the one period.
+    """
+    if is_marketdata_env(pair):
+        return None                     # its own kind already stands alone
+    for kind in ("realtime", "historical"):
+        conn = pair.get(kind)
+        other = "historical" if kind == "realtime" else "realtime"
+        if conn is not None and conn.standalone and pair.get(other) is None:
+            return kind
+    return None
+
+
 def resolve_target(store, env: str,
                    rt: ResolvedTime) -> tuple[Connection, ResolvedTime]:
     """The server to query, and the time context that actually applies to it.
@@ -93,6 +116,11 @@ def resolve_target(store, env: str,
 
     conn = pair.get(rt.mode)
     if conn is None:
+        solo = standalone_side(pair)
+        if solo:
+            raise ValueError(
+                f"environment '{env}' is {KIND_LABELS[solo].lower()} only, so it "
+                f"cannot answer {KIND_LABELS[rt.mode].lower()}")
         raise ValueError(
             f"environment '{env}' has no {rt.mode} server — add one in Admin")
     return conn, rt

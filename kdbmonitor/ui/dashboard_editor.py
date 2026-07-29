@@ -17,13 +17,18 @@ from kdbmonitor.core.dashboard_models import (
     transform_from_dict, transform_to_dict, widget_from_dict, widget_to_dict,
 )
 from kdbmonitor.core.dashpdf import plan_rows
-from kdbmonitor.core.dataset import is_marketdata_env, run_datasets, trace_datasets
-from kdbmonitor.core.models import Filter
+from kdbmonitor.core.dataset import (
+    is_marketdata_env, run_datasets, standalone_side, trace_datasets,
+)
+from kdbmonitor.core.models import KIND_LABELS, Filter
 from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
     referenced_columns,
 )
-from kdbmonitor.core.timectx import PRESET_LABELS, PRESETS, has_date_constraint, resolve
+from kdbmonitor.core.timectx import (
+    PERIOD_LABELS, PERIOD_MODES, PRESET_LABELS, PRESETS, coerce_spec,
+    has_date_constraint, resolve,
+)
 from kdbmonitor.core.transform import Step
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
@@ -247,6 +252,65 @@ def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
     return out
 
 
+# The same three choices as PERIOD_LABELS, worded to sit inside a sentence.
+_PERIOD_PHRASE = {"both": "both periods", "realtime": "real-time only",
+                  "historical": "historical only"}
+
+
+def env_serves(pair: dict, mode: str) -> bool:
+    """Whether an environment can answer a period at all.
+
+    Market data ignores the period rather than failing it — a dataset on one
+    resolves to the same server whatever is asked, so it never stands in the way
+    of a dashboard offering both.
+    """
+    return is_marketdata_env(pair) or pair.get(mode) is not None
+
+
+def _periods_problems(draft: Dashboard, envs: dict) -> list[str]:
+    """Where what the dashboard offers contradicts an environment's own answer.
+
+    Only environments *declared* one-sided are checked. An environment that
+    merely has not got its other server yet is somebody midway through setting
+    up, and the per-dataset checks below already say so — against the period
+    actually in force, rather than about one nobody has asked for yet. A
+    declaration is different: it says the other side is never coming, so a
+    dashboard promising to switch to it is wrong today and wrong for good.
+    """
+    out: list[str] = []
+    for env in sorted({ds.env for ds in draft.datasets if ds.env}):
+        side = standalone_side(envs.get(env) or {})
+        if side is None or draft.periods == side:
+            continue
+        out.append(
+            f"The dashboard offers {_PERIOD_PHRASE[draft.periods]}, but "
+            f"environment '{env}' is {KIND_LABELS[side].lower()} only. Set "
+            f"Periods offered to '{PERIOD_LABELS[side]}'.")
+    return out
+
+
+def _periods_hint(draft: Dashboard, store) -> str:
+    """What the environments this dashboard reads can actually serve."""
+    envs = store.list_environments()
+    used = sorted({ds.env for ds in draft.datasets if ds.env and ds.env in envs})
+    if not used:
+        return "Add a dataset and this will say what its environment can serve."
+
+    parts = []
+    for env in used:
+        pair = envs[env]
+        if is_marketdata_env(pair):
+            served = "market data · any period"
+        elif env_serves(pair, "realtime") and env_serves(pair, "historical"):
+            served = "both"
+        else:
+            side = standalone_side(pair) or (
+                "realtime" if env_serves(pair, "realtime") else "historical")
+            served = f"{KIND_LABELS[side].lower()} only"
+        parts.append(f"`{env}` ({served})")
+    return "Reads " + ", ".join(parts) + "."
+
+
 def validate(draft: Dashboard, store) -> list[str]:
     """Everything wrong with this dashboard, in plain English. Empty when fine.
 
@@ -255,7 +319,11 @@ def validate(draft: Dashboard, store) -> list[str]:
     """
     problems: list[str] = []
     envs = store.list_environments()
+    # The declaration decides what the stored period may be, so validate against
+    # what this dashboard will actually run with rather than what it was left on.
+    draft.time_context = coerce_spec(draft.time_context, draft.periods)
     dashboard_time = resolve(draft.time_context, date.today())
+    problems += _periods_problems(draft, envs)
 
     if _blank(draft.name):
         problems.append("The dashboard has no name.")
@@ -304,13 +372,20 @@ def validate(draft: Dashboard, store) -> list[str]:
         if ds.env not in envs:
             problems.append(f"Dataset '{ds.name}' uses unknown environment "
                             f"'{ds.env}'.")
-        elif rt.mode == "historical" and envs[ds.env]["historical"] is None:
-            problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has no "
-                            f"historical server — add one in Admin.")
-        elif rt.mode == "realtime" and not market \
-                and envs[ds.env]["realtime"] is None:
-            problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has no "
-                            f"real-time server — add one in Admin.")
+        elif not market and envs[ds.env][rt.mode] is None:
+            # An environment declared one-sided is not waiting for the other
+            # half, so say what it does instead of naming a server to add.
+            solo = standalone_side(envs[ds.env])
+            wanted = "date ranges" if rt.mode == "historical" else "real-time"
+            if solo:
+                problems.append(
+                    f"Dataset '{ds.name}': environment '{ds.env}' is "
+                    f"{KIND_LABELS[solo].lower()} only, so it cannot show "
+                    f"{wanted}. Give this dataset a period it can answer.")
+            else:
+                problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has "
+                                f"no {KIND_LABELS[rt.mode].lower()} server — add "
+                                f"one in Admin.")
 
         if rt.mode == "historical" and ds.mode == "raw" \
                 and not has_date_constraint(ds.raw_qsql or ""):
@@ -1309,6 +1384,18 @@ def render(store, mgr) -> None:
         draft.name = head[0].text_input("Dashboard name", value=draft.name)
         draft.description = head[1].text_input("Description",
                                                value=draft.description)
+
+        p = st.columns([2.4, 6.6], vertical_alignment="center")
+        modes = list(PERIOD_MODES)
+        draft.periods = p[0].selectbox(
+            "Periods offered", modes,
+            index=modes.index(draft.periods if draft.periods in modes else "both"),
+            format_func=lambda m: PERIOD_LABELS[m],
+            help="Switching period switches server, so 'both' needs every "
+                 "environment this reads to have a real-time server and its "
+                 "historical twin. A dashboard built over one side alone says "
+                 "so here, and is never offered the period it cannot answer.")
+        p[1].caption(_periods_hint(draft, store))
 
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.

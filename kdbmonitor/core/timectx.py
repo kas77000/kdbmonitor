@@ -82,6 +82,44 @@ def resolve(spec: dict, today: date) -> ResolvedTime:
     return ResolvedTime("historical", start, end)
 
 
+# --- what a dashboard offers ------------------------------------------------
+#
+# Switching period means switching server, so a dashboard can only offer both
+# where every environment it reads has both sides. One that reads a historical
+# feed with nothing live behind it says so once, and is never asked for a period
+# it cannot answer.
+
+PERIOD_MODES = ("both", "realtime", "historical")
+
+PERIOD_LABELS = {"both": "Both — switch between them",
+                 "realtime": "Real-time only",
+                 "historical": "Historical only"}
+
+# The period a historical-only dashboard falls back to, when what it had stored
+# was real-time. Today's partition is the nearest thing to "now" the HDB has.
+_DEFAULT_HISTORICAL = {"mode": "historical",
+                       "range": {"kind": "preset", "name": "today"}}
+
+
+def offers(periods: str, mode: str) -> bool:
+    """Whether a dashboard offering ``periods`` can be asked for ``mode``."""
+    return periods == "both" or periods == mode
+
+
+def coerce_spec(spec: dict, periods: str) -> dict:
+    """A stored period, held to what the dashboard offers.
+
+    A dashboard can be declared one-sided after it was built, and its stored
+    period outlives the declaration. Rather than resolve to a server that is not
+    there, it lands on the nearest period that is offered — which is also what
+    stops the picker being asked to select an option it no longer lists.
+    """
+    mode = (spec or {}).get("mode", "realtime")
+    if offers(periods, "historical" if mode == "historical" else "realtime"):
+        return spec
+    return {"mode": "realtime"} if periods == "realtime" else dict(_DEFAULT_HISTORICAL)
+
+
 def q_date(d: date) -> str:
     """A kdb+ date literal: 2026.06.01."""
     return f"{d:%Y.%m.%d}"

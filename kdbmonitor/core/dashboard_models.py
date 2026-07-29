@@ -63,6 +63,12 @@ class Dashboard:
     name: str
     description: str = ""
     refresh_secs: int = 15
+    # Which periods this dashboard offers: both (switch between a real-time
+    # server and its historical twin), or the one it is built for. Switching is
+    # only possible where every environment it reads has both sides, so a
+    # dashboard over a historical-only feed says so once here rather than
+    # offering a period that resolves to no server.
+    periods: str = "both"        # both | realtime | historical
     time_context: dict = field(default_factory=_default_time_context)
     datasets: list[Dataset] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
@@ -135,6 +141,7 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         name=d["name"],
         description=d.get("description", ""),
         refresh_secs=d.get("refresh_secs", 15),
+        periods=d.get("periods", "both"),
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],

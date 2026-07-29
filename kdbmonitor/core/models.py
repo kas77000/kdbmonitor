@@ -84,6 +84,11 @@ class Connection:
     last_introspected_at: Optional[str] = None
     kind: str = "realtime"       # one of CONNECTION_KINDS
     env: str = ""                # logical environment; "" falls back to name
+    # This side is the whole environment: there is no counterpart coming, and a
+    # missing one is the design rather than a setup half-done. A date-partitioned
+    # feed with no live server is historical and nothing else, and saying so is
+    # what stops the app asking for the other half for the rest of its life.
+    standalone: bool = False
 
 
 def alert_to_dict(alert: Alert) -> dict:
@@ -134,4 +139,5 @@ def connection_from_dict(d: dict) -> Connection:
         last_introspected_at=d.get("last_introspected_at"),
         kind=d.get("kind", "realtime"),
         env=d.get("env", ""),
+        standalone=bool(d.get("standalone", False)),
     )

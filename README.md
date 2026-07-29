@@ -333,7 +333,21 @@ the same data, and a dashboard switches between them by period.
 | `refdata` | `marketdata` | Market data |
 
 Admin's **Environments** panel shows each pair and confirms the link, or flags a
-half-configured environment. Every registered server has an **Edit** button for
+half-configured environment.
+
+**Not every environment has two sides.** A date-partitioned feed with nothing
+live behind it is historical and nothing else. Tick **No counterpart** on that
+server and the environment stops being reported as half-configured: Admin shows
+it as *historical only, by design*, it is no longer offered when you add a
+server of the other kind, and a dashboard that asks it for real-time is told the
+environment is historical only rather than to add a server nobody intends to
+add. Untick it to go looking for the counterpart again.
+
+The box is a statement about the *future*, not a description of today. A server
+that simply has not been paired yet is left alone — that is somebody midway
+through setting up, and it keeps the ordinary "add one in Admin" nag.
+
+Every registered server has an **Edit** button for
 its name, host, port, kind and environment — so linking two servers you already
 registered, or moving one to a different environment, never means deleting and
 re-adding it. Changing a server's address clears its cached schema, since the
@@ -342,6 +356,23 @@ tables on the new host may differ; run **Introspect** afterwards.
 A dataset targets the *environment*, never a server. The dashboard's **period**
 control — Real-time, Today, Last 7 days, Last 30 days, Month to date, Last month,
 Year to date, or a custom range — decides which one is queried.
+
+**A dashboard says which periods it offers.** *Periods offered*, in the editor
+header, is one of:
+
+| | |
+|---|---|
+| **Both — switch between them** | the default: the viewer picks any period, and each dataset resolves to the real-time server or its historical twin |
+| **Real-time only** | the period control becomes a label; nothing offers a date range |
+| **Historical only** | every range stays; only *Real-time* goes |
+
+Switching period means switching server, so *both* is only honest where the
+environments have both sides. Offering it over one declared single-sided is
+reported as a problem naming the environment and the setting to use instead. A
+period stored before the declaration — historical-only, but left on Real-time —
+lands on today's partition rather than resolving to a server that is not there.
+The caption beside the control lists what each environment this dashboard reads
+can actually serve.
 
 **Market data ignores the period.** Reference data is not partitioned by date, so
 those datasets always hit the market-data server and never receive a date clause,

@@ -9,6 +9,7 @@ from kdbmonitor.core.models import (
     KIND_LABELS, Connection,
 )
 from kdbmonitor.core.client import ConnectionManager
+from kdbmonitor.core.dataset import standalone_side
 from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.portability import export_connections_json, import_bundle_json
@@ -35,11 +36,12 @@ REGISTERABLE_KINDS = ("realtime", "historical")
 
 
 def _add_connection(store, name: str, host: str, port, kind: str,
-                    env: str) -> None:
+                    env: str, standalone: bool = False) -> None:
     try:
         store.add_connection(Connection(id=None, name=name.strip(),
                                         host=host.strip(), port=int(port),
-                                        kind=kind, env=env.strip()))
+                                        kind=kind, env=env.strip(),
+                                        standalone=standalone))
     except ValueError as exc:
         st.error(str(exc), icon=":material/error:")
     except Exception as exc:  # noqa: BLE001 — DB failure shouldn't crash the page
@@ -55,13 +57,19 @@ def _env_options(store, kind: str) -> list[str]:
     Market data stands alone — pairing it with a real-time/historical env would
     make 'which server does this dataset hit' ambiguous. Real-time and
     historical are offered the envs that do not already have that side filled.
+
+    An environment whose server is marked as having no counterpart is not
+    offered either: it was declared one-sided, and joining it would contradict
+    that. Untick the box on that server first, which is the same thing said the
+    other way round.
     """
     envs = store.list_environments()
     if kind == "marketdata":
         return [e for e, pair in envs.items()
                 if pair["realtime"] is None and pair["historical"] is None]
     return [e for e, pair in envs.items()
-            if pair["marketdata"] is None and pair[kind] is None]
+            if pair["marketdata"] is None and pair[kind] is None
+            and standalone_side(pair) is None]
 
 
 def _partner_hint(store, env: str, kind: str) -> str:
@@ -111,23 +119,38 @@ def _render_environments(store) -> None:
                                f"give the others their own environment.]")
                 continue
 
+            # A side that is missing on purpose is not missing. Say what the
+            # environment does rather than nagging for a server nobody will add.
+            solo = standalone_side(pair)
             for i, kind in enumerate(("realtime", "historical"), start=1):
                 conn = pair[kind]
                 label = KIND_LABELS[kind]
                 if conn is not None:
                     e[i].markdown(f":green-badge[{label}] `{conn.name}`")
+                elif solo:
+                    e[i].markdown(f":gray[no {label.lower()} — by design]")
                 else:
                     e[i].markdown(f":orange-badge[{label} missing]")
 
             if pair["realtime"] is not None and pair["historical"] is not None:
                 st.caption(f":green[`{pair['realtime'].name}` ↔ "
                            f"`{pair['historical'].name}` are linked.]")
+            elif solo:
+                answers = ("date ranges" if solo == "historical" else "today")
+                st.caption(f":gray[Environment '{env}' is "
+                           f"{KIND_LABELS[solo].lower()} only, by design — it "
+                           f"answers {answers}, and datasets on it need a period "
+                           f"it can serve.]")
             elif pair["historical"] is None:
                 st.caption(f":orange[Environment '{env}' has no historical server "
-                           f"— dashboards on it cannot query date ranges.]")
+                           f"— dashboards on it cannot query date ranges. Tick "
+                           f"*No counterpart* on `{pair['realtime'].name}` if "
+                           f"there will never be one.]")
             else:
                 st.caption(f":orange[Environment '{env}' has no real-time server "
-                           f"— dashboards on it cannot show today.]")
+                           f"— dashboards on it cannot show today. Tick *No "
+                           f"counterpart* on `{pair['historical'].name}` if there "
+                           f"will never be one.]")
 
 
 def _render_edit(store, c: Connection) -> None:
@@ -166,6 +189,16 @@ def _render_edit(store, c: Connection) -> None:
     elif kind != "marketdata" and picked != current:
         st.caption(_partner_hint(store, picked, kind))
 
+    other = "historical" if kind == "realtime" else "real-time"
+    standalone = st.checkbox(
+        "No counterpart", value=c.standalone, key=f"{key}_solo",
+        disabled=kind == "marketdata",
+        help=f"Tick when this environment will never have a {other} server. "
+             f"Untick it to go looking for one: the environment becomes "
+             f"available again when adding or moving a {other} server."
+             if kind != "marketdata" else
+             "Market data already stands alone — it has no counterpart to miss.")
+
     moved = (host.strip(), port) != (c.host, c.port)
     if moved and c.schema:
         st.caption(":orange[Changing the address clears the cached schema — "
@@ -175,6 +208,9 @@ def _render_edit(store, c: Connection) -> None:
                  key=f"{key}_save", disabled=not name.strip() or not env):
         c.name, c.host, c.port, c.kind, c.env = (
             name.strip(), host.strip(), port, kind, env)
+        # A server that just gained a counterpart is not standalone whatever the
+        # box said: the environment it joined has both sides now.
+        c.standalone = standalone and kind != "marketdata"
         if moved:
             # The schema came from the old server; keeping it would let the
             # builder offer tables that may not exist on the new one.
@@ -292,7 +328,7 @@ def render(store, mgr: ConnectionManager) -> None:
             help="Real-time = today's data. Historical = the partitioned HDB "
                  "(the same tables plus a date column).")
 
-        g = st.columns([3, 3, 1.2], vertical_alignment="bottom")
+        g = st.columns([2.6, 2.6, 1.8, 1.2], vertical_alignment="bottom")
         options = _env_options(store, kind) + [NEW_ENV]
         picked = g[0].selectbox(
             "Environment", options, key="ac_env",
@@ -305,13 +341,21 @@ def render(store, mgr: ConnectionManager) -> None:
         else:
             g[1].caption(_partner_hint(store, picked, kind))
 
-        if g[2].button("Add", icon=":material/add:", type="primary", key="ac_add"):
+        other = "historical" if kind == "realtime" else "real-time"
+        standalone = g[2].checkbox(
+            "No counterpart", key="ac_solo",
+            help=f"Tick when this environment will never have a {other} server — "
+                 f"a date-partitioned feed with nothing live behind it, say. It "
+                 f"stops being reported as half-configured, and dashboards on it "
+                 f"are held to the one period it can answer.")
+
+        if g[3].button("Add", icon=":material/add:", type="primary", key="ac_add"):
             if not name:
                 st.error("Connection needs a name.", icon=":material/error:")
             elif not env:
                 st.error("Connection needs an environment.", icon=":material/error:")
             else:
-                _add_connection(store, name, host, port, kind, env)
+                _add_connection(store, name, host, port, kind, env, standalone)
 
     # ---- Registered servers ---------------------------------------------- #
     st.markdown("**Registered servers**")

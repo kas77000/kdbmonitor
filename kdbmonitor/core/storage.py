@@ -52,7 +52,8 @@ class Storage:
                 schema_json TEXT NOT NULL DEFAULT '{}',
                 last_introspected_at TEXT,
                 kind TEXT NOT NULL DEFAULT 'realtime',
-                env TEXT NOT NULL DEFAULT ''
+                env TEXT NOT NULL DEFAULT '',
+                standalone INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +120,9 @@ class Storage:
         if "env" not in ccols:
             self.conn.execute(
                 "ALTER TABLE connections ADD COLUMN env TEXT NOT NULL DEFAULT ''")
+        if "standalone" not in ccols:
+            self.conn.execute("ALTER TABLE connections ADD COLUMN standalone "
+                              "INTEGER NOT NULL DEFAULT 0")
 
     # --- connections ---
     def add_connection(self, c: Connection) -> int:
@@ -129,9 +133,9 @@ class Storage:
             raise ValueError(f"A connection named '{c.name}' already exists.")
         cur = self.conn.execute(
             "INSERT INTO connections(name, host, port, schema_json, last_introspected_at,"
-            " kind, env) VALUES (?,?,?,?,?,?,?)",
+            " kind, env, standalone) VALUES (?,?,?,?,?,?,?,?)",
             (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
-             c.kind, c.env),
+             c.kind, c.env, int(c.standalone)),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -142,6 +146,7 @@ class Storage:
             schema=json.loads(r["schema_json"]),
             last_introspected_at=r["last_introspected_at"],
             kind=r["kind"], env=r["env"],
+            standalone=bool(r["standalone"]),
         )
 
     def list_connections(self) -> list[Connection]:
@@ -159,9 +164,9 @@ class Storage:
     def update_connection(self, c: Connection) -> None:
         self.conn.execute(
             "UPDATE connections SET name=?, host=?, port=?, schema_json=?,"
-            " last_introspected_at=?, kind=?, env=? WHERE id=?",
+            " last_introspected_at=?, kind=?, env=?, standalone=? WHERE id=?",
             (c.name, c.host, c.port, json.dumps(c.schema), c.last_introspected_at,
-             c.kind, c.env, c.id),
+             c.kind, c.env, int(c.standalone), c.id),
         )
         self.conn.commit()
 
