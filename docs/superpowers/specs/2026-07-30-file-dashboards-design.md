@@ -40,7 +40,9 @@ alternatives that would otherwise look reasonable later.
 | Relationship to KDB dashboards | One `Dashboard` kind with a `source` field; file dashboards hide what is meaningless to them | A separate type (duplicates the layout editor, widget config and PDF export) |
 | Where run-time data comes from | Each viewer uploads their own file; nothing is stored | One stored file per dashboard; a watched path on disk |
 | Content outside the table | Skipped, except cells deliberately named at design time | Skipping entirely; full spreadsheet addressing |
-| Shape matching | By column name, anchored, with a fallback search for the header line | Strict anchoring; positional matching |
+| Header location | The designer declares the line, defaulting to row 1. Nothing is ever guessed, at either end | Auto-detecting the header line at design time; searching for it at run time |
+| Shape matching | By column name, strictly anchored to the declared line | A fallback search; positional matching |
+| Timers | None. A file dashboard has no refresh interval and the control is not shown | Showing the interval off by default |
 | Automation | Profile only — widgets are built by hand, as for KDB datasets | Suggested widgets; a generated starter dashboard |
 | File formats | CSV, strictly comma-separated, UTF-8 | Delimiter sniffing; Excel |
 | Files per dashboard | One per dataset — each dataset is its own named upload slot | One file carved into many datasets |
@@ -100,10 +102,9 @@ class NamedCell:
 @dataclass
 class FileShape:
     header_axis: str = "row"   # row = headers across | column = headers down
-    header_row: int = 0        # 0-based line carrying the headers
+    header_row: int = 0        # 0-based line carrying the headers; row 1 by default
     first_col: int = 0         # 0-based column the table starts at
     data_start: int = 1        # 0-based first data line
-    search_rows: int = 20      # how far to hunt if the header is not where expected
     null_markers: list[str] = field(default_factory=lambda: [
         "", "NA", "N/A", "NaN", "NULL", "NONE", "-", "--", "#N/A"])
     columns: list[ColumnSpec] = field(default_factory=list)
@@ -173,12 +174,11 @@ class FileLoad:
 2. **Orient** — if `header_axis == "column"`, transpose the grid. Every index
    in `FileShape` refers to the grid *after* this step, so vertical headers cost
    one line rather than a second code path.
-3. **Locate the header** — read line `header_row` from `first_col`. If the
-   expected names are not there, scan the first `search_rows` lines for a line
-   that carries them; on success, record `"headers found on line 4, not 3"` in
-   `notes`. Drop blank headers (a trailing comma produces a column nothing can
-   reference). Refuse duplicate header names — neither can be referenced
-   unambiguously, and first-wins would be a silent choice.
+3. **Read the header** — from line `header_row`, starting at `first_col`. It is
+   read, never searched for: the declared line is the contract, and a file whose
+   header is elsewhere is refused. Drop blank headers (a trailing comma produces
+   a column nothing can reference). Refuse duplicate header names — neither can
+   be referenced unambiguously, and first-wins would be a silent choice.
 4. **Cut the data region** — take lines from `data_start` down. Drop rows blank
    across the whole region, and note how many: trailing blank lines are
    near-universal in exports, and a row of nulls is not the same as no row.
@@ -252,24 +252,26 @@ The designer can correct any of it. A column of integer-looking order IDs is
 ## 7. Building a file dashboard
 
 1. Choose **File** as the dashboard's source. The editor hides environment,
-   period and refresh interval.
+   period and refresh interval — a file dashboard has no timer at all (§8.1).
 2. Add a dataset and drop in a sample file.
-3. The app reads the first 50 lines as a grid and guesses the header line: the
-   first row that has no blank cells, no duplicate values, and fewer than half
-   of its cells parsing as numbers. Data starts at the next non-blank line;
-   types come from §6.4. If no row qualifies, row 0 is offered and the designer
-   corrects it.
+3. **The header line is declared, never guessed.** It defaults to row 1, and
+   the designer changes it if the file has a preamble. Data starts on the line
+   after the header unless told otherwise.
 4. **The raw file is shown as a grid, exactly as it sits on disk**, with the
-   guess drawn on it — header line highlighted, data region tinted — and every
-   field overridable. Clicking a cell outside the table offers *name this cell*,
-   which records its raw `(row, col)` as a `NamedCell`.
+   current declaration drawn on it — header line highlighted, data region
+   tinted — so the designer is reading their own file while stating where the
+   table is. Clicking a cell outside the table offers *name this cell*, which
+   records its raw `(row, col)` as a `NamedCell`.
 5. On confirm the profile is stored and **the sample is discarded from the
    database**. It stays in session state for the rest of the editing session
    (§7.1).
 6. Widgets are built exactly as against a KDB dataset.
 
-The guess is a convenience; what the designer confirms is the contract. A wrong
-guess costs a click, not a failure.
+Nothing about the file's *structure* is ever inferred. The one thing still read
+from the sample is each column's **type** (§6.4), which the designer sees as a
+list and corrects — a column of integer-looking order IDs is text, and only a
+human knows that. That is a starting value for a field, not a decision about
+where the data is.
 
 ### 7.1 The sample during editing
 
@@ -277,11 +279,15 @@ Storing no rows has one consequence worth designing for rather than discovering:
 the transform preview and the widget column pickers have nothing to work
 against.
 
-The sample frame therefore **lives in session state for the duration of the
-editing session** — it is already in memory from profiling — and is never
-written to the database. While it is there, `trace_datasets` powers the same
-step-by-step transform preview a KDB dataset gets, so a file dataset's pipeline
-is built with real values in front of the designer rather than blind.
+The **first 200 rows** of the sample therefore live in session state for the
+duration of the editing session — they are already in memory from profiling —
+and are never written to the database. The cap matters: Streamlit accepts
+uploads up to 200MB by default, and holding one whole in a session for the sake
+of a preview would be paying a great deal for a glance.
+
+While they are there, `trace_datasets` powers the same step-by-step transform
+preview a KDB dataset gets, so a file dataset's pipeline is built with real
+values in front of the designer rather than blind.
 
 Reopening the dashboard later, with no sample in hand, still works: the widget
 column pickers read `shape.columns`, which is the contract and is stored. Only
@@ -309,29 +315,38 @@ cannot tell which source produced it.
 orders export"*, consistent with the existing rule that a broken source degrades
 one panel rather than blanking the page.
 
-### 8.1 A file dashboard never comes due
+### 8.1 A file dashboard has no timer
 
-`refresh()` re-runs a dashboard's datasets once `refresh_secs` has elapsed. A
-file dashboard has nothing to re-run: the frame changes only when a different
-file is uploaded. So `is_due` is skipped entirely for `source == "file"` and the
-frames are stamped at upload; `refresh_secs` is ignored and hidden by the
-editor.
+Not "a timer defaulting to off" — no interval, and no control for one. A file
+dashboard's frame changes when a different file is uploaded and at no other
+moment, so `is_due` is skipped entirely for `source == "file"`, frames are
+stamped at upload, and `refresh_secs` is neither read nor shown.
 
-This is not merely an optimisation. Re-stamping frames on an interval would
-throw away the cached PDF pages on every tick — the exact bug the existing
-comment in `refresh()` records having fixed for KDB dashboards.
+This is not only tidiness. Re-stamping frames on an interval would throw away
+the cached PDF pages on every tick — the exact bug the existing comment in
+`refresh()` records having fixed for KDB dashboards — and it would do so to
+arrive at numbers that cannot have changed.
+
+A manual **Refresh** remains, since re-applying the pipeline is occasionally
+worth asking for; it re-runs from the frame already held, and does not ask for
+the file again.
 
 ### 8.2 Refusal messages
 
 Each `Problem` names the column, what was expected, what arrived, and where:
 
+- *"this dashboard expects its headers on line 3; line 3 of your file reads: 2026-07-29, , , ,"*
 - *"missing required column `filledQty` — the file has: sym, side, qty, avgPrice, venue"*
 - *"column `qty` expects a number; 12 of 500 values could not be read as one (line 14: `N/A`)"*
 - *"column `date` expects a value in every row; 4 rows are blank (first at line 27)"*
 - *"two columns are called `qty` — rename one, or neither can be referenced"*
 
-Notes are shown on acceptance: *"headers found on line 4, not 3"*, *"skipped 3
-blank rows"*, *"ignored 2 columns not used by this dashboard"*.
+The first of those is the message a mismatched export will most often produce,
+so it quotes the line rather than merely naming it: the viewer needs to see what
+the app saw to know whether to fix the file or ask for the dashboard to change.
+
+Notes are shown on acceptance: *"skipped 3 blank rows"*, *"ignored 2 columns not
+used by this dashboard"*.
 
 ## 9. Files changed
 
@@ -388,10 +403,11 @@ the KDB controls per dataset rather than per dashboard.
 tested directly, without Streamlit, matching how the rest of `core/` is tested.
 
 **Reading and shape**
-- header on line 1 (the ordinary export)
+- header on line 1 (the ordinary export, and the default)
 - header on line 3, preamble above it
-- header not where the spec says, found by the fallback search, and noted
-- header not found within `search_rows` → refused
+- header not on the declared line → refused, quoting that line
+- a file one row *shorter* than expected, so the declared line is past its end
+  → refused, not an index error
 - vertical headers (`header_axis="column"`) transposed correctly
 - `first_col > 0` — the table does not start at column A
 - trailing-comma blank headers dropped
@@ -424,7 +440,7 @@ tested directly, without Streamlit, matching how the rest of `core/` is tested.
 - transforms and `max_rows` apply to a file frame identically
 - no upload yet yields a waiting state, not a crash
 - `trace_datasets` steps through a file dataset's transforms
-- a file dashboard never comes due, whatever `refresh_secs` says (§8.1)
+- a file dashboard never comes due, whatever `refresh_secs` holds (§8.1)
 - a file dashboard exports a PDF
 
 The last two in that group are the ones that prove the pipeline is genuinely
