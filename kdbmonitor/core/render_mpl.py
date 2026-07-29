@@ -57,6 +57,18 @@ TABLE_MIN_FONT = 7.0        # smallest size still worth printing
 LINE_SPACING = 1.45         # cell height as a multiple of the font size
 NOTE_H_IN = 0.17            # strip under the table for "showing X of Y rows"
 
+# A table is bounded by its width as much as by its height, and matplotlib
+# neither wraps nor clips cell text: a column given less room than its text
+# needs does not shrink, it runs into its neighbour. So the width has to be
+# spent as deliberately as the height, which means knowing what a character
+# costs. These are the average glyph widths of the table font in ems, measured
+# off the renderer, so the type size can be decided before anything is drawn.
+# Set above the *average* glyph on purpose: a column of '09:15:03.221' is all
+# wide glyphs, and sizing it by the average leaves it a hair short.
+TABLE_CHAR_EM = 0.55        # body cells, regular weight
+TABLE_HEAD_EM = 0.62        # header row — bold, and so wider per character
+COLUMN_PAD = 2              # breathing room, in characters, on every column
+
 
 def _axes_height_in(ax) -> float:
     """The axes' drawn height in inches — what the row budget is spent from."""
@@ -64,6 +76,14 @@ def _axes_height_in(ax) -> float:
     if figure is None:
         return 0.0
     return ax.get_position().height * figure.get_figheight()
+
+
+def _axes_width_in(ax) -> float:
+    """The axes' drawn width in inches — what a table's columns are spent from."""
+    figure = getattr(ax, "figure", None)
+    if figure is None:
+        return 0.0
+    return ax.get_position().width * figure.get_figwidth()
 
 
 def table_capacity(height_in: float) -> int:
@@ -100,17 +120,88 @@ def table_layout(height_in: float, n_rows: int) -> tuple[int, float, bool]:
     return shown, _font_for(body, shown + 1), True
 
 
+def _column_chars(columns: list[str], rows: list[list[str]]) -> list[tuple[int, int]]:
+    """Per column, (characters in the header, characters in its longest cell)."""
+    return [(len(str(c)),
+             max([0] + [len(str(r[i])) for r in rows if i < len(r)]))
+            for i, c in enumerate(columns)]
+
+
 def _column_widths(columns: list[str], rows: list[list[str]]) -> list[float]:
     """Share of the width per column, proportional to the longest text in it.
 
     Equal columns make a nine-column table overlap: 'RELIANCE.IN' spills into
     the next cell while 'Side' leaves half its box empty.
     """
-    pad = 2                       # breathing room, in characters, on every column
-    widest = [pad + max([len(str(c))] + [len(str(r[i])) for r in rows if i < len(r)])
-              for i, c in enumerate(columns)]
+    widest = [COLUMN_PAD + max(head, body)
+              for head, body in _column_chars(columns, rows)]
     total = sum(widest) or 1
     return [w / total for w in widest]
+
+
+def table_fit_font(columns: list[str], rows: list[list[str]],
+                   width_in: float) -> float:
+    """The largest type size at which every column's text fits the width it gets.
+
+    Width is handed out in proportion to a column's longest text, so the binding
+    column is whichever one's text is longest *relative to its share* — not
+    simply the widest one. The header is weighed against the body separately
+    because it is bold, and a short header over long values can still overrun
+    the share those values earned it.
+
+    Pure, and needs no figure: this is what decides whether a dashboard can be
+    printed portrait at all, and that has to be answerable before a page exists.
+    """
+    if width_in <= 0 or not columns:
+        return TABLE_FONT
+    fits = [share * width_in * 72 / need
+            for share, (head, body) in zip(_column_widths(columns, rows),
+                                           _column_chars(columns, rows))
+            if (need := max(head * TABLE_HEAD_EM, body * TABLE_CHAR_EM)) > 0]
+    return min(fits) if fits else TABLE_FONT
+
+
+# The ellipsis is 0.75 em — wider than the average character it replaces — so it
+# is charged two characters against the column's budget. Billed as one, a value
+# cut to fit came back out a shade wider than the box it was cut for.
+ELLIPSIS = "…"
+ELLIPSIS_CHARS = 2
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, saying so where it was cut.
+
+    The mark of the cut is part of the budget, never on top of it: a column too
+    narrow to hold even that prints what it can and stays inside its box, since
+    a column one character wide has no room to explain itself anyway.
+    """
+    if len(text) <= limit:
+        return text
+    keep = limit - ELLIPSIS_CHARS
+    return text[:keep] + ELLIPSIS if keep >= 1 else text[:max(limit, 1)]
+
+
+def _trimmed(columns: list[str], rows: list[list[str]], shares: list[float],
+             width_in: float) -> tuple[list[str], list[list[str]]]:
+    """Text cut to what each column can hold at the smallest legible size.
+
+    The last resort, reached only once the paper and the type size have both
+    been spent — a table so wide that even a turned page at 7pt cannot hold it.
+    A value cut short carries an ellipsis and so admits it was cut; a value left
+    whole just collides with the next column and admits nothing.
+
+    Trimming against the shares the *untrimmed* text earned, rather than
+    recomputing them after, keeps the guarantee: shorter text in the same box
+    still fits.
+    """
+    def limit(share: float, em: float) -> int:
+        return max(int(share * width_in * 72 / (TABLE_MIN_FONT * em)), 1)
+
+    heads = [limit(s, TABLE_HEAD_EM) for s in shares]
+    cells = [limit(s, TABLE_CHAR_EM) for s in shares]
+    return ([_clip(str(c), heads[i]) for i, c in enumerate(columns) if i < len(heads)],
+            [[_clip(str(v), cells[i]) for i, v in enumerate(r) if i < len(cells)]
+             for r in rows])
 
 
 def _table(ax, pm: PlotModel) -> None:
@@ -141,11 +232,24 @@ def _table(ax, pm: PlotModel) -> None:
                     fontsize=8.5, color=theme.MUTED, transform=ax.transAxes,
                     ha="right", va="center")
 
+    # Height has had its say; now width has hers. The size settled on above fits
+    # the rows into the slot, but says nothing about whether the columns fit
+    # across it — so take the smaller of the two, and where even the smallest
+    # legible size will not span the columns, cut the text rather than let it
+    # collide.
+    width_in = _axes_width_in(ax)
+    columns, shares = pm.columns, _column_widths(pm.columns, rows)
+    fit = table_fit_font(pm.columns, rows, width_in)
+    if width_in > 0 and fit < TABLE_MIN_FONT:
+        columns, rows = _trimmed(pm.columns, rows, shares, width_in)
+        font_size = TABLE_MIN_FONT
+    elif width_in > 0:
+        font_size = max(min(font_size, fit), TABLE_MIN_FONT)
+
     # bbox makes the table fill its axes exactly (no internal gap), less any
     # strip kept for the note.
-    table = ax.table(cellText=rows, colLabels=pm.columns, cellLoc="right",
-                     colLoc="right", colWidths=_column_widths(pm.columns, rows),
-                     bbox=bbox)
+    table = ax.table(cellText=rows, colLabels=columns, cellLoc="right",
+                     colLoc="right", colWidths=shares, bbox=bbox)
     table.auto_set_font_size(False)
     table.set_fontsize(font_size)
     for (row, col), cell in table.get_celld().items():

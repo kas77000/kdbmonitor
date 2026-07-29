@@ -14,7 +14,8 @@ import streamlit as st
 
 from kdbmonitor.core.dashboard_models import Dashboard
 from kdbmonitor.core.dashpdf import (
-    dashboard_page_png_bytes, dashboard_to_pdf_bytes, page_count, pdf_filename,
+    LANDSCAPE, dashboard_page_png_bytes, dashboard_to_pdf_bytes, pdf_filename,
+    report_plan,
 )
 from kdbmonitor.core.dataset import run_datasets
 from kdbmonitor.core.plotmodel import build_plot_model
@@ -464,10 +465,16 @@ def _render_export(dashboard: Dashboard) -> None:
     st.divider()
     # Counted against the rows on screen: a table longer than its slot carries
     # on over further pages, so only the data knows how long the report is.
-    pages = page_count(dashboard, payload["results"] if payload else None)
+    sheet, pages = report_plan(dashboard,
+                               payload["results"] if payload else None)
+    # Why the page turned, said once and only where it did: a report that comes
+    # out sideways with no explanation reads as a bug.
+    turned = (" — turned landscape to fit a table's columns"
+              if sheet is LANDSCAPE and dashboard.orientation == "auto" else "")
     st.caption(f":material/picture_as_pdf: This dashboard prints on "
-               f"**{pages}** A4 page(s) — a table longer than its row continues "
-               f"onto the next one, so the count follows the data.")
+               f"**{pages}** A4 {sheet.orientation} page(s){turned}. A table "
+               f"longer than its row continues onto the next one, so the count "
+               f"follows the data.")
     e = st.columns([1.6, 1.5, 1.5, 3], vertical_alignment="center")
 
     if e[0].button("Generate PDF", icon=":material/picture_as_pdf:", type="primary",

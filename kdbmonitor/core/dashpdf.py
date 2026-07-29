@@ -15,10 +15,9 @@ from typing import Optional
 from kdbmonitor.core import theme
 from kdbmonitor.core.dashboard_models import Dashboard, Row
 from kdbmonitor.core.plotmodel import build_plot_model, slice_table
-from kdbmonitor.core.render_mpl import draw, table_capacity
+from kdbmonitor.core.render_mpl import draw, table_capacity, table_fit_font
 from kdbmonitor.core.timectx import ResolvedTime
 
-PAGE_W, PAGE_H = 8.27, 11.69       # A4 portrait, inches
 MARGIN = 0.6
 HEADER_H_FIRST = 1.05              # title band on page 1
 # Continuation pages carry no header at all — just breathing room above the
@@ -28,9 +27,50 @@ HEADER_H_CONT = 0.15
 FOOTER_H = 0.45
 GUTTER = 0.28                      # between rows and between widgets
 
-CONTENT_H_FIRST = PAGE_H - MARGIN * 2 - HEADER_H_FIRST - FOOTER_H
-CONTENT_H_CONT = PAGE_H - MARGIN * 2 - HEADER_H_CONT - FOOTER_H
-CONTENT_W = PAGE_W - MARGIN * 2
+
+@dataclass(frozen=True)
+class Page:
+    """The sheet a report prints on.
+
+    Geometry is a value rather than a module constant so a wide dashboard can be
+    printed on turned paper without a second copy of the layout code: every
+    measurement below is taken from the page it is laying out.
+    """
+    w: float
+    h: float
+    orientation: str
+
+    @property
+    def content_w(self) -> float:
+        return self.w - MARGIN * 2
+
+    def limit(self, page_no: int) -> float:
+        """Usable height on a page — page 1 gives up more to the title band."""
+        header = HEADER_H_FIRST if page_no == 1 else HEADER_H_CONT
+        return self.h - MARGIN * 2 - header - FOOTER_H
+
+
+PORTRAIT = Page(8.27, 11.69, "portrait")       # A4
+LANDSCAPE = Page(11.69, 8.27, "landscape")     # the same sheet, turned
+
+# The size below which a table is worth turning the paper for. Deliberately
+# above TABLE_MIN_FONT: the floor is the point where type stops being readable
+# at all, and waiting for it would print a nine-column table at 7pt down a
+# portrait page when the same table reads at 10pt across a turned one. Turning
+# costs page height, and so sometimes pages — worth it to keep the type legible,
+# not worth it to save a column of white space.
+TURN_FONT = 9.0
+
+ORIENTATIONS = ("auto", "portrait", "landscape")
+ORIENTATION_LABELS = {"auto": "Auto — turn the page only if a table needs it",
+                      "portrait": "Portrait — always",
+                      "landscape": "Landscape — always"}
+
+PAGE_W, PAGE_H = PORTRAIT.w, PORTRAIT.h        # the default sheet, unturned
+
+CONTENT_H_FIRST = PORTRAIT.limit(1)
+CONTENT_H_CONT = PORTRAIT.limit(2)
+CONTENT_W = PORTRAIT.content_w
 
 
 @dataclass(frozen=True)
@@ -143,7 +183,8 @@ def split_rows(rows: list[Row], results: Optional[dict] = None,
 
 
 def paginate(rows: list[Row], results: Optional[dict] = None,
-             cache: Optional[dict] = None) -> list[list[tuple[Part, float]]]:
+             cache: Optional[dict] = None,
+             sheet: Page = PORTRAIT) -> list[list[tuple[Part, float]]]:
     """Split rows into pages of ``(part, y_top)``, y measured in inches from the
     top of the page.
 
@@ -153,7 +194,7 @@ def paginate(rows: list[Row], results: Optional[dict] = None,
     pages: list[list[tuple[Part, float]]] = []
     page: list[tuple[Part, float]] = []
     y = MARGIN + HEADER_H_FIRST
-    limit = PAGE_H - MARGIN - FOOTER_H
+    limit = sheet.h - MARGIN - FOOTER_H
 
     for part in split_rows(rows, results, cache):
         if page and y + part.height_in > limit:
@@ -184,13 +225,12 @@ class RowPlacement:
     free_after: float   # inches still free on the page below this row
 
 
-def page_limit(page_no: int) -> float:
+def page_limit(page_no: int, sheet: Page = PORTRAIT) -> float:
     """Usable height on a page — page 1 gives up more to the title band."""
-    header = HEADER_H_FIRST if page_no == 1 else HEADER_H_CONT
-    return PAGE_H - MARGIN * 2 - header - FOOTER_H
+    return sheet.limit(page_no)
 
 
-def plan_rows(rows: list[Row]) -> list[RowPlacement]:
+def plan_rows(rows: list[Row], sheet: Page = PORTRAIT) -> list[RowPlacement]:
     """Which page each row prints on, so the editor can show it while you build.
 
     Same pagination the PDF uses — derived from :func:`paginate` rather than
@@ -198,9 +238,9 @@ def plan_rows(rows: list[Row]) -> list[RowPlacement]:
     """
     placements: list[RowPlacement] = []
     index = 0
-    pages = paginate(rows)
+    pages = paginate(rows, sheet=sheet)
     for page_no, page in enumerate(pages, start=1):
-        bottom = PAGE_H - MARGIN - FOOTER_H
+        bottom = sheet.h - MARGIN - FOOTER_H
         for position, (row, y_top) in enumerate(page):
             placements.append(RowPlacement(
                 index=index, page=page_no, y_top=y_top,
@@ -210,10 +250,11 @@ def plan_rows(rows: list[Row]) -> list[RowPlacement]:
     return placements
 
 
-def _rect(x_in: float, y_top_in: float, w_in: float, h_in: float) -> list[float]:
+def _rect(x_in: float, y_top_in: float, w_in: float, h_in: float,
+          sheet: Page = PORTRAIT) -> list[float]:
     """Inches from the top-left -> matplotlib figure coordinates."""
-    return [x_in / PAGE_W, 1.0 - (y_top_in + h_in) / PAGE_H,
-            w_in / PAGE_W, h_in / PAGE_H]
+    return [x_in / sheet.w, 1.0 - (y_top_in + h_in) / sheet.h,
+            w_in / sheet.w, h_in / sheet.h]
 
 
 TITLE_H = 0.30      # inches reserved above a widget for its title
@@ -240,15 +281,78 @@ def _widget_height_in(row: Row, widget) -> float:
     return max(row.height_in - _title_height(widget) - top - bottom, 0.15)
 
 
+def _widget_width_in(row: Row, widget, content_w: float) -> float:
+    """The drawn width of a widget's axes — what a table's columns are spent on.
+
+    The same split :func:`_render_page` lays out with, so the check that a table
+    fits and the page it is drawn on cannot disagree about how wide it is.
+    """
+    widgets = row.widgets
+    if not widgets:
+        return 0.0
+    total = sum(max(w.width, 0.01) for w in widgets)
+    usable = content_w - GUTTER * (len(widgets) - 1)
+    left, _, right, _ = _INSETS.get(widget.type, _INSET_CHART)
+    return max(usable * (max(widget.width, 0.01) / total) - left - right, 0.15)
+
+
 def _axes_rect(x: float, y_top: float, w_in: float, h_in: float,
-               widget) -> tuple[list[float], float]:
+               widget, sheet: Page = PORTRAIT) -> tuple[list[float], float]:
     """The widget's axes rect, plus the title height reserved above it."""
     title_h = _title_height(widget)
     left, bottom, right, top = _INSETS.get(widget.type, _INSET_CHART)
     return (_rect(x + left, y_top + title_h + top,
                   max(w_in - left - right, 0.15),
-                  max(h_in - title_h - top - bottom, 0.15)),
+                  max(h_in - title_h - top - bottom, 0.15), sheet),
             title_h)
+
+
+def fits_width(rows: list[Row], results: dict, sheet: Page,
+               cache: Optional[dict] = None) -> bool:
+    """Whether every table in ``rows`` prints legibly across ``sheet``.
+
+    Only tables are asked. A chart redraws itself to whatever width it is handed,
+    but a table's columns are text: given less room than the text needs, the
+    text does not shrink to suit — it runs into the next column. That is the one
+    failure turning the paper actually fixes.
+    """
+    for row in rows:
+        for widget in row.widgets:
+            if widget.type != "table":
+                continue
+            try:
+                pm = _model(widget, results, cache)
+            except Exception:      # noqa: BLE001 - an unreadable widget cannot vote
+                continue
+            if not pm.rows:
+                continue
+            width_in = _widget_width_in(row, widget, sheet.content_w)
+            if table_fit_font(pm.columns, pm.rows, width_in) < TURN_FONT:
+                return False
+    return True
+
+
+def choose_page(dashboard: Dashboard, results: Optional[dict] = None,
+                cache: Optional[dict] = None) -> Page:
+    """The sheet this dashboard prints on.
+
+    Portrait is the shape a report is read in, so 'auto' keeps it and turns the
+    paper only where a table's columns cannot be printed legibly across it —
+    the situation where the alternative is columns colliding with each other.
+    The choice is made once for the whole document: a reader should not have to
+    rotate the page back and forth through one report.
+
+    Only the data knows how wide a table's text is, so without results 'auto'
+    stays portrait — the editor, which has no results to measure, plans against
+    the same page it would print on today.
+    """
+    setting = getattr(dashboard, "orientation", "auto")
+    if setting in ("portrait", "landscape"):
+        return PORTRAIT if setting == "portrait" else LANDSCAPE
+    if not results:
+        return PORTRAIT
+    return PORTRAIT if fits_width(dashboard.rows, results, PORTRAIT,
+                                  cache) else LANDSCAPE
 
 
 def report_period(rt: ResolvedTime, as_of: datetime) -> str:
@@ -266,7 +370,7 @@ def report_period(rt: ResolvedTime, as_of: datetime) -> str:
 
 
 def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
-            first: bool) -> None:
+            first: bool, sheet: Page = PORTRAIT) -> None:
     """Title band — page 1 only.
 
     Continuation pages get no header: the report is one document, and repeating
@@ -278,45 +382,46 @@ def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
 
     import matplotlib.pyplot as plt
 
-    fig.text(MARGIN / PAGE_W, 1 - 0.42 / PAGE_H, dashboard.name,
+    fig.text(MARGIN / sheet.w, 1 - 0.42 / sheet.h, dashboard.name,
              fontsize=22, fontweight="bold", color=theme.INK, va="top")
-    fig.text(MARGIN / PAGE_W, 1 - 0.78 / PAGE_H,
+    fig.text(MARGIN / sheet.w, 1 - 0.78 / sheet.h,
              report_period(rt, as_of), fontsize=11, color=theme.INK2, va="top")
 
-    rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / PAGE_H
-    fig.add_artist(plt.Line2D([MARGIN / PAGE_W, 1 - MARGIN / PAGE_W],
+    rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / sheet.h
+    fig.add_artist(plt.Line2D([MARGIN / sheet.w, 1 - MARGIN / sheet.w],
                               [rule_y, rule_y], color=theme.GRID, lw=1,
                               transform=fig.transFigure))
 
 
-def _footer(fig, as_of: datetime, page_no: int, total: int) -> None:
+def _footer(fig, as_of: datetime, page_no: int, total: int,
+            sheet: Page = PORTRAIT) -> None:
     """Page number only. The header already dates the report, and the tool that
     produced it is not something the reader needs on every page."""
     import matplotlib.pyplot as plt
 
-    y = (MARGIN + FOOTER_H - 0.14) / PAGE_H
-    fig.add_artist(plt.Line2D([MARGIN / PAGE_W, 1 - MARGIN / PAGE_W], [y, y],
+    y = (MARGIN + FOOTER_H - 0.14) / sheet.h
+    fig.add_artist(plt.Line2D([MARGIN / sheet.w, 1 - MARGIN / sheet.w], [y, y],
                               color=theme.GRID, lw=1, transform=fig.transFigure))
-    fig.text(1 - MARGIN / PAGE_W, y - 0.2 / PAGE_H, f"{page_no} / {total}",
+    fig.text(1 - MARGIN / sheet.w, y - 0.2 / sheet.h, f"{page_no} / {total}",
              fontsize=8.5, color=theme.MUTED, va="top", ha="right")
 
 
 def _render_page(dashboard: Dashboard, page: list, results: dict,
                  rt: ResolvedTime, as_of: datetime, page_no: int, total: int,
-                 cache: Optional[dict] = None):
+                 cache: Optional[dict] = None, sheet: Page = PORTRAIT):
     """Build one A4 figure. The caller owns closing it."""
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=(PAGE_W, PAGE_H))
+    fig = plt.figure(figsize=(sheet.w, sheet.h))
     fig.patch.set_facecolor(theme.SURFACE)
-    _header(fig, dashboard, rt, as_of, first=page_no == 1)
+    _header(fig, dashboard, rt, as_of, first=page_no == 1, sheet=sheet)
 
     for part, y_top in page:
         widgets = part.row.widgets
         if not widgets:
             continue
         total_w = sum(max(w.width, 0.01) for w in widgets)
-        usable = CONTENT_W - GUTTER * (len(widgets) - 1)
+        usable = sheet.content_w - GUTTER * (len(widgets) - 1)
         x = MARGIN
         for position, widget in enumerate(widgets):
             w_in = usable * (max(widget.width, 0.01) / total_w)
@@ -328,13 +433,14 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
                 x += w_in + GUTTER
                 continue
 
-            rect, title_h = _axes_rect(x, y_top, w_in, part.height_in, widget)
+            rect, title_h = _axes_rect(x, y_top, w_in, part.height_in, widget,
+                                       sheet)
             # A widget is titled where it starts and nowhere else: the pages a
             # long table runs onto carry no heading at all. The space stays
             # reserved so every part lays out to the same capacity and the type
             # does not grow on the continuation pages.
             if title_h and not part.part:
-                fig.text(x / PAGE_W, 1 - (y_top + 0.16) / PAGE_H, widget.title,
+                fig.text(x / sheet.w, 1 - (y_top + 0.16) / sheet.h, widget.title,
                          fontsize=12, fontweight="bold", color=theme.INK,
                          va="center")
             pm = _model(widget, results, cache)
@@ -345,7 +451,7 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
             draw(ax, pm)
             x += w_in + GUTTER
 
-    _footer(fig, as_of, page_no, total)
+    _footer(fig, as_of, page_no, total, sheet)
     return fig
 
 
@@ -357,13 +463,14 @@ def dashboard_to_pdf_bytes(dashboard: Dashboard, results: dict,
     from matplotlib.backends.backend_pdf import PdfPages
 
     cache: dict = {}
-    pages = paginate(dashboard.rows, results, cache) or [[]]
+    sheet = choose_page(dashboard, results, cache)
+    pages = paginate(dashboard.rows, results, cache, sheet) or [[]]
     buf = io.BytesIO()
 
     with PdfPages(buf) as pdf:
         for page_no, page in enumerate(pages, start=1):
             fig = _render_page(dashboard, page, results, rt, as_of,
-                               page_no, len(pages), cache)
+                               page_no, len(pages), cache, sheet)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -379,23 +486,38 @@ def dashboard_page_png_bytes(dashboard: Dashboard, results: dict,
     import matplotlib.pyplot as plt
 
     cache: dict = {}
-    pages = paginate(dashboard.rows, results, cache) or [[]]
+    sheet = choose_page(dashboard, results, cache)
+    pages = paginate(dashboard.rows, results, cache, sheet) or [[]]
     index = max(1, min(page_no, len(pages)))
     fig = _render_page(dashboard, pages[index - 1], results, rt, as_of,
-                       index, len(pages), cache)
+                       index, len(pages), cache, sheet)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
     return buf.getvalue()
 
 
+def report_plan(dashboard: Dashboard,
+                results: Optional[dict] = None) -> tuple[Page, int]:
+    """The sheet this dashboard prints on, and how many of them it fills.
+
+    Both together, over one cache: settling the sheet and counting the pages
+    each resolve every table on the dashboard, and asking twice formats every
+    row of every table a second time for an answer already known.
+    """
+    cache: dict = {}
+    sheet = choose_page(dashboard, results, cache)
+    return sheet, len(paginate(dashboard.rows, results, cache, sheet) or [[]])
+
+
 def page_count(dashboard: Dashboard, results: Optional[dict] = None) -> int:
     """How many pages this dashboard prints on.
 
     Pass the results to count truthfully: a table longer than its row adds
-    pages, and only the data says how many.
+    pages, and only the data says how many — and on a turned page, fewer rows
+    fit down it, so the sheet has to be settled before the pages are counted.
     """
-    return len(paginate(dashboard.rows, results) or [[]])
+    return report_plan(dashboard, results)[1]
 
 
 def pdf_filename(dashboard: Dashboard, as_of: datetime) -> str:

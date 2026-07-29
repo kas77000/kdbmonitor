@@ -528,6 +528,27 @@ report: it stops there and the last chunk says `showing 950 of 20,000 rows`.
 Nothing is ever dropped silently. If you hit that, narrow the query or lower the
 dataset's **Max rows** — a thousand-page PDF helps nobody.
 
+**A wide table turns the page.** Columns are bound by the width of the sheet the
+same way rows are bound by its height, and text given less room than it needs
+does not shrink to suit — it prints over the column beside it. So the type size
+is settled by the columns as well as the rows, whichever binds harder: a table
+of a dozen columns sets smaller rather than colliding.
+
+Where even that is not enough, **Printed page** decides which way up the report
+comes out. On `auto` — the default — it prints portrait until a table cannot be
+set legibly across it, and then the whole report turns landscape: A4 turned is
+48% wider, which is worth roughly four more columns. The choice is made once for
+the document, never page by page, so a reader is not rotating one report back
+and forth; the Dashboards page says which way it will print and why (*turned
+landscape to fit a table's columns*). Turning costs height, so a turned report
+can run to more pages — that is the trade being made, legible type for paper.
+
+Set it to `portrait` or `landscape` to decide yourself. Only the data knows how
+wide a column really is, so `auto` is resolved when the PDF is generated; the
+Layout editor, having no results, plans against portrait. A table too wide even
+for a turned page has nothing left to give, so its cells are cut with an
+ellipsis — `ORD…` — which at least says it was cut.
+
 ### Sharing
 
 Each card has its own **Export** button (one dashboard, named after it), and

@@ -69,6 +69,11 @@ class Dashboard:
     # dashboard over a historical-only feed says so once here rather than
     # offering a period that resolves to no server.
     periods: str = "both"        # both | realtime | historical
+    # Which way up the PDF prints. 'auto' keeps portrait until a table's columns
+    # will not fit legibly across it, at which point the whole report turns —
+    # the two explicit settings are there for when you would rather decide than
+    # be decided for.
+    orientation: str = "auto"    # auto | portrait | landscape
     time_context: dict = field(default_factory=_default_time_context)
     datasets: list[Dataset] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
@@ -142,6 +147,7 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         description=d.get("description", ""),
         refresh_secs=d.get("refresh_secs", 15),
         periods=d.get("periods", "both"),
+        orientation=d.get("orientation", "auto"),
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],

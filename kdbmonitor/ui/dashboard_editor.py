@@ -16,7 +16,9 @@ from kdbmonitor.core.dashboard_models import (
     Component, Dashboard, Dataset, Row, Transform, Widget,
     transform_from_dict, transform_to_dict, widget_from_dict, widget_to_dict,
 )
-from kdbmonitor.core.dashpdf import plan_rows
+from kdbmonitor.core.dashpdf import (
+    ORIENTATION_LABELS, ORIENTATIONS, choose_page, plan_rows,
+)
 from kdbmonitor.core.dataset import (
     is_marketdata_env, run_datasets, standalone_side, trace_datasets,
 )
@@ -1225,14 +1227,21 @@ def _render_layout(store, draft: Dashboard) -> None:
 
     # Which page each row prints on, from the same pagination the PDF uses, so
     # the layout can be arranged here rather than by generating and re-checking.
-    placements = {p.index: p for p in plan_rows(draft.rows)}
+    # The editor has no results, so 'auto' plans against portrait — the page it
+    # would print on today. A dashboard pinned to landscape plans against that.
+    sheet = choose_page(draft)
+    placements = {p.index: p for p in plan_rows(draft.rows, sheet)}
     total_pages = max((p.page for p in placements.values()), default=1)
     if draft.rows:
+        turns = (" On 'auto' a table too wide for the page turns the whole "
+                 "report landscape, which shortens every page and so can add "
+                 "more." if draft.orientation == "auto" else "")
         st.caption(f":material/picture_as_pdf: Prints on **{total_pages}** A4 "
-                   f"page(s) at least. Row heights are printed inches — reorder "
-                   f"or resize rows to change where the page breaks fall. A "
-                   f"table with more rows than its slot holds carries on over "
-                   f"further pages, which only the data can tell you.")
+                   f"{sheet.orientation} page(s) at least. Row heights are "
+                   f"printed inches — reorder or resize rows to change where "
+                   f"the page breaks fall. A table with more rows than its slot "
+                   f"holds carries on over further pages, which only the data "
+                   f"can tell you.{turns}")
 
     for r_i, row in enumerate(list(draft.rows)):
         placed = placements.get(r_i)
@@ -1385,7 +1394,7 @@ def render(store, mgr) -> None:
         draft.description = head[1].text_input("Description",
                                                value=draft.description)
 
-        p = st.columns([2.4, 6.6], vertical_alignment="center")
+        p = st.columns([2.4, 4.2, 2.4], vertical_alignment="center")
         modes = list(PERIOD_MODES)
         draft.periods = p[0].selectbox(
             "Periods offered", modes,
@@ -1396,6 +1405,18 @@ def render(store, mgr) -> None:
                  "historical twin. A dashboard built over one side alone says "
                  "so here, and is never offered the period it cannot answer.")
         p[1].caption(_periods_hint(draft, store))
+        ways = list(ORIENTATIONS)
+        draft.orientation = p[2].selectbox(
+            "Printed page", ways,
+            index=ways.index(draft.orientation
+                             if draft.orientation in ways else "auto"),
+            format_func=lambda o: ORIENTATION_LABELS[o],
+            help="A wide table has to fit its columns across the page, and text "
+                 "given too little room collides rather than shrinks. On 'auto' "
+                 "the report prints portrait until a table cannot be printed "
+                 "legibly across it, and then the whole report turns. Only the "
+                 "data can say how wide a column really is, so the decision is "
+                 "made when the PDF is generated, not here.")
 
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.

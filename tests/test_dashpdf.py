@@ -2,10 +2,13 @@ from datetime import date, datetime
 
 import pandas as pd
 
-from kdbmonitor.core.dashboard_models import Dashboard, Row, Widget
+from kdbmonitor.core.dashboard_models import (
+    Dashboard, Row, Widget, dashboard_from_dict, dashboard_to_dict,
+)
 from kdbmonitor.core.dashpdf import (
-    CONTENT_H_FIRST, dashboard_page_png_bytes, dashboard_to_pdf_bytes,
-    page_count, page_limit, paginate, pdf_filename, plan_rows, split_rows,
+    CONTENT_H_FIRST, LANDSCAPE, PORTRAIT, choose_page, dashboard_page_png_bytes,
+    dashboard_to_pdf_bytes, page_count, page_limit, paginate, pdf_filename,
+    plan_rows, split_rows,
 )
 from kdbmonitor.core.dataset import DatasetResult
 from kdbmonitor.core.timectx import ResolvedTime
@@ -460,3 +463,108 @@ def test_no_generated_stamp_survives_anywhere_on_the_page():
 
     for gone in ("Generated", "KdbMonitor", "by market"):
         assert gone not in page_text
+
+
+# --- orientation: a table has to fit across the page, not only down it -------
+
+WIDE_COLS = ["sym", "side", "orderId", "qty", "filledQty", "avgPrice",
+             "limitPrice", "venue", "trader", "status", "startTime", "endTime"]
+WIDE_VALS = ["RELIANCE.IN", "BUY", "ORD-00012345", "125,000", "118,400",
+             "1,284.55", "1,290.00", "NSE-MAIN", "jdoe", "PARTIAL",
+             "09:15:03.221", "15:29:58.004"]
+
+
+def _wide_results(n_cols: int, n_rows: int = 6) -> dict:
+    df = pd.DataFrame([dict(zip(WIDE_COLS[:n_cols], WIDE_VALS[:n_cols]))
+                       for _ in range(n_rows)])
+    return {"orders": DatasetResult("orders", df, "q", None, row_count=n_rows)}
+
+
+def _wide_dash(n_cols: int, orientation: str = "auto") -> Dashboard:
+    d = _dash([Row(widgets=[Widget(type="table", dataset="orders")],
+                   height_in=2.5)])
+    d.orientation = orientation
+    return d
+
+
+def test_a_table_that_fits_across_the_page_leaves_it_upright():
+    assert choose_page(_wide_dash(4), _wide_results(4)) is PORTRAIT
+
+
+def test_a_table_too_wide_for_the_page_turns_it():
+    """Twelve columns down an A4 portrait page printed on top of each other."""
+    assert choose_page(_wide_dash(12), _wide_results(12)) is LANDSCAPE
+
+
+def test_the_turn_is_decided_for_the_whole_report_not_page_by_page():
+    """One wide table turns every page — a reader should not have to rotate the
+    document back and forth through a single report."""
+    wide = Row(widgets=[Widget(type="table", dataset="orders")], height_in=2.5)
+    narrow = Row(widgets=[Widget(type="kpi", dataset="orders",
+                                 spec={"column": "qty", "agg": "count"})],
+                 height_in=2.0)
+    d = _dash([narrow, wide, narrow])
+    assert choose_page(d, _wide_results(12)) is LANDSCAPE
+
+
+def test_an_explicit_orientation_is_not_second_guessed():
+    assert choose_page(_wide_dash(12, "portrait"), _wide_results(12)) is PORTRAIT
+    assert choose_page(_wide_dash(4, "landscape"), _wide_results(4)) is LANDSCAPE
+
+
+def test_auto_stays_upright_when_there_is_no_data_to_measure():
+    """The editor has no results, so it plans against the page it prints on
+    today rather than guessing at one."""
+    assert choose_page(_wide_dash(12)) is PORTRAIT
+
+
+def test_a_dashboard_with_no_orientation_saved_still_prints():
+    """Dashboards stored before the setting existed carry no 'orientation'."""
+    d = dashboard_from_dict({"name": "Old", "rows": []})
+    assert d.orientation == "auto"
+    assert choose_page(d, _wide_results(12)) is PORTRAIT
+
+
+def test_orientation_survives_a_round_trip():
+    d = _wide_dash(4, "landscape")
+    assert dashboard_from_dict(dashboard_to_dict(d)).orientation == "landscape"
+
+
+def test_a_turned_page_is_shorter_and_so_holds_fewer_rows():
+    rows = [Row(height_in=2.0) for _ in range(6)]
+    assert len(paginate(rows, sheet=LANDSCAPE)) > len(paginate(rows))
+    assert page_limit(2, LANDSCAPE) < page_limit(2, PORTRAIT)
+
+
+def test_the_editor_plans_against_the_page_it_was_pinned_to():
+    rows = [Row(height_in=2.0) for _ in range(6)]
+    upright = max(p.page for p in plan_rows(rows, PORTRAIT))
+    turned = max(p.page for p in plan_rows(rows, LANDSCAPE))
+    assert turned > upright
+
+
+def test_a_turned_report_renders_on_turned_paper():
+    d = _wide_dash(12)
+    png = dashboard_page_png_bytes(d, _wide_results(12), RT, AS_OF)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    width = int.from_bytes(png[16:20], "big")
+    height = int.from_bytes(png[20:24], "big")
+    assert width > height
+
+
+def test_an_upright_report_still_renders_upright():
+    png = dashboard_page_png_bytes(_wide_dash(4), _wide_results(4), RT, AS_OF)
+    assert int.from_bytes(png[16:20], "big") < int.from_bytes(png[20:24], "big")
+
+
+def test_the_pdf_of_a_wide_dashboard_is_produced_at_all():
+    pdf = dashboard_to_pdf_bytes(_wide_dash(12), _wide_results(12), RT, AS_OF)
+    assert pdf.startswith(b"%PDF")
+
+
+def test_the_page_count_is_taken_on_the_page_it_will_print_on():
+    """Counted portrait, a turned report is counted on a page it never uses."""
+    d = _wide_dash(12)
+    results = _wide_results(12)
+    assert page_count(d, results) == len(
+        paginate(d.rows, results, {}, LANDSCAPE))

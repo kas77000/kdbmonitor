@@ -6,7 +6,8 @@ import pytest
 from kdbmonitor.core import theme
 from kdbmonitor.core.plotmodel import PlotModel, Series
 from kdbmonitor.core.render_mpl import (
-    LINE_SPACING, TABLE_FONT, TABLE_MIN_FONT, _column_widths, draw, table_layout,
+    LINE_SPACING, TABLE_FONT, TABLE_MIN_FONT, _column_widths, draw,
+    table_fit_font, table_layout,
 )
 
 
@@ -133,6 +134,105 @@ def test_columns_are_shared_out_by_how_wide_their_content_is():
                             [["RELIANCE.IN", "buy"], ["0005.HK", "sellshort"]])
     assert widths[0] > widths[1]
     assert sum(widths) == pytest.approx(1.0)
+
+
+# --- width: columns have to fit across the page, not just down it -----------
+
+WIDE_COLUMNS = ["sym", "side", "orderId", "qty", "filledQty", "avgPrice",
+                "limitPrice", "venue", "trader", "status", "startTime",
+                "endTime"]
+WIDE_ROW = ["RELIANCE.IN", "BUY", "ORD-00012345", "125,000", "118,400",
+            "1,284.55", "1,290.00", "NSE-MAIN", "jdoe", "PARTIAL",
+            "09:15:03.221", "15:29:58.004"]
+
+
+def _wide_model(n_cols: int, n_rows: int = 6) -> PlotModel:
+    return PlotModel(kind="table", columns=WIDE_COLUMNS[:n_cols],
+                     rows=[list(WIDE_ROW[:n_cols]) for _ in range(n_rows)])
+
+
+def _drawn(pm: PlotModel, width_in: float, height_in: float = 2.5):
+    """The table as it really prints in ``width_in`` of page.
+
+    Under the report's own font: the widths a column is sized against are the
+    widths of the type it will actually be set in, so measuring under
+    matplotlib's default instead would be measuring a page nobody prints.
+    """
+    theme.apply_seaborn_theme()
+    fig = plt.figure(figsize=(width_in + 1.2, 11.69))
+    ax = fig.add_axes([0.6 / (width_in + 1.2), 0.3,
+                       width_in / (width_in + 1.2), height_in / 11.69])
+    draw(ax, pm)
+    fig.canvas.draw()
+    return fig, ax
+
+
+def _worst_overflow(fig, ax, columns, rows, width_in) -> float:
+    """Widest cell text as a multiple of the column box it was given.
+
+    Over 1.0 is the failure this is all about: matplotlib neither wraps nor
+    clips, so text bigger than its column simply prints over the next one.
+    """
+    shares = _column_widths(columns, rows)
+    renderer = fig.canvas.get_renderer()
+    return max(cell.get_text().get_window_extent(renderer).width / fig.dpi
+               / (shares[col] * width_in)
+               for (_, col), cell in ax.tables[0].get_celld().items())
+
+
+def test_fit_font_falls_as_columns_are_added():
+    wide = 7.07                                     # A4 portrait, less margins
+    sizes = [table_fit_font(WIDE_COLUMNS[:n], [WIDE_ROW[:n]], wide)
+             for n in (4, 8, 12)]
+    assert sizes == sorted(sizes, reverse=True)
+
+
+def test_a_wider_page_fits_the_same_columns_at_a_bigger_size():
+    cols, rows = WIDE_COLUMNS, [WIDE_ROW]
+    assert (table_fit_font(cols, rows, 10.49)                # landscape
+            > table_fit_font(cols, rows, 7.07))              # portrait
+
+
+def test_a_wide_table_shrinks_its_type_rather_than_overlapping():
+    """Twelve columns printed at 10.5pt ran 1.33x over their boxes."""
+    pm = _wide_model(12)
+    fig, ax = _drawn(pm, 7.07)
+    assert _worst_overflow(fig, ax, pm.columns, pm.rows, 7.07) <= 1.0
+    assert ax.tables[0].get_celld()[(0, 0)].get_fontsize() < TABLE_FONT
+    plt.close(fig)
+
+
+def test_a_table_that_fits_keeps_the_preferred_size():
+    """Shrinking to fit must not cost every table its type size."""
+    pm = _wide_model(4)
+    fig, ax = _drawn(pm, 7.07)
+    assert ax.tables[0].get_celld()[(0, 0)].get_fontsize() == TABLE_FONT
+    plt.close(fig)
+
+
+def test_type_never_shrinks_below_the_legible_floor():
+    pm = _wide_model(12)
+    fig, ax = _drawn(pm, 2.0)                        # far too narrow for it
+    assert ax.tables[0].get_celld()[(0, 0)].get_fontsize() >= TABLE_MIN_FONT
+    plt.close(fig)
+
+
+def test_text_too_wide_even_at_the_floor_is_cut_and_says_so():
+    """Past the floor there is no size left to give, so the choice is between a
+    value cut short — which admits it — and columns printed over each other."""
+    pm = _wide_model(12)
+    fig, ax = _drawn(pm, 2.0)
+    printed = " ".join(c.get_text().get_text()
+                       for c in ax.tables[0].get_celld().values())
+    assert "…" in printed
+    assert "ORD-00012345" not in printed
+    assert _worst_overflow(fig, ax, pm.columns, pm.rows, 2.0) <= 1.0
+    plt.close(fig)
+
+
+def test_a_table_with_no_geometry_is_not_trimmed():
+    """Off a figure there is no width to fit to, so nothing is cut on a guess."""
+    assert table_fit_font(["sym"], [["RELIANCE.IN"]], 0.0) == TABLE_FONT
 
 
 def test_highlighting_still_lands_on_the_right_row_after_rows_are_dropped():
