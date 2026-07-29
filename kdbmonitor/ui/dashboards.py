@@ -94,18 +94,20 @@ def unique_dashboard_name(name: str, taken) -> str:
 ROW_PX = 35          # Streamlit's data-editor row height, header included
 
 
-def table_height(n_rows: int, allotted_px: int) -> "int | str":
-    """Height for st.dataframe: a pixel cap, or "content" to fit the rows.
+def table_height(n_rows: int, allotted_px: int) -> int:
+    """Height in pixels for st.dataframe: what the rows need, capped by the slot.
 
     Forcing the row's printed height on a short table pads it with blank filler
-    rows, which reads as missing data. Only constrain the height when the table
-    is actually taller than its slot and therefore needs to scroll.
+    rows, which reads as missing data. So a table that fits gets exactly the
+    height its rows come to, and only one taller than its slot is constrained —
+    there the cap is what makes it scroll rather than lose rows.
 
-    Returns "content" rather than None — st.dataframe rejects None, accepting
-    only a positive int, "stretch" or "content".
+    A pixel count rather than st.dataframe's "content", which Streamlit only
+    learned in 1.46: this is the same number, arrived at here instead of there,
+    and every version takes it. An empty table keeps a row's worth of room, so
+    its empty state has somewhere to print.
     """
-    natural = ROW_PX * (n_rows + 1) + 3
-    return allotted_px if natural > allotted_px else "content"
+    return min(ROW_PX * (max(n_rows, 1) + 1) + 3, allotted_px)
 
 
 # --- widget rendering ------------------------------------------------------

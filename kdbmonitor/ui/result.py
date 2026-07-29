@@ -66,24 +66,27 @@ def render(store) -> None:
 
     st.dataframe(df, use_container_width=True, height=480)
 
-    with st.container(horizontal=True):
-        st.download_button("Excel", data=df_to_excel_bytes(df),
+    # Narrow columns rather than a horizontal container, which needs Streamlit
+    # 1.46. Each control still prints at the width of its own label; the last
+    # column is the empty remainder that keeps them packed to the left.
+    act = st.columns([1, 1, 1.1, 1.1, 5], vertical_alignment="bottom")
+    act[0].download_button("Excel", data=df_to_excel_bytes(df),
                            file_name=f"{_slug(name)}.xlsx", mime=_XLSX_MIME,
                            icon=":material/download:")
-        st.download_button("CSV", data=df_to_csv(df), file_name=f"{_slug(name)}.csv",
+    act[1].download_button("CSV", data=df_to_csv(df), file_name=f"{_slug(name)}.csv",
                            mime="text/csv", icon=":material/download:")
-        with st.popover("Copy", icon=":material/content_copy:"):
-            by_col, by_table = st.tabs(["Column", "Whole table"])
-            with by_col:
-                c = st.columns([2, 2], vertical_alignment="bottom")
-                col = c[0].selectbox("Column", list(df.columns), key="res_col")
-                fmt = c[1].selectbox("Format", list(_FMT_LABELS),
-                                     format_func=lambda f: _FMT_LABELS[f], key="res_fmt")
-                distinct = st.checkbox("Distinct only", value=True, key="res_distinct")
-                st.code(column_as_text(df[col].tolist(), fmt, distinct) or "(empty)",
-                        language=None)
-            with by_table:
-                st.code(df_to_tsv(df), language=None)
-        if st.button("Clear", icon=":material/delete:", help="Forget this result"):
-            last_results.pop(aid, None)
-            st.rerun()
+    with act[2].popover("Copy", icon=":material/content_copy:"):
+        by_col, by_table = st.tabs(["Column", "Whole table"])
+        with by_col:
+            c = st.columns([2, 2], vertical_alignment="bottom")
+            col = c[0].selectbox("Column", list(df.columns), key="res_col")
+            fmt = c[1].selectbox("Format", list(_FMT_LABELS),
+                                 format_func=lambda f: _FMT_LABELS[f], key="res_fmt")
+            distinct = st.checkbox("Distinct only", value=True, key="res_distinct")
+            st.code(column_as_text(df[col].tolist(), fmt, distinct) or "(empty)",
+                    language=None)
+        with by_table:
+            st.code(df_to_tsv(df), language=None)
+    if act[3].button("Clear", icon=":material/delete:", help="Forget this result"):
+        last_results.pop(aid, None)
+        st.rerun()

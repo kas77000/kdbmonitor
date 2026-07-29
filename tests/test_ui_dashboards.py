@@ -251,23 +251,25 @@ def test_widget_spec_forms_exist_for_every_renderable_type():
 
 
 def test_a_short_table_is_not_padded_with_blank_rows():
-    # 3 rows need ~143px; a 1.9in slot is 182px, so let it fit its content
-    assert dashboards.table_height(3, dashboards.row_height_px(1.9)) == "content"
+    # 3 rows and a header come to 143px; a 1.9in slot is 182px, so it fits and
+    # gets the 143 rather than being stretched to fill the slot.
+    assert dashboards.table_height(3, dashboards.row_height_px(1.9)) == 143
 
 
 def test_a_long_table_is_constrained_so_it_scrolls():
     assert dashboards.table_height(50, dashboards.row_height_px(1.9)) == 182
 
 
-def test_an_empty_table_is_not_constrained():
-    assert dashboards.table_height(0, 500) == "content"
+def test_an_empty_table_keeps_room_for_its_empty_state():
+    assert dashboards.table_height(0, 500) == dashboards.table_height(1, 500)
 
 
 def test_table_height_is_a_value_streamlit_accepts():
-    """st.dataframe rejects None; only a positive int, "stretch" or "content"."""
-    from streamlit.elements.lib.layout_utils import validate_height
+    """st.dataframe takes a positive int on every version; "content" and
+    "stretch" need 1.46, which is above the floor in requirements.txt."""
     for n in (0, 3, 50):
-        validate_height(dashboards.table_height(n, 182), allow_content=True)
+        height = dashboards.table_height(n, 182)
+        assert isinstance(height, int) and height > 0
 
 
 # --- unfilled inputs --------------------------------------------------------
