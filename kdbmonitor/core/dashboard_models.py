@@ -233,7 +233,7 @@ def _shape_from_dict(d: Optional[dict]) -> Optional[FileShape]:
         header_row=_int(d.get("header_row"), 0),
         first_col=_int(d.get("first_col"), 0),
         data_start=_int(d.get("data_start"), 1),
-        null_markers=null_markers,
+        null_markers=list(null_markers),
         columns=[_column_from_dict(c) for c in _dict_list(d.get("columns"))],
         cells=[_cell_from_dict(c) for c in _dict_list(d.get("cells"))])
 

@@ -118,3 +118,15 @@ def test_null_markers_given_as_a_string_do_not_become_single_characters():
     back = dashboard_from_dict({"name": "X", "rows": [], "datasets": [
         {"name": "d", "source": "file", "shape": {"null_markers": "N/A"}}]})
     assert back.datasets[0].shape.null_markers != ["N", "/", "A"]
+
+
+def test_a_stored_shape_does_not_alias_the_dict_it_was_read_from():
+    """Reading must not hand back a list the caller still holds: editing the
+    dashboard would then write into the bundle it was imported from."""
+    raw = {"name": "X", "rows": [], "datasets": [
+        {"name": "d", "source": "file", "shape": {"null_markers": ["", "X"]}}]}
+    shape = dashboard_from_dict(raw).datasets[0].shape
+
+    shape.null_markers.append("MUTATED")
+
+    assert raw["datasets"][0]["shape"]["null_markers"] == ["", "X"]
