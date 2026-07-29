@@ -24,6 +24,57 @@ class Transform:
     params: dict = field(default_factory=dict)
 
 
+# What a cell has to say to be read as missing. Matched case-insensitively after
+# trimming. Editable per dataset because a column in which "-" is a real
+# category would otherwise be silently blanked — quiet data loss, worth a
+# control to prevent.
+DEFAULT_NULL_MARKERS = ["", "NA", "N/A", "NaN", "NULL", "NONE", "-", "--", "#N/A"]
+
+COLUMN_TYPES = ("date", "number", "integer", "text", "boolean")
+
+
+@dataclass
+class ColumnSpec:
+    """One column an uploaded file has to provide."""
+    name: str                    # the header text the file must carry
+    type: str = "text"           # one of COLUMN_TYPES
+    required: bool = True        # a column no widget references need not arrive
+    allow_null: bool = True      # false: a blank in this column is a refusal
+
+
+@dataclass
+class NamedCell:
+    """A single cell picked out of the file, outside the table.
+
+    Addressed against the raw grid as it sits on disk — the grid the designer
+    clicked to create it. Orientation applies to the table region only; if it
+    applied here too, turning on vertical headers would move every cell already
+    named.
+    """
+    name: str                    # "Report date"
+    row: int = 0                 # 0-based
+    col: int = 0                 # 0-based
+    type: str = "text"
+    allow_null: bool = True
+
+
+@dataclass
+class FileShape:
+    """Where the table sits in an uploaded file, and what it must contain.
+
+    Nothing here is ever guessed at run time. The header line is declared, and a
+    file whose header is elsewhere is refused rather than searched.
+    """
+    header_axis: str = "row"     # row = headers across | column = headers down
+    header_row: int = 0          # 0-based line carrying the headers
+    first_col: int = 0           # 0-based column the table starts at
+    data_start: int = 1          # 0-based first data line
+    null_markers: list[str] = field(default_factory=lambda:
+                                    list(DEFAULT_NULL_MARKERS))
+    columns: list[ColumnSpec] = field(default_factory=list)
+    cells: list[NamedCell] = field(default_factory=list)
+
+
 @dataclass
 class Dataset:
     name: str                    # referenced by widgets and by {{name.column}}
@@ -40,6 +91,14 @@ class Dataset:
     extra_connections: list[str] = field(default_factory=list)  # raw only
     transforms: list[Transform] = field(default_factory=list)
     max_rows: int = 5000
+    # --- file-backed datasets -------------------------------------------
+    # A file dataset ignores env/time_mode/mode/table/filters/raw_qsql above:
+    # they describe a server, and there is no server. transforms and max_rows
+    # are NOT ignored — they apply to an uploaded frame identically, which is
+    # why a file dataset needs no shaping vocabulary of its own.
+    source: str = "kdb"          # kdb | file
+    shape: Optional[FileShape] = None       # file only
+    file_label: str = ""         # the prompt on the upload box
 
 
 @dataclass
@@ -74,6 +133,9 @@ class Dashboard:
     # the two explicit settings are there for when you would rather decide than
     # be decided for.
     orientation: str = "auto"    # auto | portrait | landscape
+    # Where this dashboard's data comes from. A file dashboard has no
+    # environment, no period and no refresh interval — see the spec, §8.1.
+    source: str = "kdb"          # kdb | file
     time_context: dict = field(default_factory=_default_time_context)
     datasets: list[Dataset] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
@@ -117,6 +179,37 @@ def widget_from_dict(d: dict) -> Widget:
                   width=d.get("width", 1.0))
 
 
+def _column_from_dict(d: dict) -> ColumnSpec:
+    return ColumnSpec(name=d.get("name", ""), type=d.get("type", "text"),
+                      required=bool(d.get("required", True)),
+                      allow_null=bool(d.get("allow_null", True)))
+
+
+def _cell_from_dict(d: dict) -> NamedCell:
+    return NamedCell(name=d.get("name", ""), row=int(d.get("row", 0)),
+                     col=int(d.get("col", 0)), type=d.get("type", "text"),
+                     allow_null=bool(d.get("allow_null", True)))
+
+
+def _shape_from_dict(d: Optional[dict]) -> Optional[FileShape]:
+    """A stored shape, field by field — never ``FileShape(**d)``.
+
+    Splatting a stored dict would make an old dashboard carrying a field this
+    version has since dropped raise on load, which is the one thing reading
+    stored data must never do.
+    """
+    if not d:
+        return None
+    return FileShape(
+        header_axis=d.get("header_axis", "row"),
+        header_row=int(d.get("header_row", 0)),
+        first_col=int(d.get("first_col", 0)),
+        data_start=int(d.get("data_start", 1)),
+        null_markers=list(d.get("null_markers") or DEFAULT_NULL_MARKERS),
+        columns=[_column_from_dict(c) for c in d.get("columns", [])],
+        cells=[_cell_from_dict(c) for c in d.get("cells", [])])
+
+
 def _dataset_from_dict(d: dict) -> Dataset:
     return Dataset(
         name=d["name"],
@@ -130,6 +223,9 @@ def _dataset_from_dict(d: dict) -> Dataset:
         extra_connections=list(d.get("extra_connections", [])),
         transforms=[transform_from_dict(t) for t in d.get("transforms", [])],
         max_rows=d.get("max_rows", 5000),
+        source=d.get("source", "kdb"),
+        shape=_shape_from_dict(d.get("shape")),
+        file_label=d.get("file_label", ""),
     )
 
 
@@ -148,6 +244,7 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         refresh_secs=d.get("refresh_secs", 15),
         periods=d.get("periods", "both"),
         orientation=d.get("orientation", "auto"),
+        source=d.get("source", "kdb"),
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],
