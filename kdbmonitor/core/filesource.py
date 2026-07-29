@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import dataclass
+from typing import Optional
+
+from kdbmonitor.core.dashboard_models import FileShape
 
 
 def read_grid(data: bytes) -> list[list[str]]:
@@ -31,3 +35,77 @@ def read_grid(data: bytes) -> list[list[str]]:
     rows = [row for row in csv.reader(io.StringIO(text))]
     width = max((len(r) for r in rows), default=0)
     return [r + [""] * (width - len(r)) for r in rows]
+
+
+@dataclass
+class Problem:
+    """One reason a file was refused, in the file's own terms.
+
+    A refusal has to be actionable by whoever holds the file, so it names the
+    column, says what was expected, and points at where to look.
+    """
+    message: str
+    column: str = ""             # "" for problems about the file as a whole
+    line: Optional[int] = None   # 1-based, along whichever axis records run
+
+
+def _axis_word(shape: FileShape) -> str:
+    """What a record is called in this file: a line, or a column.
+
+    With headers running down the page each *column* is a record, so calling
+    position 14 a "line" would send the reader to the wrong place entirely.
+    """
+    return "line" if shape.header_axis == "row" else "column"
+
+
+def orient(grid: list[list[str]], axis: str) -> list[list[str]]:
+    """The grid with headers running across it.
+
+    Headers down the first column cost one transpose rather than a second set of
+    rules: every index in ``FileShape`` refers to the grid after this.
+    """
+    if axis != "column":
+        return grid
+    return [list(row) for row in zip(*grid)]
+
+
+def header_columns(grid: list[list[str]],
+                   shape: FileShape) -> tuple[list[tuple[str, int]], list[Problem]]:
+    """``(name, column index)`` for every named column on the declared line.
+
+    The index is kept because dropping blank headers renumbers the columns, and
+    the data underneath still lives at the original positions.
+    """
+    word = _axis_word(shape)
+    if shape.header_row >= len(grid):
+        return [], [Problem(
+            f"this dashboard expects its headers on {word} "
+            f"{shape.header_row + 1}, but the file has only {len(grid)} "
+            f"{word}(s)")]
+
+    row = grid[shape.header_row]
+    found = [(str(name).strip(), i)
+             for i, name in enumerate(row)
+             if i >= shape.first_col and str(name).strip()]
+
+    if not found:
+        shown = ", ".join(c for c in row[:6] if str(c).strip()) or "(empty)"
+        return [], [Problem(
+            f"this dashboard expects its headers on {word} "
+            f"{shape.header_row + 1}; that {word} of your file is blank: {shown}")]
+
+    duplicates = sorted({n for n, _ in found
+                         if [x for x, _ in found].count(n) > 1})
+    if duplicates:
+        return [], [Problem(
+            f"two columns are called '{d}' — rename one, or neither can be "
+            f"referenced", column=d) for d in duplicates]
+
+    expected = {c.name for c in shape.columns if c.required}
+    if expected and not expected & {n for n, _ in found}:
+        shown = ", ".join(n for n, _ in found[:6])
+        return found, [Problem(
+            f"this dashboard expects its headers on {word} "
+            f"{shape.header_row + 1}; that {word} of your file reads: {shown}")]
+
+    return found, []
