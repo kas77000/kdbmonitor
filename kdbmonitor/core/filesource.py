@@ -117,3 +117,34 @@ def header_columns(grid: list[list[str]],
             f"{shape.header_row + 1}; that {word} of your file reads: {shown}")]
 
     return found, []
+
+
+def data_records(grid: list[list[str]], shape: FileShape,
+                 columns: list[tuple[str, int]]) -> tuple[list[tuple[int, list[str]]], int]:
+    """The table's rows as ``(1-based file position, cells)``, and how many were
+    blank.
+
+    The position is carried rather than recomputed because blank rows are
+    dropped: a refusal has to point into the file the reader has open, not into
+    the rows that happened to survive.
+
+    Blankness is judged only on the columns being taken. A row empty across the
+    table but carrying a note in some column this dashboard ignores is still an
+    empty row — the note is not data anyone asked for.
+
+    ``data_start`` is clamped to zero before it drives the loop: a negative
+    value is not out of range to Python's list indexing, it is a request to
+    read backwards from the end of the grid, which would splice the header
+    back in as a "data" row under a nonsensical line number instead of failing
+    loudly.
+    """
+    records: list[tuple[int, list[str]]] = []
+    skipped = 0
+    for offset in range(max(0, shape.data_start), len(grid)):
+        row = grid[offset]
+        cells = [row[i] if i < len(row) else "" for _, i in columns]
+        if not any(str(c).strip() for c in cells):
+            skipped += 1
+            continue
+        records.append((offset + 1, cells))
+    return records, skipped
