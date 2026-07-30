@@ -104,6 +104,29 @@ class Series:
 
 
 @dataclass
+class Reference:
+    """A dashed line a chart is meant to be read against.
+
+    A cumulated curve says little without the pace a flat schedule would have
+    traced; a bar of shares says little without the average bar. Drawing either
+    as an ordinary series makes a reference look like data, so it is carried
+    apart and drawn apart.
+    """
+    label: str = ""
+    value: Optional[float] = None                       # a level
+    values: list = field(default_factory=list)          # or a curve
+    dash: str = "dash"
+
+
+@dataclass
+class Band:
+    """A shaded span behind the plot — a pre-open stretch, a lunch break."""
+    start: Any = None
+    end: Any = None
+    label: str = ""
+
+
+@dataclass
 class PlotModel:
     kind: str                       # widget type, or "error"
     title: str = ""
@@ -131,6 +154,8 @@ class PlotModel:
     bins: int = 20                  # hist only
     donut: bool = False             # pie only
     regression: bool = False        # scatter only
+    references: list[Reference] = field(default_factory=list)  # bar/line/scatter
+    bands: list[Band] = field(default_factory=list)             # bar/line/scatter
 
     # heatmap
     matrix: list[list[float]] = field(default_factory=list)
@@ -290,6 +315,115 @@ def _xy_series(df: pd.DataFrame, spec: dict) -> list[Series]:
             for i, y in enumerate(ys)]
 
 
+def _reference_label(kind: str, spec: dict) -> str:
+    given = spec.get("label")
+    if isinstance(given, str) and given.strip():
+        return given
+    if kind == "quantile":
+        return f"p{float(spec.get('value', 0.5)) * 100:g}"
+    return kind
+
+
+def _one_reference(df: pd.DataFrame, spec: dict, y_values: pd.Series) -> Optional[Reference]:
+    """Resolve a single reference spec, or None if it cannot be drawn.
+
+    Every way a reference can be malformed — a value that is not a number, a
+    column that does not exist, a statistic taken over nothing — is a reason to
+    drop it, never to raise: a mistyped reference must not cost the chart its
+    data.
+    """
+    kind = spec.get("kind")
+    if kind == "column":
+        column = spec.get("column")
+        if not isinstance(column, str) or column not in df.columns:
+            return None
+        given = spec.get("label")
+        label = given if isinstance(given, str) and given.strip() else column
+        return Reference(label=label, values=df[column].tolist())
+    label = _reference_label(kind, spec)
+    if kind == "constant":
+        try:
+            value = float(spec.get("value"))
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return Reference(label=label, value=value)
+    if kind in ("mean", "median", "quantile"):
+        if y_values is None or y_values.empty:
+            return None
+        if kind == "mean":
+            value = y_values.mean()
+        elif kind == "median":
+            value = y_values.median()
+        else:
+            try:
+                q = float(spec.get("value", 0.5))
+            except (TypeError, ValueError):
+                return None
+            try:
+                value = y_values.quantile(q)
+            except (TypeError, ValueError):
+                return None
+        if value is None or (isinstance(value, float) and
+                              (math.isnan(value) or math.isinf(value))):
+            return None
+        return Reference(label=label, value=float(value))
+    return None
+
+
+def _references(df: pd.DataFrame, spec: dict, y_values: pd.Series) -> list[Reference]:
+    raw = spec.get("references")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ref = _one_reference(df, item, y_values)
+        if ref is not None:
+            out.append(ref)
+    return out
+
+
+def _bands(df: pd.DataFrame, spec: dict) -> list[Band]:
+    raw = spec.get("bands")
+    if not isinstance(raw, list):
+        return []
+    x = spec.get("x")
+    if not x or x not in df.columns:
+        return []
+    # Matched as text so a time, a date and a category all work without a
+    # second type system worrying about what kind of axis this is.
+    known = set(df[x].astype(str))
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        start, end = item.get("from"), item.get("to")
+        if str(start) not in known or str(end) not in known:
+            continue
+        if str(start) > str(end):
+            start, end = end, start
+        out.append(Band(start=start, end=end, label=str(item.get("label", ""))))
+    return out
+
+
+def _plotted_y(df: pd.DataFrame, spec: dict) -> pd.Series:
+    """The values a statistic reference is taken over.
+
+    A hue column splits the chart into several series, but a reference is one
+    line — so the statistic is taken over the whole named y column, before it
+    is split, rather than trying to average across series that may not even
+    share a unit.
+    """
+    y = spec.get("y")
+    y = y[0] if isinstance(y, list) else y
+    if not y or y not in df.columns:
+        return pd.Series([], dtype=float)
+    return df[y]
+
+
 def _sorted(df: pd.DataFrame, spec: dict) -> pd.DataFrame:
     order = spec.get("sort")
     if order not in ("asc", "desc"):
@@ -303,18 +437,24 @@ def _bar(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     d = _sorted(df, spec)
     return PlotModel(kind="bar", title=title, series=_xy_series(d, spec),
                      x_label=spec["x"], y_label=_y_label(spec),
-                     orientation=spec.get("orientation", "v"))
+                     orientation=spec.get("orientation", "v"),
+                     references=_references(d, spec, _plotted_y(d, spec)),
+                     bands=_bands(d, spec))
 
 
 def _line(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     return PlotModel(kind="line", title=title, series=_xy_series(df, spec),
-                     x_label=spec["x"], y_label=_y_label(spec))
+                     x_label=spec["x"], y_label=_y_label(spec),
+                     references=_references(df, spec, _plotted_y(df, spec)),
+                     bands=_bands(df, spec))
 
 
 def _scatter(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     return PlotModel(kind="scatter", title=title, series=_xy_series(df, spec),
                      x_label=spec["x"], y_label=_y_label(spec),
-                     regression=bool(spec.get("regression")))
+                     regression=bool(spec.get("regression")),
+                     references=_references(df, spec, _plotted_y(df, spec)),
+                     bands=_bands(df, spec))
 
 
 def _hist(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
