@@ -64,6 +64,13 @@ def transform_summary(transform) -> str:
         by = p.get("partition_by") or []
         return (f"window: {op}{of}"
                 f"{' by ' + ', '.join(by) if by else ''} → {p.get('as') or '?'}")
+    if kind == "timezone":
+        source = p.get("from_column") or p.get("from_zone") or "?"
+        summary = (f"convert {p.get('column') or '?'} from {source} to "
+                   f"{p.get('to') or '?'} as {p.get('as') or '?'}")
+        if p.get("day_offset_as"):
+            summary += f" (+ {p['day_offset_as']})"
+        return summary
     return kind
 
 

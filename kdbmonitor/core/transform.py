@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from kdbmonitor.core.summaries import transform_summary
+from kdbmonitor.core.zones import convert, day_offset, local_zone
 
 AGG_FUNCS = ("count", "nunique", "sum", "mean", "min", "max")
 
@@ -252,9 +253,71 @@ def _window(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     return df
 
 
+def _timezone(df: pd.DataFrame, p: dict) -> pd.DataFrame:
+    column = p.get("column")
+    if not column:
+        raise ValueError("timezone: no 'column' given")
+    _need(df, column, "timezone")
+    target = p.get("as")
+    if not target:
+        raise ValueError("timezone: no 'as' column name given")
+
+    from_column, from_zone = p.get("from_column"), p.get("from_zone")
+    # Exactly one, not both and not neither: a row's origin zone is either
+    # written on the row itself (files often carry one) or fixed for the
+    # whole column, and letting both through would leave it unclear which
+    # one actually governs the conversion.
+    if bool(from_column) == bool(from_zone):
+        raise ValueError(
+            "timezone: give exactly one of 'from_column' or 'from_zone'")
+    if from_column:
+        _need(df, from_column, "timezone")
+
+    to = p.get("to")
+    if not to:
+        raise ValueError("timezone: no 'to' zone given")
+    to_zone = local_zone() if to == "local" else to
+    day_offset_as = p.get("day_offset_as")
+
+    if df.empty:
+        df[target] = pd.Series(dtype="datetime64[ns]")
+        if day_offset_as:
+            df[day_offset_as] = pd.Series(dtype="int64")
+        return df
+
+    if from_column:
+        # Rows may carry different zones (a session that spans a changeover,
+        # or a file that mixes desks), so each zone's rows are converted as
+        # their own group — but written back by index rather than trusting
+        # groupby's own order, because a session resorted around midnight is
+        # wrong, the same reasoning the window transform relies on.
+        converted = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+        for zone, group in df.groupby(from_column, dropna=False, sort=False):
+            try:
+                out = convert(group[column], zone, to_zone)
+            except ValueError as exc:
+                n = len(group)
+                raise ValueError(
+                    f"timezone: {exc} ({n} row{'s' if n != 1 else ''} "
+                    "carried it)") from None
+            converted.loc[group.index] = out
+    else:
+        try:
+            converted = convert(df[column], from_zone, to_zone)
+        except ValueError as exc:
+            raise ValueError(
+                f"timezone: {exc} ({len(df)} rows carried it)") from None
+
+    df[target] = converted
+    if day_offset_as:
+        df[day_offset_as] = day_offset(df[column], converted)
+    return df
+
+
 _KINDS: dict[str, Callable[[pd.DataFrame, dict], pd.DataFrame]] = {
     "derive": _derive, "filter": _filter, "groupby": _groupby,
     "sort": _sort, "limit": _limit, "rename": _rename, "window": _window,
+    "timezone": _timezone,
 }
 
 
