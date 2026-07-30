@@ -864,69 +864,84 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
     key = f"ds{index}"
     conn = _connection_for(store, ds)
 
-    with st.expander(f"**{ds.name}** · {ds.env or 'no environment'}", expanded=True):
-        head = st.columns([2, 2, 1.8, 1.6, 0.7], vertical_alignment="bottom")
-        ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
-        envs = sorted(store.list_environments())
-        ds.env = head[1].selectbox("Environment", envs or [ds.env],
-                                   index=envs.index(ds.env) if ds.env in envs else 0,
-                                   key=f"{key}_e")
-        modes = ["inherit", "realtime", "custom"]
-        market = is_marketdata_env(
-            store.list_environments().get(ds.env) or {})
-        ds.time_mode = head[2].selectbox(
-            "Period", modes, index=modes.index(ds.time_mode), key=f"{key}_tm",
-            disabled=market,
-            help="Market data is not partitioned by date — the period does not "
-                 "apply." if market
-                 else "inherit = follow the dashboard's period control")
-        ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
-                                               ds.max_rows, step=100, key=f"{key}_mr"))
-        if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
-            draft.datasets.pop(index)
-            _forget(r"ds\d+")                  # every card below renumbers
-            st.rerun()
-
-        if ds.time_mode == "custom":
-            labels = [PRESET_LABELS[p] for p in PRESETS]
-            current = ((ds.time_context or {}).get("range") or {}).get("name", "last_30d")
-            chosen = st.selectbox("Its own period", labels,
-                                  index=list(PRESETS).index(current)
-                                  if current in PRESETS else 3, key=f"{key}_tc")
-            ds.time_context = {"mode": "historical",
-                               "range": {"kind": "preset",
-                                         "name": PRESETS[labels.index(chosen)]}}
-
-        if market:
-            st.caption(":violet[Market data] — reference tables, queried the "
-                       "same way whatever period the dashboard is showing.")
-
-        ds.mode = st.radio("Query", ["guided", "raw"], horizontal=True,
-                           index=0 if ds.mode == "guided" else 1, key=f"{key}_m")
-
-        if ds.mode == "guided":
-            tables = sorted(getattr(conn, "schema", {}) or {})
-            ds.table = st.selectbox("Table", tables or [ds.table],
-                                    index=tables.index(ds.table)
-                                    if ds.table in tables else 0, key=f"{key}_t")
-            # Filters are the query's where clause, so they address the table
-            # as KDB holds it — not the shape the transforms leave behind.
-            _filters_form(ds, table_columns(ds, conn), key)
+    subtitle = ((ds.file_label or "an uploaded file") if ds.source == "file"
+                else (ds.env or "no environment"))
+    with st.expander(f"**{ds.name}** · {subtitle}", expanded=True):
+        if ds.source == "file":
+            head = st.columns([3, 1.8, 0.7], vertical_alignment="bottom")
+            ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
+            ds.max_rows = int(head[1].number_input(
+                "Max rows", 1, 1_000_000, ds.max_rows, step=100,
+                key=f"{key}_mr"))
+            if head[2].button("", icon=":material/delete:", key=f"{key}_del"):
+                draft.datasets.pop(index)
+                _forget(r"ds\d+")              # every card below renumbers
+                st.rerun()
+            from kdbmonitor.ui import fileshape
+            fileshape.render(ds, key=key)
         else:
-            ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
-                                       help=RAW_HELP, key=f"{key}_q")
-            others = [e for e in sorted(store.list_environments()) if e != ds.env]
-            ds.extra_connections = st.multiselect(
-                "Also connect (for hopen)", others,
-                default=[e for e in ds.extra_connections if e in others],
-                key=f"{key}_xc",
-                help="Extra environments this query opens with hopen, so one "
-                     "query can span two KDB processes. Reference one in your q "
-                     "as {{conn:ENV}} — it becomes that server's `:host:port.")
-            if ds.extra_connections:
-                st.caption("Use in your q: "
-                           + "  ".join(f"`{{{{conn:{e}}}}}`"
-                                       for e in ds.extra_connections))
+            head = st.columns([2, 2, 1.8, 1.6, 0.7], vertical_alignment="bottom")
+            ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
+            envs = sorted(store.list_environments())
+            ds.env = head[1].selectbox("Environment", envs or [ds.env],
+                                       index=envs.index(ds.env) if ds.env in envs else 0,
+                                       key=f"{key}_e")
+            modes = ["inherit", "realtime", "custom"]
+            market = is_marketdata_env(
+                store.list_environments().get(ds.env) or {})
+            ds.time_mode = head[2].selectbox(
+                "Period", modes, index=modes.index(ds.time_mode), key=f"{key}_tm",
+                disabled=market,
+                help="Market data is not partitioned by date — the period does not "
+                     "apply." if market
+                     else "inherit = follow the dashboard's period control")
+            ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
+                                                   ds.max_rows, step=100, key=f"{key}_mr"))
+            if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
+                draft.datasets.pop(index)
+                _forget(r"ds\d+")                  # every card below renumbers
+                st.rerun()
+
+            if ds.time_mode == "custom":
+                labels = [PRESET_LABELS[p] for p in PRESETS]
+                current = ((ds.time_context or {}).get("range") or {}).get("name", "last_30d")
+                chosen = st.selectbox("Its own period", labels,
+                                      index=list(PRESETS).index(current)
+                                      if current in PRESETS else 3, key=f"{key}_tc")
+                ds.time_context = {"mode": "historical",
+                                   "range": {"kind": "preset",
+                                             "name": PRESETS[labels.index(chosen)]}}
+
+            if market:
+                st.caption(":violet[Market data] — reference tables, queried the "
+                           "same way whatever period the dashboard is showing.")
+
+            ds.mode = st.radio("Query", ["guided", "raw"], horizontal=True,
+                               index=0 if ds.mode == "guided" else 1, key=f"{key}_m")
+
+            if ds.mode == "guided":
+                tables = sorted(getattr(conn, "schema", {}) or {})
+                ds.table = st.selectbox("Table", tables or [ds.table],
+                                        index=tables.index(ds.table)
+                                        if ds.table in tables else 0, key=f"{key}_t")
+                # Filters are the query's where clause, so they address the table
+                # as KDB holds it — not the shape the transforms leave behind.
+                _filters_form(ds, table_columns(ds, conn), key)
+            else:
+                ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
+                                           help=RAW_HELP, key=f"{key}_q")
+                others = [e for e in sorted(store.list_environments()) if e != ds.env]
+                ds.extra_connections = st.multiselect(
+                    "Also connect (for hopen)", others,
+                    default=[e for e in ds.extra_connections if e in others],
+                    key=f"{key}_xc",
+                    help="Extra environments this query opens with hopen, so one "
+                         "query can span two KDB processes. Reference one in your q "
+                         "as {{conn:ENV}} — it becomes that server's `:host:port.")
+                if ds.extra_connections:
+                    st.caption("Use in your q: "
+                               + "  ".join(f"`{{{{conn:{e}}}}}`"
+                                           for e in ds.extra_connections))
 
         st.markdown("**Transforms**")
         for i, t in enumerate(list(ds.transforms)):
