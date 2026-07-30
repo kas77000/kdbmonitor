@@ -335,6 +335,22 @@ the same data, and a dashboard switches between them by period.
 Admin's **Environments** panel shows each pair and confirms the link, or flags a
 half-configured environment.
 
+**An environment is one database and its twin, not a whole desk.** It holds a
+single server per kind, so several databases a desk would call one environment
+are registered as several — `PROD-ORDERS`, `PROD-QUOTES`, `PROD-REF`, each
+pairing its own two sides. Registering a second real-time server under an
+environment that already has one does not merge them: Admin says so, and until
+one is moved only the first is reachable.
+
+That is why a query spanning databases names the one it wants rather than asking
+an environment to hold them all:
+
+```q
+h: hopen {{conn:PROD-QUOTES}};              / one named database
+{{conn:PROD-ORDERS:historical}}             / a named side, from a live dataset
+{{conn:PROD-ORDERS}}                        / whichever side the period is on
+```
+
 **Not every environment has two sides.** A date-partitioned feed with nothing
 live behind it is historical and nothing else. Tick **No counterpart** on that
 server and the environment stops being reported as half-configured: Admin shows

@@ -83,6 +83,15 @@ class Connection:
     schema: dict[str, list[str]] = field(default_factory=dict)  # table -> columns
     last_introspected_at: Optional[str] = None
     kind: str = "realtime"       # one of CONNECTION_KINDS
+    # One database and its historical twin — not a desk's whole environment.
+    # An env holds a single server per kind, so several databases that a desk
+    # would call one environment are registered as several: PROD-ORDERS,
+    # PROD-QUOTES, PROD-REF, each pairing its own real-time and historical
+    # sides. That is a decision rather than a limitation left lying about
+    # (2026-07-31), and it is why a query reaching across databases names the
+    # one it wants with {{conn:PROD-QUOTES}} rather than asking an environment
+    # to hold them all. Storage.duplicate_slots reports a second server that
+    # claims a slot already taken, which used to make it disappear in silence.
     env: str = ""                # logical environment; "" falls back to name
     # This side is the whole environment: there is no counterpart coming, and a
     # missing one is the design rather than a setup half-done. A date-partitioned
