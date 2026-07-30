@@ -262,8 +262,33 @@ class FileLoad:
 
 
 def read_cells(grid: list[list[str]], shape: FileShape) -> dict[str, Any]:
-    """Named cells, read from the raw grid. Filled in by a later task."""
-    return {}
+    """Every named cell, read from the raw grid by its own coordinates.
+
+    Called before :func:`orient` and before the table is cut, because a named
+    cell addresses the file as it sits on disk — which is the grid the designer
+    was looking at when they pointed at it. Were orientation to apply here too,
+    switching a dataset to vertical headers would silently move every cell
+    already named.
+
+    A cell that is missing, out of range or unreadable as its type is null
+    rather than a refusal. These describe the report — a date in its title bar —
+    and a report whose caption did not parse is still a report. Refusing the
+    upload over one would be refusing the data because of the label on it.
+
+    A negative address is treated as out of range, not as Python's
+    count-from-the-end: nobody points at "one row up from the top", and reading
+    the last line of the file instead would be a confident wrong answer.
+    """
+    markers = null_set(shape)
+    out: dict[str, Any] = {}
+    for cell in shape.cells:
+        raw = ""
+        if 0 <= cell.row < len(grid) and 0 <= cell.col < len(grid[cell.row]):
+            raw = grid[cell.row][cell.col]
+        values, _ = read_values([raw], cell.type, markers)
+        value = values.iloc[0]
+        out[cell.name] = None if pd.isna(value) else value
+    return out
 
 
 def load(data: bytes, shape: FileShape) -> FileLoad:

@@ -32,7 +32,7 @@ def test_a_file_that_is_not_utf8_text_is_refused_by_name():
         read_grid(b"\xff\xfe\x00s\x00y")
 
 
-from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape
+from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape, NamedCell
 from kdbmonitor.core.filesource import Problem, header_columns, orient
 
 
@@ -442,3 +442,82 @@ def test_a_frame_is_indexed_from_zero_however_many_rows_were_skipped():
     out = load(b"sym,qty\n,\n0005.HK,10\n\n7203.JP,20\n", _orders_shape())
     assert out.problems == []
     assert out.df.index.tolist() == [0, 1]
+
+
+PREAMBLE = (b"Working orders,2026-07-30\n"
+            b"\n"
+            b"sym,qty\n"
+            b"0005.HK,10\n")
+
+
+def test_a_named_cell_is_read_from_where_it_was_pointed_at():
+    shape = _orders_shape(header_row=2, data_start=3,
+                          cells=[NamedCell(name="Report date", row=0, col=1,
+                                           type="date")])
+    out = load(PREAMBLE, shape)
+    assert out.problems == []
+    assert out.cells["Report date"] == pd.Timestamp("2026-07-30")
+
+
+def test_a_named_cell_reads_the_file_as_written_not_as_transposed():
+    """Orientation moves the table. A cell was pointed at on the raw grid, so
+    switching to vertical headers must not relocate it."""
+    down = b"sym,0005.HK,7203.JP\nqty,10,20\n"
+    shape = FileShape(header_axis="column", header_row=0, data_start=1,
+                      columns=[ColumnSpec(name="sym"),
+                               ColumnSpec(name="qty", type="number")],
+                      cells=[NamedCell(name="First symbol", row=0, col=1)])
+    out = load(down, shape)
+    assert out.problems == []
+    assert out.cells["First symbol"] == "0005.HK"
+
+
+def test_a_named_cell_outside_the_file_is_null_rather_than_an_error():
+    shape = _orders_shape(cells=[NamedCell(name="Nowhere", row=99, col=99)])
+    out = load(ORDERS, shape)
+    assert out.problems == []
+    assert out.cells["Nowhere"] is None
+
+
+def test_a_blank_named_cell_is_null():
+    shape = _orders_shape(header_row=2, data_start=3,
+                          cells=[NamedCell(name="Note", row=1, col=0)])
+    out = load(PREAMBLE, shape)
+    assert out.cells["Note"] is None
+
+
+def test_a_named_cell_with_a_negative_address_is_null_not_wrapped():
+    """Python would happily read row -1 as the last line of the file."""
+    shape = _orders_shape(cells=[NamedCell(name="Backwards", row=-1, col=-1)])
+    out = load(ORDERS, shape)
+    assert out.cells["Backwards"] is None
+
+
+def test_a_named_cell_that_will_not_read_as_its_type_is_null_not_a_refusal():
+    """A cell describing the report is not the report. A date that will not
+    parse costs that one caption, not the whole upload."""
+    shape = _orders_shape(header_row=2, data_start=3,
+                          cells=[NamedCell(name="Report date", row=0, col=0,
+                                           type="date")])
+    out = load(PREAMBLE, shape)
+    assert out.problems == []                 # the table itself is fine
+    assert out.cells["Report date"] is None   # "Working orders" is not a date
+
+
+def test_named_cells_are_still_read_when_the_table_is_refused():
+    """The caption is what tells the reader which file they uploaded, so it is
+    worth having even on the error path."""
+    shape = _orders_shape(header_row=9, data_start=10,
+                          cells=[NamedCell(name="Report date", row=0, col=1,
+                                           type="date")])
+    out = load(PREAMBLE, shape)
+    assert out.df is None and out.problems
+    assert out.cells["Report date"] == pd.Timestamp("2026-07-30")
+
+
+def test_two_cells_can_be_named():
+    shape = _orders_shape(header_row=2, data_start=3,
+                          cells=[NamedCell(name="Title", row=0, col=0),
+                                 NamedCell(name="When", row=0, col=1)])
+    out = load(PREAMBLE, shape)
+    assert out.cells == {"Title": "Working orders", "When": "2026-07-30"}
