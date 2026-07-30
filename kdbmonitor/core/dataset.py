@@ -32,6 +32,10 @@ class DatasetResult:
     error: Optional[str]
     row_count: int = 0              # true size before max_rows capping
     truncated: bool = False
+    # A file dataset with nothing uploaded yet has not failed — it is waiting.
+    # The distinction is for the reader: "waiting for your export" is an
+    # instruction, and a red panel saying the same thing reads as a fault.
+    waiting: bool = False
 
 
 @dataclass
@@ -175,14 +179,44 @@ def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None) -> str:
     return substitute_refs(q, outputs)
 
 
-def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr,
-           outputs: dict) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
+def _file_source(ds: Dataset) -> str:
+    """What stands in for the query on a file dataset — what it reads, not how.
+
+    The editor and the result panel both show a dataset's query. A file dataset
+    has none, and showing nothing there reads as something missing rather than
+    as something that does not apply.
+    """
+    shape = ds.shape
+    if shape is None:
+        return "file: no shape configured yet"
+    where = "down column" if shape.header_axis == "column" else "on line"
+    return (f"file: {len(shape.columns)} column(s), headers {where} "
+            f"{shape.header_row + 1}")
+
+
+def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
+           uploads: Optional[dict] = None) -> tuple[str, Optional[pd.DataFrame],
+                                                    Optional[str]]:
     """Send the dataset's query — no transforms — as (qsql, frame, error).
 
     Never raises: every failure comes back as the error, along with whatever the
     query looked like at that point, so a caller can show it. Shared by the plain
-    run and the step-by-step trace, so both send exactly the same query.
+    run and the step-by-step trace, so both send exactly the same query. A file
+    dataset sends nothing — its frame either sits in ``uploads`` already read and
+    validated at the upload box, or it does not, and either way this is the only
+    branch that knows the difference; every line after it is source-agnostic.
     """
+    # A file dataset sends nothing. Its frame was read and checked at the upload
+    # box (``core.filesource``), so all that happens here is picking it up —
+    # which is why a file dataset and a KDB dataset are indistinguishable from
+    # the next line on.
+    if ds.source == "file":
+        frame = (uploads or {}).get(ds.name)
+        if frame is None:
+            return (_file_source(ds), None,
+                    f"waiting for {ds.file_label or 'a file to be uploaded'}")
+        return _file_source(ds), frame, None
+
     # Resolve first: the date guard must apply to the server actually queried,
     # and a market-data environment is never historical.
     try:
@@ -211,12 +245,13 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr,
         return qsql, None, str(exc)
 
 
-def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
-                outputs: dict) -> DatasetResult:
+def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
+                uploads: Optional[dict] = None) -> DatasetResult:
     """Run one dataset, capturing any failure as an error on the result."""
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
     if error is not None:
-        return DatasetResult(ds.name, None, qsql, error)
+        return DatasetResult(ds.name, None, qsql, error,
+                             waiting=error.startswith("waiting for"))
 
     try:
         df = apply_transforms(df, ds.transforms)
@@ -229,22 +264,22 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr,
                          row_count=total, truncated=total > len(capped))
 
 
-def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr,
-                      outputs: dict) -> DatasetTrace:
+def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
+                      uploads: Optional[dict] = None) -> DatasetTrace:
     """Run one dataset keeping the frame after every transform.
 
     Same query, same transforms, same order as :func:`run_dataset` — only the
     intermediate frames are kept, so what you inspect step by step is what the
     dashboard will actually show.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
     if error is not None:
         return DatasetTrace(ds.name, qsql, error)
     return DatasetTrace(ds.name, qsql, None, transform_steps(df, ds.transforms))
 
 
-def run_datasets(dashboard: Dashboard, store, mgr,
-                 today: date) -> dict[str, DatasetResult]:
+def run_datasets(dashboard: Dashboard, store, mgr, today: date,
+                 uploads: Optional[dict] = None) -> dict[str, DatasetResult]:
     """Run every dataset in declaration order, returning results by name.
 
     Successful frames are fed forward so a later dataset can reference an earlier
@@ -255,15 +290,15 @@ def run_datasets(dashboard: Dashboard, store, mgr,
     results: dict[str, DatasetResult] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        res = run_dataset(ds, rt, store, mgr, outputs)
+        res = run_dataset(ds, rt, store, mgr, outputs, uploads)
         results[ds.name] = res
         if res.df is not None:
             outputs[ds.name] = res.df
     return results
 
 
-def trace_datasets(dashboard: Dashboard, store, mgr,
-                   today: date) -> dict[str, DatasetTrace]:
+def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
+                   uploads: Optional[dict] = None) -> dict[str, DatasetTrace]:
     """Run every dataset step by step, in declaration order, results by name.
 
     Like :func:`run_datasets`, a dataset's finished frame is fed forward so a
@@ -274,7 +309,7 @@ def trace_datasets(dashboard: Dashboard, store, mgr,
     traces: dict[str, DatasetTrace] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        trace = run_dataset_steps(ds, rt, store, mgr, outputs)
+        trace = run_dataset_steps(ds, rt, store, mgr, outputs, uploads)
         traces[ds.name] = trace
         if trace.df is not None:
             outputs[ds.name] = trace.df
