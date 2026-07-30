@@ -314,6 +314,25 @@ def env_serves(pair: dict, mode: str) -> bool:
     return is_marketdata_env(pair) or pair.get(mode) is not None
 
 
+def env_label(env: str, pair: dict) -> str:
+    """An environment, named by the servers it actually holds.
+
+    An environment name is a label somebody chose, and a dashboard only ever
+    showed that — so a connection registered as EQUITY DATA under an
+    environment called MD appeared in the picker as "MD", and picking the right
+    one meant remembering which alias stood for which database. The servers are
+    the names people know, so the picker says both.
+
+    Where the environment is named after its only server there is nothing to
+    add, and repeating it would be noise.
+    """
+    servers = [conn.name for kind in ("realtime", "historical", "marketdata")
+               if (conn := (pair or {}).get(kind)) is not None]
+    if not servers or servers == [env]:
+        return env
+    return f"{env} — {' / '.join(servers)}"
+
+
 def _periods_problems(draft: Dashboard, envs: dict) -> list[str]:
     """Where what the dashboard offers contradicts an environment's own answer.
 
@@ -1098,7 +1117,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
     conn = _connection_for(store, ds)
 
     subtitle = ((ds.file_label or "an uploaded file") if ds.source == "file"
-                else (ds.env or "no environment"))
+                else (env_label(ds.env, store.list_environments().get(ds.env)
+                                or {}) if ds.env else "no environment"))
     with st.expander(f"**{ds.name}** · {subtitle}", expanded=True):
         if ds.source == "file":
             from kdbmonitor.ui import fileshape
@@ -1123,10 +1143,16 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         else:
             head = st.columns([2, 2, 1.8, 1.6, 0.7], vertical_alignment="bottom")
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
-            envs = sorted(store.list_environments())
-            ds.env = head[1].selectbox("Environment", envs or [ds.env],
-                                       index=envs.index(ds.env) if ds.env in envs else 0,
-                                       key=f"{key}_e")
+            pairs = store.list_environments()
+            envs = sorted(pairs)
+            ds.env = head[1].selectbox(
+                "Environment", envs or [ds.env],
+                index=envs.index(ds.env) if ds.env in envs else 0,
+                key=f"{key}_e",
+                format_func=lambda e: env_label(e, pairs.get(e) or {}),
+                help="Named by the servers it holds, so you are picking a "
+                     "database rather than remembering which environment name "
+                     "stands for it.")
             modes = list(PERIOD_MODE_LABELS)
             market = is_marketdata_env(
                 store.list_environments().get(ds.env) or {})
