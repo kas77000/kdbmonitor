@@ -2,7 +2,7 @@
 import pandas as pd
 from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.dashboard_models import (
-    ColumnSpec, Dashboard, Dataset, FileShape, NamedCell,
+    ColumnSpec, Dashboard, Dataset, FileShape, NamedCell, Parameter,
     dashboard_from_dict, dashboard_to_dict,
 )
 
@@ -130,3 +130,73 @@ def test_a_stored_shape_does_not_alias_the_dict_it_was_read_from():
     shape.null_markers.append("MUTATED")
 
     assert raw["datasets"][0]["shape"]["null_markers"] == ["", "X"]
+
+
+def test_parameters_survive_a_round_trip():
+    d = Dashboard(id=1, name="VP", parameters=[
+        Parameter(name="instrument", label="Instrument", kind="column",
+                  dataset="profile", column="sym", default="A"),
+        Parameter(name="mode", kind="choice", choices=["local", "source"],
+                  default="local")])
+    back = dashboard_from_dict(dashboard_to_dict(d))
+    assert [p.name for p in back.parameters] == ["instrument", "mode"]
+    assert back.parameters[0].label == "Instrument"
+    assert back.parameters[0].dataset == "profile"
+    assert back.parameters[0].column == "sym"
+    assert back.parameters[1].choices == ["local", "source"]
+    assert back.parameters[1].default == "local"
+
+
+def test_a_dashboard_saved_before_parameters_reads_back_with_none():
+    assert dashboard_from_dict({"name": "Old", "rows": []}).parameters == []
+
+
+def test_a_parameter_whose_choices_are_not_a_list_reads_back_empty():
+    """A bundle can be hand-edited; reading it must not raise."""
+    back = dashboard_from_dict({"name": "X", "rows": [], "parameters": [
+        {"name": "p", "choices": "oops"}]})
+    assert back.parameters[0].choices == []
+
+
+def test_parameters_that_are_not_a_list_read_back_as_none():
+    assert dashboard_from_dict({"name": "X", "rows": [],
+                                "parameters": "oops"}).parameters == []
+
+
+def test_a_parameter_entry_that_is_not_a_dict_is_skipped():
+    back = dashboard_from_dict({"name": "X", "rows": [],
+                                "parameters": [{"name": "a"}, "junk", None]})
+    assert [p.name for p in back.parameters] == ["a"]
+
+
+def test_a_non_string_default_reads_back_as_text():
+    """Substitution is textual, so the stored default is text too."""
+    back = dashboard_from_dict({"name": "X", "rows": [],
+                                "parameters": [{"name": "n", "default": 10}]})
+    assert back.parameters[0].default == "10"
+
+
+def test_choices_are_read_back_as_text_whatever_they_were_stored_as():
+    back = dashboard_from_dict({"name": "X", "rows": [], "parameters": [
+        {"name": "n", "choices": [1, 2.5, "three"]}]})
+    assert back.parameters[0].choices == ["1", "2.5", "three"]
+
+
+def test_a_parameter_with_no_label_falls_back_to_its_name_at_use_time():
+    """The model stores what was given; the control decides what to show."""
+    p = Parameter(name="instrument")
+    assert p.label == ""
+
+
+def test_two_dashboards_do_not_share_one_parameter_list():
+    a, b = Dashboard(id=1, name="A"), Dashboard(id=2, name="B")
+    a.parameters.append(Parameter(name="p"))
+    assert b.parameters == []
+
+
+def test_a_parameter_list_read_back_is_not_the_dict_it_came_from():
+    raw = {"name": "X", "rows": [], "parameters": [
+        {"name": "p", "choices": ["a"]}]}
+    back = dashboard_from_dict(raw)
+    back.parameters[0].choices.append("MUTATED")
+    assert raw["parameters"][0]["choices"] == ["a"]

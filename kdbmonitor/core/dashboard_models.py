@@ -115,6 +115,31 @@ class Row:
     height_in: float = 2.5       # printed height; screen height derives from it
 
 
+PARAMETER_KINDS = ("choice", "column", "number", "date", "toggle")
+
+
+@dataclass
+class Parameter:
+    """A value the person reading a dashboard chooses.
+
+    The dashboard owns the definition and the default; the choice itself belongs
+    to whoever is looking, so it lives in session state rather than here — two
+    people reading the same report are entitled to different instruments.
+
+    Referenced as ``{{param:name}}`` inside a transform's params or a widget's
+    spec, which is the same substitution idiom as ``{{stepN.column}}`` and
+    ``{{date_from}}`` rather than a fourth thing to learn. Because it reaches a
+    transform and not a query, changing one re-shapes a frame already in hand.
+    """
+    name: str                    # referenced as {{param:name}}
+    label: str = ""              # shown on the control; falls back to name
+    kind: str = "choice"         # one of PARAMETER_KINDS
+    choices: list[str] = field(default_factory=list)   # choice only
+    dataset: str = ""            # column only: whose values to offer
+    column: str = ""             # column only: which column
+    default: str = ""
+
+
 @dataclass
 class Dashboard:
     id: Optional[int]
@@ -139,6 +164,9 @@ class Dashboard:
     time_context: dict = field(default_factory=_default_time_context)
     datasets: list[Dataset] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
+    # Controls the reader sets. See Parameter — the definitions live with the
+    # dashboard, the choices with whoever is looking at it.
+    parameters: list[Parameter] = field(default_factory=list)
 
 
 @dataclass
@@ -257,6 +285,22 @@ def _dataset_from_dict(d: dict) -> Dataset:
     )
 
 
+def _parameter_from_dict(d: dict) -> Parameter:
+    """A stored parameter, field by field.
+
+    Choices and the default are coerced to text because substitution is textual:
+    a default stored as the number 10 by a hand-edited bundle has to come back
+    as something that can be substituted into a string.
+    """
+    choices = d.get("choices")
+    return Parameter(
+        name=d.get("name", ""), label=d.get("label", ""),
+        kind=d.get("kind", "choice"),
+        choices=[str(c) for c in choices] if isinstance(choices, list) else [],
+        dataset=d.get("dataset", ""), column=d.get("column", ""),
+        default=str(d.get("default", "")))
+
+
 def _row_from_dict(d: dict) -> Row:
     return Row(
         widgets=[widget_from_dict(w) for w in d.get("widgets", [])],
@@ -276,6 +320,8 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],
+        parameters=[_parameter_from_dict(p)
+                    for p in _dict_list(d.get("parameters"))],
     )
 
 
