@@ -12,7 +12,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from kdbmonitor.core.dashboard_models import Dashboard
+from kdbmonitor.core.dashboard_models import Dashboard, FileShape
 from kdbmonitor.core.dashpdf import (
     LANDSCAPE, dashboard_page_png_bytes, dashboard_to_pdf_bytes, pdf_filename,
     report_plan,
@@ -129,10 +129,19 @@ def table_height(n_rows: int, allotted_px: int) -> int:
 
 # --- widget rendering ------------------------------------------------------
 
-def render_widget(pm, height_px: int, key: str) -> None:
-    """One widget on screen. Charts are interactive; the rest are native."""
+def render_widget(pm, height_px: int, key: str, waiting: bool = False) -> None:
+    """One widget on screen. Charts are interactive; the rest are native.
+
+    ``waiting`` softens the error panel for a file dataset with nothing
+    uploaded yet: "waiting for your export" is an instruction, not a fault, and
+    a red panel saying the same thing would read as one.
+    """
     if pm.kind == "error":
-        st.error(f"{pm.title or 'Widget'}: {pm.error}", icon=":material/error:")
+        if waiting:
+            st.info(f"{pm.title or 'Widget'}: {pm.error}",
+                    icon=":material/upload_file:")
+        else:
+            st.error(f"{pm.title or 'Widget'}: {pm.error}", icon=":material/error:")
         return
     if pm.kind == "kpi":
         st.metric(pm.title, pm.value, help=pm.caption or None)
@@ -164,9 +173,11 @@ def render_rows(dashboard: Dashboard, results: dict, key_prefix: str = "v") -> N
                           vertical_alignment="top")
         for c_i, widget in enumerate(row.widgets):
             with cols[c_i]:
+                waiting = getattr(results.get(widget.dataset), "waiting", False)
                 render_widget(build_plot_model(widget, results),
                               row_height_px(row.height_in),
-                              key=f"{key_prefix}_{r_i}_{c_i}")
+                              key=f"{key_prefix}_{r_i}_{c_i}",
+                              waiting=waiting)
 
 
 # --- state helpers ---------------------------------------------------------
@@ -190,7 +201,23 @@ def is_due(as_of: datetime, refresh_secs: int,
     return (now - as_of).total_seconds() >= refresh_secs - 0.5
 
 
-def refresh(store, mgr, dashboard: Dashboard) -> dict:
+def comes_due(dashboard: Dashboard, as_of: datetime,
+              now: datetime | None = None) -> bool:
+    """Whether this dashboard's frames should be taken again.
+
+    A file dashboard never does. Its frame changes when somebody uploads a
+    different file and at no other moment, so a tick could only discard the
+    cached printed pages to arrive back at the numbers already on screen — the
+    same waste :func:`refresh` already records having fixed for query
+    dashboards, arrived at from the other direction.
+    """
+    if dashboard.source == "file":
+        return False
+    return is_due(as_of, dashboard.refresh_secs, now)
+
+
+def refresh(store, mgr, dashboard: Dashboard,
+            uploads: dict | None = None) -> dict:
     """The dashboard's frames, re-querying only when they are actually due.
 
     A rerun is not a reason to re-query. Every button on the page reruns the
@@ -198,16 +225,23 @@ def refresh(store, mgr, dashboard: Dashboard) -> dict:
     — which hit KDB for numbers nobody asked to change and, because the printed
     pages are cached against that stamp, threw away the rendered PDF preview on
     every page turn. Frames are taken again on the interval, or when the
-    Refresh button drops them.
+    Refresh button drops them. A file dashboard never comes due on its own — see
+    :func:`comes_due` — so for it this only ever runs once per uploaded file,
+    when Refresh drops the cache after :func:`_render_uploads` sees a new one.
     """
     cached = st.session_state.get(frames_key(dashboard.id))
-    if cached and not is_due(cached["as_of"], dashboard.refresh_secs):
+    if cached and not comes_due(dashboard, cached["as_of"]):
         return cached
 
     # Here rather than only in the picker: a PDF export and an interval refresh
-    # both reach this without anyone having touched the period control.
-    dashboard.time_context = coerce_spec(dashboard.time_context, dashboard.periods)
-    payload = {"results": run_datasets(dashboard, store, mgr, date.today()),
+    # both reach this without anyone having touched the period control. A file
+    # dashboard has no period to coerce — it has no environment for coerce_spec
+    # to check against.
+    if dashboard.source != "file":
+        dashboard.time_context = coerce_spec(dashboard.time_context,
+                                             dashboard.periods)
+    payload = {"results": run_datasets(dashboard, store, mgr, date.today(),
+                                       uploads=uploads),
                "as_of": datetime.now(),
                "rt": resolve(dashboard.time_context, date.today())}
     st.session_state[frames_key(dashboard.id)] = payload
@@ -406,6 +440,56 @@ def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
                         unsafe_allow_html=True)
 
 
+def uploads_key(dashboard_id: int) -> str:
+    return f"dash_uploads_{dashboard_id}"
+
+
+def _render_uploads(dashboard: Dashboard) -> dict:
+    """One upload box per file dataset, and the frames they produced.
+
+    The file is read and checked here, the moment it is dropped in, rather than
+    on the way through the dashboard: a refusal belongs beside the thing that
+    caused it rather than arriving later as a red panel some distance away, and
+    reading it once means it is not re-read on every rerun.
+
+    A refusal leaves the previous frame standing. Somebody comparing two exports
+    should not lose the one that worked by trying one that does not.
+    """
+    from kdbmonitor.core.filesource import load
+
+    held = st.session_state.setdefault(uploads_key(dashboard.id), {})
+    datasets = [ds for ds in dashboard.datasets if ds.source == "file"]
+    if not datasets:
+        return {}
+
+    with st.container(border=True):
+        for ds in datasets:
+            upload = st.file_uploader(
+                ds.file_label or f"File for '{ds.name}'", type=["csv"],
+                key=f"up_{dashboard.id}_{ds.name}")
+            if upload is None:
+                continue
+            # A rerun is not a new file. Every button on the page reruns the
+            # script and hands the same upload back; reading it again would
+            # re-parse it and drop the printed pages built from it.
+            token = (upload.name, upload.size)
+            if held.get(ds.name, {}).get("token") == token:
+                continue
+            out = load(upload.getvalue(), ds.shape or FileShape())
+            if out.problems:
+                for problem in out.problems:
+                    st.error(problem.message, icon=":material/error:")
+                continue
+            for note in out.notes:
+                st.caption(f":gray[{note}]")
+            st.success(f"{ds.name}: {len(out.df):,} row(s) read.",
+                       icon=":material/check:")
+            held[ds.name] = {"token": token, "df": out.df}
+            force_refresh(dashboard.id)
+
+    return {name: kept["df"] for name, kept in held.items()}
+
+
 def _render_view(store, mgr, dashboard: Dashboard) -> None:
     # The way back lives here, first and on its own line, because the sidebar
     # nav cannot get you out (it keeps ?dash).
@@ -426,18 +510,25 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
     top = st.columns([3.5, 1.3, 1.2, 1.0], vertical_alignment="bottom")
     top[0].subheader(dashboard.name)
 
-    labels = list(REFRESH_OPTIONS)
-    current = next((k for k, v in REFRESH_OPTIONS.items()
-                    if v == dashboard.refresh_secs), "15s")
-    chosen = top[1].selectbox("Auto-refresh", labels, index=labels.index(current),
-                              key=f"rf_{dashboard.id}")
-    if REFRESH_OPTIONS[chosen] != dashboard.refresh_secs:
-        dashboard.refresh_secs = REFRESH_OPTIONS[chosen]
-        store.update_dashboard(dashboard)
-        st.rerun()
+    if dashboard.source != "file":
+        # A control that does nothing is worse than no control: a file
+        # dashboard's numbers change only when a new file arrives, never on a
+        # clock, so it gets no auto-refresh picker at all.
+        labels = list(REFRESH_OPTIONS)
+        current = next((k for k, v in REFRESH_OPTIONS.items()
+                        if v == dashboard.refresh_secs), "15s")
+        chosen = top[1].selectbox("Auto-refresh", labels,
+                                  index=labels.index(current),
+                                  key=f"rf_{dashboard.id}")
+        if REFRESH_OPTIONS[chosen] != dashboard.refresh_secs:
+            dashboard.refresh_secs = REFRESH_OPTIONS[chosen]
+            store.update_dashboard(dashboard)
+            st.rerun()
 
     # The numbers now hold still between interval ticks, so there has to be a
-    # way to ask for new ones without waiting for the next one.
+    # way to ask for new ones without waiting for the next one. For a file
+    # dashboard this re-runs the pipeline against the frame already held,
+    # rather than asking for the file again.
     if top[2].button("Refresh", icon=":material/refresh:",
                      key=f"rf_now_{dashboard.id}",
                      help="Run every dataset again now"):
@@ -449,11 +540,16 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         st.session_state.pop("dash_draft", None)
         st.rerun()
 
-    _render_period(store, dashboard, st.session_state.get(frames_key(dashboard.id)))
+    if dashboard.source != "file":
+        _render_period(store, dashboard,
+                       st.session_state.get(frames_key(dashboard.id)))
 
-    @st.fragment(run_every=dashboard.refresh_secs or None)
+    uploads = _render_uploads(dashboard)
+
+    @st.fragment(run_every=None if dashboard.source == "file"
+                 else (dashboard.refresh_secs or None))
     def _live() -> None:
-        data = refresh(store, mgr, dashboard)
+        data = refresh(store, mgr, dashboard, uploads)
         render_rows(dashboard, data["results"])
 
     _live()

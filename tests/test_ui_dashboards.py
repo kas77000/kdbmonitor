@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from kdbmonitor.core.dashboard_models import (
     ColumnSpec, Dashboard, Dataset, FileShape, Row, Transform, Widget,
 )
@@ -6,6 +8,7 @@ from kdbmonitor.core.storage import Storage
 from kdbmonitor.ui import dashboard_editor as ed
 from kdbmonitor.ui import dashboards
 from kdbmonitor.ui.dashboard_editor import dataset_columns
+from kdbmonitor.ui.dashboards import comes_due
 
 
 # --- the view page ---------------------------------------------------------
@@ -649,3 +652,26 @@ def test_a_file_dataset_ignores_a_stale_table_name():
         schema = {"orders_table": ["wrong", "columns"]}
 
     assert dataset_columns(ds, _Conn()) == ["sym"]
+
+
+# --- when frames come due ---------------------------------------------------
+
+def test_a_kdb_dashboard_comes_due_on_its_interval():
+    dash = Dashboard(id=1, name="K", refresh_secs=15)
+    assert comes_due(dash, datetime.now() - timedelta(seconds=30))
+
+
+def test_a_kdb_dashboard_is_not_due_before_its_interval():
+    dash = Dashboard(id=1, name="K", refresh_secs=60)
+    assert not comes_due(dash, datetime.now() - timedelta(seconds=5))
+
+
+def test_a_file_dashboard_never_comes_due_however_stale():
+    """Nothing to re-fetch, and a tick would throw away the printed pages."""
+    dash = Dashboard(id=1, name="F", source="file", refresh_secs=15)
+    assert not comes_due(dash, datetime.now() - timedelta(days=1))
+
+
+def test_refresh_off_still_never_comes_due():
+    dash = Dashboard(id=1, name="K", refresh_secs=0)
+    assert not comes_due(dash, datetime.now() - timedelta(days=1))
