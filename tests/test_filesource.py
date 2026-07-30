@@ -324,3 +324,121 @@ def test_a_number_merely_very_large_is_still_read():
     """The guard is against overflow, not against big numbers."""
     values, failures = read_values(["1e308"], "number", DEFAULTS)
     assert failures == [] and values.tolist() == [1e308]
+
+
+from kdbmonitor.core.filesource import FileLoad, load, load_grid
+
+
+ORDERS = b"sym,qty,venue\n0005.HK,10,SEHK\n7203.JP,20,TSE\n"
+
+
+def _orders_shape(**kw) -> FileShape:
+    kw.setdefault("columns", [ColumnSpec(name="sym", type="text"),
+                              ColumnSpec(name="qty", type="number")])
+    return FileShape(**kw)
+
+
+def test_a_matching_file_is_accepted():
+    out = load(ORDERS, _orders_shape())
+    assert out.problems == []
+    assert list(out.df.columns) == ["sym", "qty"]
+    assert out.df["qty"].tolist() == [10.0, 20.0]
+
+
+def test_a_column_nothing_asked_for_is_ignored_and_noted():
+    out = load(ORDERS, _orders_shape())
+    assert "venue" not in out.df.columns
+    assert any("venue" in n for n in out.notes)
+
+
+def test_a_missing_required_column_is_refused_and_says_what_did_arrive():
+    shape = _orders_shape(columns=[ColumnSpec(name="sym"),
+                                   ColumnSpec(name="filledQty")])
+    out = load(ORDERS, shape)
+    assert out.df is None
+    joined = " ".join(p.message for p in out.problems)
+    assert "filledQty" in joined and "venue" in joined
+
+
+def test_a_missing_optional_column_is_fine():
+    shape = _orders_shape(columns=[ColumnSpec(name="sym"),
+                                   ColumnSpec(name="note", required=False)])
+    out = load(ORDERS, shape)
+    assert out.problems == []
+    assert "note" not in out.df.columns
+
+
+def test_a_value_that_will_not_read_names_the_column_the_count_and_the_line():
+    bad = b"sym,qty\n0005.HK,10\n7203.JP,twenty\n"
+    out = load(bad, _orders_shape())
+    assert out.df is None
+    problem = [p for p in out.problems if p.column == "qty"][0]
+    assert problem.line == 3
+    assert "1 of 2" in problem.message
+    assert "twenty" in problem.message
+
+
+def test_a_column_that_may_not_be_null_refuses_a_gap():
+    shape = _orders_shape(columns=[ColumnSpec(name="sym", allow_null=False),
+                                   ColumnSpec(name="qty", type="number")])
+    out = load(b"sym,qty\n0005.HK,10\n,20\n", shape)
+    assert out.df is None
+    assert out.problems[0].column == "sym"
+    assert out.problems[0].line == 3
+
+
+def test_a_wholly_empty_column_passes_when_nulls_are_allowed():
+    shape = _orders_shape(columns=[ColumnSpec(name="sym"),
+                                   ColumnSpec(name="qty", type="number")])
+    out = load(b"sym,qty\n0005.HK,\n7203.JP,\n", shape)
+    assert out.problems == []
+    assert out.df["qty"].isna().all()
+
+
+def test_the_skipped_blank_rows_are_reported():
+    out = load(b"sym,qty\n0005.HK,10\n,\n\n", _orders_shape())
+    assert out.problems == []
+    assert any("blank" in n for n in out.notes)
+
+
+def test_a_file_that_is_not_utf8_is_refused_rather_than_raising():
+    out = load(b"\xff\xfe\x00s", _orders_shape())
+    assert out.df is None and "UTF-8" in out.problems[0].message
+
+
+def test_an_empty_file_is_refused_rather_than_raising():
+    out = load(b"", _orders_shape())
+    assert out.df is None and out.problems
+
+
+def test_every_problem_is_reported_not_just_the_first():
+    """One upload, one list of everything wrong — not a game of whack-a-mole."""
+    shape = _orders_shape(columns=[ColumnSpec(name="sym", type="number"),
+                                   ColumnSpec(name="qty", type="number"),
+                                   ColumnSpec(name="missing")])
+    out = load(ORDERS, shape)
+    assert len({p.column for p in out.problems}) >= 2
+
+
+def test_load_grid_reads_a_grid_the_caller_already_holds():
+    """The editor checks its sample through this, so it must be the same code a
+    viewer's upload goes through — refusals included."""
+    grid = [["sym", "qty"], ["0005.HK", "10"]]
+    out = load_grid(grid, _orders_shape())
+    assert out.problems == [] and out.df["qty"].tolist() == [10.0]
+
+
+def test_a_shape_whose_data_starts_on_its_header_line_is_refused():
+    """Nothing about the file is wrong — the contract is. Reading on would take
+    the header row as a record and report whatever that coerced to."""
+    out = load(ORDERS, _orders_shape(header_row=0, data_start=0))
+    assert out.df is None
+    assert any("header" in p.message for p in out.problems)
+
+
+def test_a_frame_is_indexed_from_zero_however_many_rows_were_skipped():
+    """A frame carrying gaps in its index breaks the widgets downstream, which
+    address rows positionally."""
+    out = load(b"sym,qty\n,\n0005.HK,10\n\n7203.JP,20\n", _orders_shape())
+    assert out.problems == []
+    assert out.df.index.tolist() == [0, 1]

@@ -15,7 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import pandas as pd
@@ -246,3 +246,117 @@ def read_values(cells: list[str], type_name: str,
     dtype = {"number": "float64", "integer": "Int64",
              "boolean": "boolean"}.get(type_name, "object")
     return pd.Series(out, dtype=dtype), failures
+
+
+@dataclass
+class FileLoad:
+    """What came of reading one file: a frame, or the reasons there is none."""
+    df: Optional[pd.DataFrame] = None       # None when refused
+    cells: dict[str, Any] = field(default_factory=dict)
+    problems: list[Problem] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.df is not None and not self.problems
+
+
+def read_cells(grid: list[list[str]], shape: FileShape) -> dict[str, Any]:
+    """Named cells, read from the raw grid. Filled in by a later task."""
+    return {}
+
+
+def load(data: bytes, shape: FileShape) -> FileLoad:
+    """An uploaded file read against ``shape``: a frame, or a refusal."""
+    try:
+        grid = read_grid(data)
+    except ValueError as exc:
+        return FileLoad(problems=[Problem(str(exc))])
+    return load_grid(grid, shape)
+
+
+def load_grid(grid: list[list[str]], shape: FileShape) -> FileLoad:
+    """A grid read against ``shape``: a frame, or a refusal.
+
+    Split from :func:`load` so the shape editor can check the sample it already
+    holds without serialising it back to CSV and parsing it again — and, more to
+    the point, so what the designer sees while building is produced by the very
+    function a viewer's upload will go through, refusals included.
+
+    Any problem refuses the whole file. A partly loaded frame would be worse
+    than none, because it looks like data — and a report drawn from it is wrong
+    without ever saying so.
+
+    Every problem is collected rather than the first raised, so one upload
+    produces one list of everything to fix.
+    """
+    if not grid:
+        return FileLoad(problems=[Problem("this file is empty")])
+
+    # A data region starting on or above the header line is a broken contract
+    # rather than a bad file: read on and the header itself becomes a record,
+    # reported as whatever its labels happened to coerce to. Nothing the person
+    # holding the file can do about it, so say what is actually wrong.
+    if shape.data_start <= shape.header_row:
+        word = _axis_word(shape)
+        return FileLoad(problems=[Problem(
+            f"this dashboard is configured to read data from {word} "
+            f"{shape.data_start + 1}, on or above its own header {word} "
+            f"{shape.header_row + 1} — its shape needs fixing, not your file")])
+
+    cells = read_cells(grid, shape)
+    grid = orient(grid, shape.header_axis)
+
+    columns, problems = header_columns(grid, shape)
+    if problems:
+        return FileLoad(cells=cells, problems=problems)
+
+    present = {name: index for name, index in columns}
+    notes: list[str] = []
+
+    missing = [c.name for c in shape.columns
+               if c.required and c.name not in present]
+    if missing:
+        arrived = ", ".join(present) or "(nothing)"
+        problems += [Problem(f"missing required column '{name}' — the file "
+                             f"has: {arrived}", column=name)
+                     for name in missing]
+
+    wanted = [c for c in shape.columns if c.name in present]
+    taken = [(c.name, present[c.name]) for c in wanted]
+    extra = [n for n in present if n not in {c.name for c in shape.columns}]
+    if extra:
+        notes.append(f"ignored {len(extra)} column(s) this dashboard does not "
+                     f"use: {', '.join(extra)}")
+
+    records, skipped = data_records(grid, shape, taken)
+    if skipped:
+        notes.append(f"skipped {skipped} blank row(s)")
+
+    markers = null_set(shape)
+    word = _axis_word(shape)
+    frame: dict[str, pd.Series] = {}
+    for position, spec in enumerate(wanted):
+        raw = [cells_of[position] for _, cells_of in records]
+        values, failures = read_values(raw, spec.type, markers)
+        frame[spec.name] = values
+
+        if failures:
+            index, value = failures[0]
+            problems.append(Problem(
+                f"column '{spec.name}' expects a {spec.type}; {len(failures)} "
+                f"of {len(raw)} value(s) could not be read as one "
+                f"({word} {records[index][0]}: '{value}')",
+                column=spec.name, line=records[index][0]))
+
+        if not spec.allow_null:
+            blanks = [records[i][0] for i, v in enumerate(values.isna()) if v]
+            if blanks:
+                problems.append(Problem(
+                    f"column '{spec.name}' expects a value in every row; "
+                    f"{len(blanks)} row(s) are blank (first at {word} "
+                    f"{blanks[0]})", column=spec.name, line=blanks[0]))
+
+    if problems:
+        return FileLoad(cells=cells, problems=problems, notes=notes)
+    return FileLoad(df=pd.DataFrame(frame), cells=cells, notes=notes)
