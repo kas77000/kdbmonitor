@@ -868,16 +868,24 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 else (ds.env or "no environment"))
     with st.expander(f"**{ds.name}** · {subtitle}", expanded=True):
         if ds.source == "file":
+            from kdbmonitor.ui import fileshape
+
             head = st.columns([3, 1.8, 0.7], vertical_alignment="bottom")
+            was = ds.name
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
+            # The held sample is filed under the dataset's name, and the box
+            # above hands back the new one on the very rerun it is typed in.
+            # Without moving it, renaming a dataset would blank its grid and its
+            # preview as though the sample had never been uploaded.
+            fileshape.rename_sample(was, ds.name)
             ds.max_rows = int(head[1].number_input(
                 "Max rows", 1, 1_000_000, ds.max_rows, step=100,
                 key=f"{key}_mr"))
             if head[2].button("", icon=":material/delete:", key=f"{key}_del"):
+                fileshape.forget_sample(ds.name)
                 draft.datasets.pop(index)
                 _forget(r"ds\d+")              # every card below renumbers
                 st.rerun()
-            from kdbmonitor.ui import fileshape
             fileshape.render(ds, key=key)
         else:
             head = st.columns([2, 2, 1.8, 1.6, 0.7], vertical_alignment="bottom")

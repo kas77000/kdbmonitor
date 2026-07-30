@@ -38,6 +38,32 @@ def stored_sample(ds_name: str):
     return held.get("df") if held else None
 
 
+def rename_sample(was: str, now: str) -> None:
+    """Follow a dataset's sample across a rename.
+
+    A sample is filed under the dataset's name, and the name is editable in the
+    same card — Streamlit hands back the new one on the very rerun it is typed
+    in. Left alone, the sample would be filed under a name nothing looks up
+    again: the grid and the preview would empty out as though the file had never
+    been uploaded, which reads as having lost work rather than as having renamed
+    something.
+    """
+    if not was or was == now or not now:
+        return
+    held = st.session_state.pop(sample_key(was), None)
+    if held is not None:
+        st.session_state[sample_key(now)] = held
+
+
+def forget_sample(ds_name: str) -> None:
+    """Drop a sample when its dataset goes, rather than leaving it in the session.
+
+    Nothing reads it once the dataset is gone, but a two-hundred-row frame per
+    deleted dataset accumulates for as long as the tab stays open.
+    """
+    st.session_state.pop(sample_key(ds_name), None)
+
+
 def _grid_frame(grid: list[list[str]]) -> pd.DataFrame:
     """The raw file as a table, labelled the way the controls talk about it.
 
