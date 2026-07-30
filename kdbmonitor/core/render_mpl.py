@@ -11,7 +11,7 @@ from typing import Callable
 import seaborn as sns
 
 from kdbmonitor.core import theme
-from kdbmonitor.core.plotmodel import PlotModel
+from kdbmonitor.core.plotmodel import Band, PlotModel, Reference
 
 
 def _bare(ax, keep_bottom: bool = True) -> None:
@@ -268,6 +268,153 @@ def _table(ax, pm: PlotModel) -> None:
                 cell.get_text().set_fontweight("bold")
 
 
+# How many off-scale notices stack before they'd run off the top of the axes —
+# not a limit enforced anywhere, just the spacing between them.
+_OFF_SCALE_STEP = 0.055
+
+
+def _mid(ax, axis, v0, v1) -> float:
+    """The midpoint between two values on ``axis`` ('x' or 'y'), in whatever
+    units it has settled on — categorical, numeric or datetime.
+
+    Going through the axis' own unit converter rather than averaging ``v0``
+    and ``v1`` directly means a categorical label or a Timestamp locates
+    exactly the same way a plain float does, without a second code path per
+    axis kind.
+    """
+    conv = ax.xaxis if axis == "x" else ax.yaxis
+    return (float(conv.convert_units(v0)) + float(conv.convert_units(v1))) / 2
+
+
+def _band_span(xs: list, band: Band, kind: str):
+    """The two positions a band's ends resolve to along the category axis, or
+    None if either is not on this axis after all.
+
+    Matched by text against the series' own x list — the same way the
+    resolver matched them against the data — so a category, a date and a
+    number all locate the same way. A bar chart's categories are not plotted
+    at their own values but at integer positions, so a band there spans
+    whole categories rather than the gap between two labels.
+    """
+    str_xs = [str(v) for v in xs]
+    try:
+        i0 = str_xs.index(str(band.start))
+        i1 = str_xs.index(str(band.end))
+    except ValueError:
+        return None
+    if kind == "bar":
+        return i0 - 0.5, i1 + 0.5
+    return xs[i0], xs[i1]
+
+
+def _draw_band(ax, band: Band, xs: list, kind: str, horizontal: bool) -> None:
+    span = _band_span(xs, band, kind)
+    if span is None:
+        return
+    v0, v1 = span
+    # Below the series' own zorder (2 for a line, 3 for a bar or scatter point)
+    # so the shading frames the data instead of sitting on top of it. A
+    # horizontal bar has swapped its category axis onto y, so the span follows.
+    if horizontal:
+        ax.axhspan(v0, v1, color=theme.MUTED, alpha=0.12, zorder=0.5,
+                  linewidth=0)
+    else:
+        ax.axvspan(v0, v1, color=theme.MUTED, alpha=0.12, zorder=0.5,
+                  linewidth=0)
+    if not band.label:
+        return
+    mid = _mid(ax, "y" if horizontal else "x", v0, v1)
+    if horizontal:
+        ax.text(0.97, mid, band.label, transform=ax.get_yaxis_transform(),
+                ha="right", va="center", fontsize=8, color=theme.MUTED)
+    else:
+        ax.text(mid, 0.97, band.label, transform=ax.get_xaxis_transform(),
+                ha="center", va="top", fontsize=8, color=theme.MUTED)
+
+
+def _draw_reference(ax, ref: Reference, xs: list, lim: tuple, kind: str,
+                    horizontal: bool):
+    """Draw one reference against the value-axis range already settled on.
+
+    Returns the reference's label if a constant fell outside that range —
+    drawing it would force the axis to widen and flatten the real series, but
+    dropping it without a word leaves the reader wondering where the line they
+    asked for went, so the caller turns this into a small note instead. A
+    horizontal bar reads its values off x rather than y, so the line, and the
+    range it is checked against, are drawn on whichever axis actually carries
+    the values.
+    """
+    lo, hi = lim
+    line = ax.axvline if horizontal else ax.axhline
+    if ref.value is not None:
+        if not (lo <= ref.value <= hi):
+            return ref.label or "reference"
+        line(ref.value, color=theme.MUTED, linestyle="--", linewidth=1.2,
+            zorder=1)
+        if ref.label:
+            if horizontal:
+                ax.text(ref.value, 0.995, f" {ref.label}",
+                        transform=ax.get_xaxis_transform(), ha="left",
+                        va="top", fontsize=8, color=theme.MUTED)
+            else:
+                ax.text(0.995, ref.value, f" {ref.label}",
+                        transform=ax.get_yaxis_transform(), ha="right",
+                        va="bottom", fontsize=8, color=theme.MUTED)
+        return None
+
+    # A curve reference plots against the same category positions the chart
+    # itself uses — a bar chart's categories are integer slots, not the
+    # category values, so the reference follows suit there. A length mismatch
+    # against the series (a stale reference left over from a shorter dataset)
+    # is truncated to whichever is shorter rather than raising.
+    positions = list(range(len(xs))) if kind == "bar" else xs
+    n = min(len(positions), len(ref.values))
+    if n == 0:
+        return None
+    cats, values = positions[:n], ref.values[:n]
+    plot_x, plot_y = (values, cats) if horizontal else (cats, values)
+    ax.plot(plot_x, plot_y, color=theme.MUTED, linestyle="--", linewidth=1.4,
+            zorder=1)
+    if ref.label:
+        ax.annotate(ref.label, (plot_x[-1], plot_y[-1]), xytext=(4, 0),
+                    textcoords="offset points", fontsize=8,
+                    color=theme.MUTED, va="center")
+    return None
+
+
+def _draw_extras(ax, pm: PlotModel) -> None:
+    """References and bands, drawn against the range the data already settled
+    on — never the other way round.
+
+    A mistyped threshold sitting far outside the real series would otherwise
+    widen the axis until that series flattens into a line along the bottom of
+    the chart, which is worse than not drawing the reference at all. So the
+    range is captured before anything extra goes on, and restored after,
+    whatever the extras did to it in between.
+    """
+    if not pm.references and not pm.bands:
+        return
+    horizontal = pm.kind == "bar" and pm.orientation == "h"
+    value_lim = ax.get_xlim() if horizontal else ax.get_ylim()
+    xs = list(pm.series[0].x) if pm.series else []
+
+    for band in pm.bands:
+        _draw_band(ax, band, xs, pm.kind, horizontal)
+
+    off_scale = [note for ref in pm.references
+                 if (note := _draw_reference(ax, ref, xs, value_lim, pm.kind,
+                                             horizontal))]
+    for i, label in enumerate(off_scale):
+        ax.text(0.99, 0.99 - i * _OFF_SCALE_STEP, f"{label} — off scale",
+                transform=ax.transAxes, ha="right", va="top", fontsize=8,
+                color=theme.MUTED, style="italic")
+
+    if horizontal:
+        ax.set_xlim(value_lim)
+    else:
+        ax.set_ylim(value_lim)
+
+
 def _bar(ax, pm: PlotModel) -> None:
     _bare(ax)
     n = max(len(pm.series), 1)
@@ -310,6 +457,8 @@ def _bar(ax, pm: PlotModel) -> None:
     if len(pm.series) > 1:
         ax.legend(frameon=False, fontsize=9)
 
+    _draw_extras(ax, pm)
+
 
 def _line(ax, pm: PlotModel) -> None:
     _bare(ax)
@@ -319,6 +468,8 @@ def _line(ax, pm: PlotModel) -> None:
     ax.grid(axis="y", color=theme.GRID, linewidth=0.8)
     if len(pm.series) > 1:
         ax.legend(frameon=False, fontsize=9)
+
+    _draw_extras(ax, pm)
 
 
 def _scatter(ax, pm: PlotModel) -> None:
@@ -332,6 +483,8 @@ def _scatter(ax, pm: PlotModel) -> None:
     ax.set_ylabel(pm.y_label, fontsize=9.5, color=theme.INK2)
     if len(pm.series) > 1:
         ax.legend(frameon=False, fontsize=9)
+
+    _draw_extras(ax, pm)
 
 
 def _hist(ax, pm: PlotModel) -> None:

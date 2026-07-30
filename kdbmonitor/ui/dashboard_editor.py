@@ -44,6 +44,7 @@ AGG_FUNCS = ["count", "nunique", "sum", "mean", "min", "max"]
 TRANSFORM_KINDS = ["derive", "filter", "groupby", "sort", "limit", "rename"]
 WIDGET_TYPES = ["kpi", "table", "text", "bar", "line", "scatter", "hist",
                 "box", "heatmap", "pie"]
+REFERENCE_KINDS = ["constant", "mean", "median", "quantile", "column"]
 
 RAW_HELP = (
     "Raw q. In historical mode you MUST constrain `date` — use "
@@ -1407,6 +1408,76 @@ def _format_picker(container, label: str, current: str, key: str,
     return spec
 
 
+def _references_bands_form(s: dict, columns: list[str], key: str) -> None:
+    """References and bands for a bar/line/scatter widget — a dashed line and
+    a shaded span, both optional and both repeatable.
+
+    Matches ``_filters_form``'s shape: one row per item, a close button that
+    pops it and forgets the keys below so a deleted row's neighbours redraw
+    from the spec instead of from a stale widget position.
+    """
+    with st.expander("References & bands", expanded=False):
+        st.caption("A reference is a dashed line drawn against the chart — a "
+                   "target, an average, a pace. It never widens the axis: a "
+                   "value far off the chart is named as off-scale rather "
+                   "than stretching the real data flat to make room for it.")
+        for i, ref in enumerate(list(s.get("references", []))):
+            c = st.columns([1.5, 1.8, 1.8, 0.6], vertical_alignment="bottom")
+            kind = ref.get("kind", "constant")
+            ref["kind"] = c[0].selectbox(
+                "Kind", REFERENCE_KINDS,
+                index=REFERENCE_KINDS.index(kind)
+                if kind in REFERENCE_KINDS else 0,
+                key=f"{key}_refk_{i}")
+            if ref["kind"] == "column":
+                ref["column"] = _pick(c[1], "Column", columns,
+                                      ref.get("column", ""), f"{key}_refc_{i}")
+            elif ref["kind"] == "quantile":
+                ref["value"] = c[1].number_input(
+                    "Quantile (0-1)", 0.0, 1.0, float(ref.get("value") or 0.5),
+                    step=0.05, key=f"{key}_refv_{i}")
+            elif ref["kind"] == "constant":
+                ref["value"] = c[1].number_input(
+                    "Value", value=float(ref.get("value") or 0.0),
+                    key=f"{key}_refv_{i}")
+            else:
+                c[1].caption("Taken over the whole Y column.")
+            ref["label"] = c[2].text_input("Label", value=ref.get("label", ""),
+                                           key=f"{key}_refl_{i}")
+            if c[3].button("", icon=":material/close:", key=f"{key}_refx_{i}"):
+                s["references"].pop(i)
+                _forget(rf"{key}_ref")     # every reference below shuffles up
+                st.rerun()
+
+        if st.button("Add reference", icon=":material/add:",
+                    key=f"{key}_refadd"):
+            s.setdefault("references", []).append(
+                {"kind": "constant", "value": 0.0, "label": ""})
+            st.rerun()
+
+        st.caption("A band shades a span behind the chart — a pre-open "
+                   "stretch, a lunch break. Matched against X as it already "
+                   "prints, so type the value exactly as it reads on the "
+                   "axis; an end not found in the data is dropped rather "
+                   "than drawn wrong.")
+        for i, band in enumerate(list(s.get("bands", []))):
+            c = st.columns([1.6, 1.6, 1.8, 0.6], vertical_alignment="bottom")
+            band["from"] = c[0].text_input(
+                "From", value=str(band.get("from", "")), key=f"{key}_bandf_{i}")
+            band["to"] = c[1].text_input(
+                "To", value=str(band.get("to", "")), key=f"{key}_bandt_{i}")
+            band["label"] = c[2].text_input(
+                "Label", value=band.get("label", ""), key=f"{key}_bandl_{i}")
+            if c[3].button("", icon=":material/close:", key=f"{key}_bandx_{i}"):
+                s["bands"].pop(i)
+                _forget(rf"{key}_band")    # every band below shuffles up
+                st.rerun()
+
+        if st.button("Add band", icon=":material/add:", key=f"{key}_bandadd"):
+            s.setdefault("bands", []).append({"from": "", "to": "", "label": ""})
+            st.rerun()
+
+
 def _widget_form(w: Widget, columns: list[str], key: str) -> None:
     s = w.spec
     if w.type == "kpi":
@@ -1509,6 +1580,8 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
             s["regression"] = c[3].checkbox("Trend line",
                                             value=bool(s.get("regression")),
                                             key=f"{key}_r")
+
+        _references_bands_form(s, columns, key)
 
     elif w.type == "hist":
         c = st.columns([2, 1.4], vertical_alignment="bottom")
