@@ -6,6 +6,8 @@
 
 **Architecture:** A `Parameter` is a value the reader chooses, substituted as `{{param:name}}` into transform params and widget specs — the same idiom as `{{stepN.column}}` and `{{date_from}}`. Parameters never reach a query, so changing one re-transforms frames already held rather than going back to the server. A partitioned `window` transform supplies the row-over-row arithmetic that `derive` currently allows only by accident, which is what makes it affordable to shut that hole.
 
+**Everything here is a generic building block.** Nothing is named after a volume profile, and nothing knows about instruments, buckets or trading sessions. The window ops and reference kinds are chosen for breadth — share-of-group, top-N-per-group and draw-the-average are wanted by most reports and expressible by none today — and the volume profile is assembled out of those parts in Task 15 rather than being a case any of them handles. New transforms and parameters save into the existing component library, so a picker or a calculation built once is reusable in the next dashboard.
+
 **Tech Stack:** Python 3.11, Streamlit, pandas, SQLite, matplotlib, plotly, pytest.
 
 **Spec:** `docs/superpowers/specs/2026-07-31-dashboard-parameters-design.md`

@@ -203,8 +203,7 @@ Only page 1 carries them, matching the existing rule for the title band.
 ```python
 {"kind": "window", "params": {
     "column": "CumulatedPercentage",
-    "op": "diff",                       # diff | cumsum | shift | rolling_mean
-                                        # | rolling_sum | row_number
+    "op": "diff",                       # see the table below
     "periods": 1,                       # diff, shift, rolling_*
     "partition_by": ["#FidessaCode"],   # optional; [] = the whole frame
     "as": "bucket",
@@ -212,9 +211,33 @@ Only page 1 carries them, matching the existing rule for the title band.
 ```
 
 Implemented with `df.groupby(partition_by)[column].transform(...)`, or the plain
-series where `partition_by` is empty. `row_number` takes no source column and
-numbers rows from 0 within each partition — which is what makes an *even pace*
-reference computable (§5.2).
+series where `partition_by` is empty.
+
+### 4.1.1 The operations, and why these
+
+The volume profile needs two of these. The rest are here because the partition
+machinery is the expensive part and, once it exists, each further operation is
+two lines — and because a transform catalogue that answers only one report's
+question is not a catalogue.
+
+| op | Does | Wanted for |
+| --- | --- | --- |
+| `diff` | difference from *n* rows back | a per-bucket share from a cumulated one |
+| `cumsum` | running total | a cumulated curve from per-period figures — the inverse |
+| `shift` | the value *n* rows back | comparing a row against the one before it |
+| `rolling_mean`, `rolling_sum` | over a moving window | smoothing a noisy intraday series |
+| `row_number` | position within the partition, from 0 | an *even pace* reference (§6.1); pairing rows with a sequence |
+| `pct_of_total` | the row's share of its partition's total | **share of group** — volume per venue, orders per desk, contribution per book |
+| `rank` | position by value within the partition | **top-N per group**: rank, then filter. `limit` only ever takes the head of the whole frame |
+
+`row_number` takes no source column. `pct_of_total` over a partition summing to
+zero yields nulls, not infinities — the same rule `_no_infinities` already
+applies to derived columns, and for the same reason.
+
+The last two are the ones that make this generic rather than bespoke. Neither is
+expressible in the catalogue at all today: a share of a group needs a total
+computed separately and joined back, and a per-group top-N needs a limit that
+respects grouping. Both are ordinary things to want from any reporting tool.
 
 ### 4.2 Rules
 
@@ -300,18 +323,32 @@ A dashed line across a chart, at a constant or following a column.
 
 ```python
 spec["references"] = [
-    {"kind": "constant", "value": 0.05, "label": "average bucket"},
-    {"kind": "column", "column": "even_pace", "label": "even pace"},
+    {"kind": "constant", "value": 0.05, "label": "target"},
+    {"kind": "column",   "column": "even_pace", "label": "even pace"},
+    {"kind": "mean",     "label": "average bucket"},
+    {"kind": "quantile", "value": 0.95, "label": "95th pct"},
 ]
 ```
+
+| kind | The line sits at |
+| --- | --- |
+| `constant` | a level the author types |
+| `column` | the values of another column, so it can be a curve |
+| `mean`, `median` | that statistic of the plotted series, computed at render |
+| `quantile` | the given quantile of the plotted series |
 
 `PlotModel` gains `references: list[Reference]`, resolved in `plotmodel.py` as
 every other numeric decision is, and drawn by both renderers — Plotly on screen,
 matplotlib on the page — from the same resolved values.
 
-*Even pace* is then an ordinary column: `row_number` over the session (§4.1),
-divided by the bucket count. *Average bucket* is a constant the author sets, or a
-column derived from the mean.
+`mean`/`median`/`quantile` exist because "draw the average" is the single
+commonest thing anyone asks of a chart, and requiring a `derive` for it would
+make the obvious case the awkward one. They are computed from whatever series
+the widget is plotting, so they follow a parameter change without being told to.
+
+The volume profile's two references then need nothing special: *even pace* is a
+`column` over `row_number / bucket count` (§4.1), and *average bucket* is a
+`mean`.
 
 ### 6.2 Bands
 
@@ -384,6 +421,31 @@ frame **as the widgets see it** — after transforms, after parameters. Reuses
 The filename carries the dashboard, the dataset and the parameter values, so two
 exports taken at different instrument selections do not overwrite each other.
 
+## 9a. Everything new is reusable, not one-off
+
+The point of this work is a toolkit, not one report. Concretely that means:
+
+- **Nothing is named after a volume profile.** No `even_pace` reference kind, no
+  `bucket_share` transform, no instrument-aware anything. Every piece above is
+  stated in terms of columns, partitions and levels, and the volume profile is
+  assembled *out of* them (§12) rather than being a case any of them knows about.
+- **The component library takes the new pieces.** `Component` already stores a
+  `transform` or a `widget` under a name, to be loaded into another dashboard.
+  `window` and `timezone` transforms save and load through it with no change,
+  and `kind` gains `"parameter"` so an instrument picker built once can be
+  dropped into the next dashboard. A widget saved with its references and bands
+  carries them, because they live in its `spec`.
+- **Parameters are not a filter feature.** They substitute into any string in a
+  transform's params or a widget's spec, so the same mechanism drives *which
+  column to chart*, *how many rows to keep*, *what a title says*. The instrument
+  picker is one use of it, not its definition.
+- **The window ops and reference kinds are chosen for breadth** (§4.1.1, §6.1):
+  share-of-group, top-N-per-group and draw-the-average are wanted by most
+  reports and expressible by none today.
+
+The check that this held is the end-to-end test: the volume profile is built
+entirely from generic parts, and no part of it needed a special case.
+
 ## 10. Files
 
 **New**
@@ -407,6 +469,7 @@ exports taken at different instrument selections do not overwrite each other.
 | `core/filesource.py` | delimiter, encoding, decimal comma, Excel serials |
 | `ui/dashboards.py` | parameter row; export controls; cache invalidation |
 | `ui/dashboard_editor.py` | parameter editor; window/timezone forms; reference and band forms; validation |
+| `core/storage.py` | `Component.kind` accepts `parameter` alongside `transform`/`widget` |
 
 ## 11. Testing
 
