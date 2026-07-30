@@ -1,7 +1,44 @@
 # kdbmonitor/core/qfmt.py
+"""Python values -> q literals, for the where clause a guided filter builds.
+
+Every type here has to be *told* what it is. q has no way to look at the text
+"2026-07-30" and know whether it was meant as a date or as arithmetic, and it
+does not ask: it reads it as 2026 minus 7 minus 30 and returns 1989. So the
+value type is part of the filter, and each one has exactly one meaning.
+"""
 from __future__ import annotations
 
+import re
+from datetime import date, datetime
 from typing import Any
+
+VALUE_TYPES = ("symbol", "number", "string", "date", "time", "expression")
+
+# A date written any of the ordinary ways. q wants dots; people type dashes,
+# slashes, or paste whatever their last export used.
+_DATE_TEXT = re.compile(r"^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s*$")
+
+
+def q_date(value: Any) -> str:
+    """A q date literal — ``2026.07.30``.
+
+    Accepts a ``date``/``datetime``, or text written with dashes, slashes or
+    dots. Anything else raises rather than being passed through: a date that
+    silently became subtraction is the failure this type exists to prevent, and
+    it fails as a wrong number rather than as an error.
+    """
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return f"{value:%Y.%m.%d}"
+
+    match = _DATE_TEXT.match(str(value))
+    if not match:
+        raise ValueError(
+            f"'{value}' is not a date. Write it as 2026-07-30, or use the "
+            f"expression type for something q works out itself, like .z.D-1.")
+    year, month, day = (int(p) for p in match.groups())
+    return f"{date(year, month, day):%Y.%m.%d}"
 
 
 def format_q_value(value: Any, value_type: str) -> str:
@@ -12,6 +49,17 @@ def format_q_value(value: Any, value_type: str) -> str:
     if value_type == "string":
         escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
+    if value_type == "date":
+        return q_date(value)
+    if value_type == "time":
+        # A time of day, or a timestamp, written as q already spells it.
+        return str(value).strip()
+    if value_type == "expression":
+        # q the author wrote, sent as it stands: .z.D-1, .z.D, .z.P, or a
+        # sub-select. Guided mode has always been able to reach raw q through
+        # the raw mode beside it, so this adds no reach — it saves rewriting a
+        # whole query to compute one value.
+        return str(value).strip()
     raise ValueError(f"unknown value_type: {value_type}")
 
 
@@ -30,5 +78,18 @@ def format_q_list(values: list, value_type: str) -> str:
         if not values:
             return "()"            # empty list
         parts = [format_q_value(v, "string") for v in values]
+        return "(" + ";".join(parts) + ")" if len(values) > 1 else "enlist " + parts[0]
+    if value_type in ("date", "time"):
+        if not values:
+            # An empty date vector. `0#0d` types it, so `date in ...` stays a
+            # comparison of dates rather than of longs.
+            return "0#0d" if value_type == "date" else "0#0t"
+        parts = [format_q_value(v, value_type) for v in values]
+        joined = " ".join(parts)
+        return joined if len(values) > 1 else "enlist " + parts[0]
+    if value_type == "expression":
+        if not values:
+            return "()"
+        parts = [format_q_value(v, "expression") for v in values]
         return "(" + ";".join(parts) + ")" if len(values) > 1 else "enlist " + parts[0]
     raise ValueError(f"unknown value_type: {value_type}")

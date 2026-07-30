@@ -1,0 +1,97 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": null,
+  "connections": [],
+  "alerts": [],
+  "dashboards": [
+    {
+      "id": null,
+      "name": "Active orders on yesterday's IB equities",
+      "description": "Yesterday's matching symbols from EQUITY DATA, then the live target orders on them whose latest state is activated. A target has many target_state rows, so the state is taken as the last one per id_target rather than as any row that ever said activated.",
+      "refresh_secs": 15,
+      "periods": "realtime",
+      "orientation": "auto",
+      "source": "kdb",
+      "parameters": [],
+      "time_context": {
+        "mode": "realtime"
+      },
+      "datasets": [
+        {
+          "name": "equity_syms",
+          "env": "EQUITY DATA",
+          "time_mode": "realtime",
+          "time_context": null,
+          "mode": "raw",
+          "table": "",
+          "filters": [],
+          "raw_qsql": "select sym from equity where date=.z.D-1, sym like \"*.IB\", ID_ISIN in `INE180A01020",
+          "extra_connections": [],
+          "transforms": [],
+          "max_rows": 5000,
+          "source": "kdb",
+          "shape": null,
+          "file_label": ""
+        },
+        {
+          "name": "active_orders",
+          "env": "OMS RT",
+          "time_mode": "realtime",
+          "time_context": null,
+          "mode": "raw",
+          "table": "",
+          "filters": [],
+          "raw_qsql": "select from target where sym in {{equity_syms.sym}}, id_target in exec id_target from (0!select last state by id_target from target_state) where state=`activated",
+          "extra_connections": [],
+          "transforms": [],
+          "max_rows": 5000,
+          "source": "kdb",
+          "shape": null,
+          "file_label": ""
+        }
+      ],
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "active_orders",
+              "title": "Activated orders",
+              "spec": {
+                "column": "id_target",
+                "agg": "count",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "equity_syms",
+              "title": "Symbols matched yesterday",
+              "spec": {
+                "column": "sym",
+                "agg": "nunique",
+                "fmt": ",.0f"
+              },
+              "width": 1.0
+            }
+          ],
+          "height_in": 0.9
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "active_orders",
+              "title": "target",
+              "spec": {},
+              "width": 1.0
+            }
+          ],
+          "height_in": 6.5
+        }
+      ]
+    }
+  ]
+}
