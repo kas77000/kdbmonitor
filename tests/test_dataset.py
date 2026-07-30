@@ -413,6 +413,19 @@ def test_an_unknown_federated_env_is_captured_as_a_panel_error(store):
 
     res = run_datasets(dash, store, mgr, TODAY)
     assert res["lim"].df is None
+    # A handle may name an environment or one connection, so a name that is
+    # neither says so and lists what there is, rather than calling it an
+    # unknown environment when it might have been meant as a server.
+    assert "nope" in res["lim"].error
+    assert "orders" in res["lim"].error
+
+
+def test_naming_a_side_of_an_unknown_environment_still_says_so(store):
+    """The ENV:kind form can only mean an environment, so it names that."""
+    dash = Dashboard(id=1, name="d", datasets=[
+        Dataset(name="lim", env="orders", mode="raw",
+                raw_qsql="hopen {{conn:nope:realtime}}")])
+    res = run_datasets(dash, store, _mgr({}), TODAY)
     assert "unknown environment" in res["lim"].error
 
 
