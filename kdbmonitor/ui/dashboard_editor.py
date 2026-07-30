@@ -1002,7 +1002,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
 
 
 def _render_data(store, mgr, draft: Dashboard) -> None:
-    if not store.list_environments():
+    if draft.source != "file" and not store.list_environments():
         st.warning("No connections yet — add one in Admin first.",
                    icon=":material/warning:")
 
@@ -1013,15 +1013,18 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
         envs = sorted(store.list_environments())
         draft.datasets.append(Dataset(
             name=unique_name("dataset", [d.name for d in draft.datasets]),
-            env=envs[0] if envs else ""))
+            env="" if draft.source == "file" else (envs[0] if envs else ""),
+            source=draft.source))
         st.rerun()
 
     if draft.datasets and st.button("Run and inspect each step",
                                     icon=":material/play_arrow:",
                                     key="dash_preview_run",
-                                    help="Send each dataset's query, then apply "
-                                         "its transforms one at a time so you "
-                                         "can check what every step did."):
+                                    help="Send each KDB dataset's query and "
+                                         "apply each file dataset's transforms "
+                                         "to its held sample, one step at a "
+                                         "time, so you can check what every "
+                                         "step did."):
         # Rerun rather than render below: the run teaches the editor what a raw
         # query returns, and the column pickers above should show that straight
         # away rather than one interaction later.
@@ -1068,10 +1071,18 @@ def run_preview(store, mgr, draft: Dashboard):
 
     Done before the forms are drawn, not after: a run is the only way to learn a
     raw query's columns, and the pickers are built from them.
+
+    A file dataset has no query to send; it previews against the sample its
+    shape editor is holding, which is the same frame a viewer's upload would
+    produce. Without it the transform steps would have nothing to work on and
+    the author would be building the pipeline blind.
     """
     if not st.session_state.pop("dash_preview_data", False):
         return None
-    traces = trace_datasets(draft, store, mgr, date.today())
+    from kdbmonitor.ui.fileshape import stored_sample
+    uploads = {ds.name: stored_sample(ds.name) for ds in draft.datasets
+               if ds.source == "file" and stored_sample(ds.name) is not None}
+    traces = trace_datasets(draft, store, mgr, date.today(), uploads=uploads)
     for name, trace in traces.items():
         # The query's own columns are the only reliable knowledge we have of a
         # raw dataset's shape — keep them for the column pickers.
@@ -1489,40 +1500,70 @@ def render(store, mgr) -> None:
     draft = _draft(store)
 
     with form_area():
-        head = st.columns([3, 3, 1.4, 1.2, 1.2], vertical_alignment="bottom")
+        head = st.columns([2.6, 2.6, 1.8, 1.4, 1.2, 1.2],
+                          vertical_alignment="bottom")
         draft.name = head[0].text_input("Dashboard name", value=draft.name)
         draft.description = head[1].text_input("Description",
                                                value=draft.description)
+        sources = ["kdb", "file"]
+        draft.source = head[2].selectbox(
+            "Data from", sources,
+            index=sources.index(draft.source if draft.source in sources
+                                else "kdb"),
+            format_func=lambda s: "KDB queries" if s == "kdb"
+            else "An uploaded file",
+            help="A file dashboard is a template: whoever opens it uploads "
+                 "their own file of the shape you profile here, and sees their "
+                 "own numbers. It has no environment, no period and no refresh "
+                 "interval — those describe a server, and there is none.")
 
-        p = st.columns([2.4, 4.2, 2.4], vertical_alignment="center")
-        modes = list(PERIOD_MODES)
-        draft.periods = p[0].selectbox(
-            "Periods offered", modes,
-            index=modes.index(draft.periods if draft.periods in modes else "both"),
-            format_func=lambda m: PERIOD_LABELS[m],
-            help="Switching period switches server, so 'both' needs every "
-                 "environment this reads to have a real-time server and its "
-                 "historical twin. A dashboard built over one side alone says "
-                 "so here, and is never offered the period it cannot answer.")
-        p[1].caption(_periods_hint(draft, store))
-        ways = list(ORIENTATIONS)
-        draft.orientation = p[2].selectbox(
-            "Printed page", ways,
-            index=ways.index(draft.orientation
-                             if draft.orientation in ways else "auto"),
-            format_func=lambda o: ORIENTATION_LABELS[o],
-            help="A wide table has to fit its columns across the page, and text "
-                 "given too little room collides rather than shrinks. On 'auto' "
-                 "the report prints portrait until a table cannot be printed "
-                 "legibly across it, and then the whole report turns. Only the "
-                 "data can say how wide a column really is, so the decision is "
-                 "made when the PDF is generated, not here.")
+        if draft.source != "file":
+            p = st.columns([2.4, 4.2, 2.4], vertical_alignment="center")
+            modes = list(PERIOD_MODES)
+            draft.periods = p[0].selectbox(
+                "Periods offered", modes,
+                index=modes.index(draft.periods if draft.periods in modes else "both"),
+                format_func=lambda m: PERIOD_LABELS[m],
+                help="Switching period switches server, so 'both' needs every "
+                     "environment this reads to have a real-time server and its "
+                     "historical twin. A dashboard built over one side alone says "
+                     "so here, and is never offered the period it cannot answer.")
+            p[1].caption(_periods_hint(draft, store))
+            ways = list(ORIENTATIONS)
+            draft.orientation = p[2].selectbox(
+                "Printed page", ways,
+                index=ways.index(draft.orientation
+                                 if draft.orientation in ways else "auto"),
+                format_func=lambda o: ORIENTATION_LABELS[o],
+                help="A wide table has to fit its columns across the page, and text "
+                     "given too little room collides rather than shrinks. On 'auto' "
+                     "the report prints portrait until a table cannot be printed "
+                     "legibly across it, and then the whole report turns. Only the "
+                     "data can say how wide a column really is, so the decision is "
+                     "made when the PDF is generated, not here.")
+        else:
+            p = st.columns([2.4, 7.6], vertical_alignment="center")
+            ways = list(ORIENTATIONS)
+            draft.orientation = p[0].selectbox(
+                "Printed page", ways,
+                index=ways.index(draft.orientation
+                                 if draft.orientation in ways else "auto"),
+                format_func=lambda o: ORIENTATION_LABELS[o],
+                help="A wide table has to fit its columns across the page. On "
+                     "'auto' the report prints portrait until a table cannot be "
+                     "printed legibly across it, and then the whole report "
+                     "turns.")
+            p[1].caption(
+                "This dashboard reads an uploaded file, so it has no "
+                "environment, no period and no refresh interval — its numbers "
+                "change when somebody uploads a different file, and at no "
+                "other moment.")
 
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.
     problems = validate(draft, store)
 
-    if head[2].button(f"Save ({len(problems)})" if problems else "Save",
+    if head[3].button(f"Save ({len(problems)})" if problems else "Save",
                       icon=":material/save:", type="primary",
                       use_container_width=True, disabled=bool(problems),
                       help="Fix the listed problems first" if problems else None):
@@ -1534,14 +1575,14 @@ def render(store, mgr) -> None:
         _close()
         st.rerun()
 
-    if head[3].button("Open", icon=":material/open_in_new:",
+    if head[4].button("Open", icon=":material/open_in_new:",
                       use_container_width=True, disabled=draft.id is None):
         dashboard_id = draft.id
         _close()
         st.query_params["dash"] = str(dashboard_id)
         st.rerun()
 
-    if head[4].button("Back", icon=":material/arrow_back:",
+    if head[5].button("Back", icon=":material/arrow_back:",
                       use_container_width=True,
                       help="Leave the editor and return to the dashboard list"):
         _close()
