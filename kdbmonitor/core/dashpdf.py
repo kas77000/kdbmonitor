@@ -31,6 +31,11 @@ GUTTER = 0.28                      # between rows and between widgets
 # only page 1's header grows — a continuation page has no caption to make room
 # for, and giving it back the space keeps a long table's page count unchanged.
 CAPTION_H = 0.20
+# The caption's type, and what a character of it costs. matplotlib neither
+# wraps nor clips, so a caption longer than the page keeps going past the
+# margin — the same failure a wide table had, and measured the same way.
+CAPTION_FONT = 9.5
+CAPTION_CHAR_EM = 0.55
 
 
 def header_height(chosen: Optional[dict] = None) -> float:
@@ -394,12 +399,38 @@ def report_period(rt: ResolvedTime, as_of: datetime) -> str:
     return f"{as_of:%Y-%m-%d %H:%M}"
 
 
-def _caption(chosen: dict) -> str:
+def _caption(chosen: dict, width_in: float = 0.0) -> str:
     """The chosen values, as one line — a parameter resolving to nothing has
-    nothing to say, so it is left out rather than printed blank."""
+    nothing to say, so it is left out rather than printed blank.
+
+    Cut to what the page holds. matplotlib neither wraps nor clips a text
+    artist, so six parameters ran off the right edge of the sheet and kept
+    going: the caption exists to say what the report was filtered to, and one
+    that runs into the margin says it worse than a shorter one would. Where it
+    will not fit, the parameters that do are named and the rest are counted, so
+    the reader knows the list was cut rather than that it was short.
+    """
     parts = [f"{name}: {value}" for name, value in chosen.items()
              if str(value).strip()]
-    return " · ".join(parts)
+    line = " · ".join(parts)
+    if width_in <= 0:
+        return line
+
+    budget = int(width_in * 72 / (CAPTION_FONT * CAPTION_CHAR_EM))
+    if len(line) <= budget:
+        return line
+
+    kept: list[str] = []
+    for part in parts:
+        candidate = " · ".join(kept + [part])
+        # Room for the "+N more" that will follow, or the note itself is what
+        # overflows.
+        if len(candidate) + 10 > budget:
+            break
+        kept.append(part)
+    if not kept:
+        return line[:max(budget - 1, 1)] + "…"
+    return " · ".join(kept) + f" · +{len(parts) - len(kept)} more"
 
 
 def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
@@ -426,7 +457,7 @@ def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
     fig.text(MARGIN / sheet.w, 1 - 0.78 / sheet.h,
              report_period(rt, as_of), fontsize=11, color=theme.INK2, va="top")
 
-    caption = _caption(chosen) if chosen else ""
+    caption = _caption(chosen, sheet.content_w) if chosen else ""
     if caption:
         fig.text(MARGIN / sheet.w, 1 - 1.00 / sheet.h, caption,
                  fontsize=9.5, color=theme.MUTED, va="top")

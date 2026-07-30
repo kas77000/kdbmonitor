@@ -634,3 +634,36 @@ def test_the_page_count_is_taken_on_the_page_it_will_print_on():
     results = _wide_results(12)
     assert page_count(d, results) == len(
         paginate(d.rows, results, {}, LANDSCAPE))
+
+
+def test_a_caption_of_many_parameters_is_cut_to_the_page():
+    """matplotlib neither wraps nor clips: six parameters ran off the right
+    edge of the sheet and kept going."""
+    from kdbmonitor.core.dashpdf import PORTRAIT, _caption
+
+    chosen = {f"parameter_{i}": f"a_fairly_long_value_{i}" for i in range(6)}
+    line = _caption(chosen, PORTRAIT.content_w)
+    assert "more" in line
+    assert len(line) * 0.55 * 9.5 / 72 <= PORTRAIT.content_w
+
+
+def test_a_cut_caption_says_how_many_it_left_out():
+    from kdbmonitor.core.dashpdf import PORTRAIT, _caption
+
+    chosen = {f"p{i}": f"value_number_{i}_here" for i in range(8)}
+    assert "+" in _caption(chosen, PORTRAIT.content_w)
+
+
+def test_a_caption_that_fits_is_left_whole():
+    from kdbmonitor.core.dashpdf import PORTRAIT, _caption
+
+    assert _caption({"instrument": "ICICIBC.IN"}, PORTRAIT.content_w) \
+        == "instrument: ICICIBC.IN"
+
+
+def test_a_turned_page_fits_more_caption_than_an_upright_one():
+    from kdbmonitor.core.dashpdf import LANDSCAPE, PORTRAIT, _caption
+
+    chosen = {f"p{i}": f"value_{i}_longish" for i in range(5)}
+    assert len(_caption(chosen, LANDSCAPE.content_w)) > \
+        len(_caption(chosen, PORTRAIT.content_w))
