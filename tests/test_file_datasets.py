@@ -141,3 +141,105 @@ def test_a_kdb_dataset_is_never_waiting_whatever_the_server_said():
     out = run_dataset(kdb, ResolvedTime("realtime", None, None), _Store(),
                       None, {})
     assert out.error and out.waiting is False
+
+
+from datetime import datetime
+
+from kdbmonitor.core.dashpdf import (
+    LANDSCAPE, dashboard_to_pdf_bytes, page_count, report_plan,
+)
+from kdbmonitor.core.dataset import DatasetResult
+from kdbmonitor.core.plotmodel import build_plot_model
+from kdbmonitor.core.timectx import ResolvedTime
+
+AS_OF = datetime(2026, 7, 30, 9, 15)
+RT = ResolvedTime("realtime", None, None)
+
+
+def _printable() -> Dashboard:
+    dash = _dash()
+    dash.rows = [Row(widgets=[Widget(type="table", dataset="orders",
+                                     title="Working orders")]),
+                 Row(widgets=[Widget(type="line", dataset="orders",
+                                     title="Quantity",
+                                     spec={"x": "sym", "y": "qty"})])]
+    return dash
+
+
+def test_a_file_dashboard_prints_a_pdf():
+    dash = _printable()
+    results = run_datasets(dash, None, None, TODAY,
+                           uploads={"orders": _frame()})
+    assert dashboard_to_pdf_bytes(dash, results, RT, AS_OF).startswith(b"%PDF")
+
+
+def test_a_widget_cannot_tell_a_file_dataset_from_a_query():
+    """The proof the pipeline is shared rather than parallel: the same frame
+    reaches a widget identically whether it was queried or uploaded."""
+    widget = Widget(type="table", dataset="orders", title="Orders")
+    from_file = run_datasets(_dash(), None, None, TODAY,
+                             uploads={"orders": _frame()})
+    from_kdb = {"orders": DatasetResult("orders", _frame(), "select from o",
+                                        None, row_count=3)}
+
+    assert (build_plot_model(widget, from_file).rows
+            == build_plot_model(widget, from_kdb).rows)
+
+
+def test_a_dashboard_waiting_for_a_file_still_prints_rather_than_crashing():
+    dash = _printable()
+    results = run_datasets(dash, None, None, TODAY, uploads={})
+    assert dashboard_to_pdf_bytes(dash, results, RT, AS_OF).startswith(b"%PDF")
+    assert page_count(dash, results) >= 1
+
+
+def test_a_file_dashboard_with_a_wide_table_still_turns_the_page():
+    """Orientation is decided from the data, and uploaded data is data."""
+    wide_cols = [ColumnSpec(name=n) for n in
+                 ("sym", "side", "orderId", "qty", "filledQty", "avgPrice",
+                  "limitPrice", "venue", "trader", "status", "startTime",
+                  "endTime")]
+    values = ["RELIANCE.IN", "BUY", "ORD-00012345", "125000", "118400",
+              "1284.55", "1290.00", "NSE-MAIN", "jdoe", "PARTIAL",
+              "09:15:03.221", "15:29:58.004"]
+    wide = pd.DataFrame([dict(zip([c.name for c in wide_cols], values))
+                         for _ in range(6)])
+    dash = Dashboard(id=1, name="Wide", source="file", datasets=[
+        Dataset(name="orders", env="", source="file",
+                shape=FileShape(columns=wide_cols))],
+        rows=[Row(height_in=3.0, widgets=[Widget(type="table",
+                                                 dataset="orders")])])
+    results = run_datasets(dash, None, None, TODAY, uploads={"orders": wide})
+    sheet, _ = report_plan(dash, results)
+    assert sheet is LANDSCAPE
+
+
+def test_a_transform_pipeline_over_an_upload_reaches_the_printed_page():
+    """End to end: uploaded frame, grouped, charted, printed."""
+    dash = _dash(transforms=[Transform(kind="groupby", params={
+        "keys": ["sym"], "aggs": [{"column": "qty", "func": "sum",
+                                   "as": "total"}]})])
+    dash.rows = [Row(widgets=[Widget(type="bar", dataset="orders",
+                                     title="By symbol",
+                                     spec={"x": "sym", "y": "total"})])]
+    results = run_datasets(dash, None, None, TODAY,
+                           uploads={"orders": _frame()})
+    assert results["orders"].df["total"].sum() == 60.0
+    assert dashboard_to_pdf_bytes(dash, results, RT, AS_OF).startswith(b"%PDF")
+
+
+def test_a_file_dashboard_round_trips_through_an_export_bundle():
+    """A bundle carries the shape and no data, and comes back runnable."""
+    from kdbmonitor.core.portability import (
+        export_dashboards_json, import_dashboards_json,
+    )
+    raw = export_dashboards_json([_printable()])
+    assert "0005.HK" not in raw and "7203.JP" not in raw   # no data travelled
+
+    back = import_dashboards_json(raw)[0]
+    assert back.source == "file"
+    assert [c.name for c in back.datasets[0].shape.columns] == ["sym", "qty"]
+
+    results = run_datasets(back, None, None, TODAY,
+                           uploads={"orders": _frame()})
+    assert results["orders"].df["qty"].tolist() == [10.0, 20.0, 30.0]

@@ -67,7 +67,7 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 |------|---------|
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
 | **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export alerts. Preview an alert's result before saving. |
-| **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries, refreshing on their own interval, exportable as a PDF. |
+| **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries (or an uploaded file), refreshing on their own interval, exportable as a PDF. |
 | **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, import/export connections, and set SMTP for email alerts. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
@@ -245,10 +245,10 @@ Requirements and gotchas:
 
 ## Dashboards
 
-Saved pages built from KDB queries: KPIs, tables and charts that refresh while
-the page is open and export to a PDF of exactly what is on screen. Where an alert
-answers "tell me when this happens", a dashboard answers "show me the state of
-this, continuously".
+Saved pages built from KDB queries — or from a file you upload — of KPIs,
+tables and charts that refresh while the page is open and export to a PDF of
+exactly what is on screen. Where an alert answers "tell me when this happens", a
+dashboard answers "show me the state of this, continuously".
 
 **Try it:** Admin → *Load demo servers*, then Dashboards → *Import* and pick
 `docs/examples/demo_orders_dashboard.json`. It runs against the demo `orders`
@@ -482,6 +482,48 @@ The tab strip uses pills rather than `st.tabs` deliberately: `st.tabs` executes
 every tab's body on each rerun, which under a refresh timer would fire every
 dashboard's queries at KDB continuously. The open dashboard is in the URL
 (`?dash=<id>`), so it is bookmarkable and survives a browser refresh.
+
+### Dashboards from a file
+
+A dashboard can read an uploaded CSV instead of KDB. Set **Data from** to *An
+uploaded file* and it becomes a template: you profile one sample here, and
+whoever opens the dashboard uploads their own file of the same shape and sees
+their own numbers. It has no environment, no period and no refresh interval —
+those describe a server, and there is none.
+
+Profiling is a declaration, not a discovery. You say which line carries the
+headers (the first, unless the export has a preamble), whether they run across
+the page or down it, and where the data starts. The one thing read from your
+sample is each column's type, offered as a list you correct — a column of
+integer-looking order IDs is text, and only you know that. You can also name a
+single cell outside the table, a report date sitting in line 1, and it becomes a
+value the dashboard can show.
+
+**The sample is then discarded.** Only the shape and the column contract are
+stored, so a dashboard you export carries no data at all — just the shape of the
+data it expects.
+
+A file somebody uploads is checked rather than trusted, and checked by *reading*
+each column as the type you declared rather than by guessing a type from their
+file. Integers satisfy a number column, `"125,000"` reads as `125000`, and
+anything that genuinely will not read is refused with the column, how many
+values broke, and the line of the first: *column 'qty' expects a number; 12 of
+500 value(s) could not be read as one (line 14: 'N/A')*. A missing column lists
+what did arrive. Headers anywhere but the declared line are refused, quoting
+that line so you can see what the app saw — nothing is searched for, because an
+app that decides a file is close enough does not fail when it is wrong, it
+reports the wrong thing.
+
+Blanks become real nulls and print as `—` like any other gap. `NA`, `N/A`,
+`NULL`, `-` and a few others count as blank by default, and the list is editable
+per dataset — worth taking `-` off it if `-` is a real value in your data. A
+column can be marked *No gaps* to refuse a file with blanks in it at all, which
+is worth setting on whatever a chart is plotted against. A number too large to
+hold is refused rather than quietly becoming an infinity.
+
+Everything after that is ordinary: the same transforms, the same widgets, the
+same layout, the same printed page. A file dataset and a query produce the same
+kind of result, and by the time a widget sees one it cannot tell which it was.
 
 ### PDF
 
