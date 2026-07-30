@@ -39,15 +39,40 @@ _ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
 _DELIMITERS = (",", ";", "\t", "|")
 
 
+def _looks_binary(data: bytes) -> bool:
+    """Whether this is a file of bytes rather than a file of text.
+
+    Worth asking before decoding, because latin-1 defines all 256 byte values
+    and so cannot fail: without this, a PNG dropped on the upload box decodes
+    into mojibake, gets as far as looking for a header row, and is refused for
+    having the wrong columns — which sends somebody hunting for a column
+    problem in a file that was never a spreadsheet.
+
+    A NUL byte is the giveaway; no text encoding this reads puts one in a
+    document. A high share of other control characters says the same thing
+    less certainly, so it takes a good many of them.
+    """
+    sample = data[:4096]
+    if 0 in sample:                       # a NUL byte
+        return True
+    control = sum(1 for b in sample
+                  if b < 0x09 or 0x0e <= b < 0x20 or b == 0x7f)
+    return bool(sample) and control / len(sample) > 0.30
+
+
 def _decode(data: bytes) -> tuple[str, str]:
     """The file's text, and which encoding it actually took to read it.
 
     latin-1 cannot raise — every byte from 0 to 255 is a defined code point in
-    it — so this always returns rather than raising. That is deliberate: a
-    file is not refused over its encoding any more, only over what is
-    afterwards found (or not found) inside it. The encoding name is passed
-    back so the caller can say, in a note, when it was not what was assumed.
+    it — so an encoding is never the reason a *text* file is refused any more;
+    it is read, and the caller notes in passing when it was not UTF-8. What is
+    still refused is something that was not text to begin with, because
+    decoding that produces a document made of nonsense and every message after
+    it describes the nonsense rather than the mistake.
     """
+    if _looks_binary(data):
+        raise ValueError("this file is not UTF-8 text — it does not look like "
+                         "text at all")
     for encoding in _ENCODINGS:
         try:
             return data.decode(encoding), encoding
@@ -342,10 +367,12 @@ def _to_date(text: str):
     catch what the ordinary parse refuses — a fraction, or a whole number
     outside pandas' notion of a plausible date string — not to compete with it.
 
-    This does mean a small integer in a date column — "5", say — reads as
-    1900-01-04 rather than being refused: nothing here can tell a serial from
-    a quantity typed in the wrong column, and the rule as specified does not
-    ask it to.
+    A serial is only believed inside a plausible range. A whole number below
+    :data:`_EXCEL_MIN_SERIAL` is refused rather than read as a date in the
+    1900s, because a "5" in a date column is far more likely to be a quantity
+    typed into the wrong column than a note about the fourth of January 1900 —
+    and a wrong date that looks like a date is the failure that never gets
+    caught. A fraction below 1 is a time of day and always plausible.
     """
     try:
         value = pd.to_datetime(text, errors="raise")
@@ -359,7 +386,18 @@ def _to_date(text: str):
         raise ValueError(f"{text} is not a date") from None
     if not math.isfinite(serial):
         raise ValueError(f"{text} is not a date")
+    if 1.0 <= serial < _EXCEL_MIN_SERIAL:
+        raise ValueError(
+            f"{text} is not a date. A whole number is read as an Excel date "
+            f"only from {_EXCEL_MIN_SERIAL} up, which is 1980 — below that it "
+            f"is far more likely a quantity in the wrong column.")
     return _EXCEL_EPOCH + pd.Timedelta(days=serial)
+
+
+# Excel day 29221 is 1980-01-01. Below that a bare number in a date column is
+# taken as a mistake rather than as a date, because nothing distinguishes a
+# serial from a quantity and only one of the two readings can be checked later.
+_EXCEL_MIN_SERIAL = 29221
 
 
 _READERS = {"number": _to_number, "integer": _to_integer,
@@ -481,7 +519,14 @@ def load(data: bytes, shape: FileShape) -> FileLoad:
     on a file that loaded anyway, worth knowing about because a byte utf-8
     rejected can still turn a header into mojibake.
     """
-    grid, encoding, used_delimiter = _read_grid_and_encoding(data, shape.delimiter)
+    try:
+        grid, encoding, used_delimiter = _read_grid_and_encoding(
+            data, shape.delimiter)
+    except ValueError as exc:
+        # Something that was not text at all. Every failure this module reports
+        # comes back as a refusal on the result rather than as an exception —
+        # a dead source degrades one panel, it does not blank the page.
+        return FileLoad(problems=[Problem(str(exc))])
     resolved = shape if used_delimiter == shape.delimiter else replace(
         shape, delimiter=used_delimiter)
     out = load_grid(grid, resolved)

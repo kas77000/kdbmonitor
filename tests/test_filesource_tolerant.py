@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape
-from kdbmonitor.core.filesource import load, read_grid, read_values
+from kdbmonitor.core.filesource import load, null_set, read_grid, read_values
 
 DEFAULTS = {"", "na", "n/a", "nan", "null", "none", "-", "--", "#n/a"}
 
@@ -193,3 +193,58 @@ def test_a_shape_stored_before_this_field_reads_back_as_auto():
     del raw["datasets"][0]["shape"]["delimiter"]
     back = dashboard_from_dict(raw)
     assert back.datasets[0].shape.delimiter == "auto"
+
+
+# --- a file that was never text ---------------------------------------------
+
+def test_a_binary_file_is_refused_as_not_text():
+    """latin-1 defines all 256 byte values and so cannot fail. Without a guard
+    a PNG decodes into mojibake, gets as far as looking for a header row, and
+    is refused for having the wrong columns — sending somebody hunting for a
+    column problem in a file that was never a spreadsheet."""
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
+    out = load(png, FileShape(columns=[ColumnSpec(name="sym")]))
+    assert out.df is None
+    assert "not" in out.problems[0].message and "text" in out.problems[0].message
+
+
+def test_an_accented_text_file_is_not_mistaken_for_binary():
+    data = "sym;société\n0005.HK;10\n".encode("cp1252")
+    out = load(data, FileShape(columns=[ColumnSpec(name="sym")]))
+    assert out.df is not None
+
+
+def test_an_ordinary_csv_is_not_mistaken_for_binary():
+    out = load(b"sym,qty\n0005.HK,10\n",
+               FileShape(columns=[ColumnSpec(name="sym")]))
+    assert out.df is not None
+
+
+# --- an Excel serial has to be plausible ------------------------------------
+
+def test_a_small_number_in_a_date_column_is_refused_not_read_as_1900():
+    """A 5 in a date column is a quantity in the wrong column far more often
+    than it is the fourth of January 1900, and a wrong date that looks like a
+    date is the failure that never gets caught."""
+    values, failures = read_values(["5"], "date", null_set(FileShape()))
+    assert len(failures) == 1
+    assert values.isna().all()
+
+
+def test_a_real_excel_serial_still_reads():
+    values, failures = read_values(["45000"], "date", null_set(FileShape()))
+    assert failures == []
+    assert values.iloc[0].year == 2023
+
+
+def test_a_time_of_day_fraction_still_reads():
+    """09:15 is 9.25 hours, which is 0.3854166... of a day."""
+    values, failures = read_values(["0.38541666666667"], "date",
+                                   null_set(FileShape()))
+    assert failures == []
+    assert (values.iloc[0].hour, values.iloc[0].minute) == (9, 15)
+
+
+def test_an_ordinary_date_is_unaffected_by_the_guard():
+    values, failures = read_values(["2026-07-30"], "date", null_set(FileShape()))
+    assert failures == [] and values.iloc[0].year == 2026

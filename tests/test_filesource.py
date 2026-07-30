@@ -27,14 +27,21 @@ def test_an_empty_file_is_an_empty_grid():
     assert read_grid(b"") == []
 
 
-def test_a_file_that_is_not_utf8_text_no_longer_raises():
-    """Phase E's encoding fallback (utf-8, cp1252, latin-1) means this can no
-    longer fail here: latin-1 decodes every byte sequence, so there is no
-    longer a byte sequence read_grid refuses by name. What used to be "this
-    file is not UTF-8 text" is now a note on a file that loaded anyway — see
-    tests/test_filesource_tolerant.py."""
-    assert read_grid(b"\xff\xfe\x00s\x00y") == [
-        [b"\xff\xfe\x00s\x00y".decode("cp1252")]]
+def test_text_that_is_not_utf8_is_read_rather_than_refused():
+    """The encoding fallback (utf-8, cp1252, latin-1) means an accented export
+    from a European locale loads instead of being turned away — its encoding
+    becomes a note, not a refusal."""
+    text = "sym,société\n0005.HK,10\n"
+    assert read_grid(text.encode("cp1252")) == [["sym", "société"],
+                                                ["0005.HK", "10"]]
+
+
+def test_a_file_that_is_not_text_at_all_is_still_refused_by_name():
+    """latin-1 decodes every byte, so without a guard a PNG becomes mojibake
+    and is refused later for the wrong columns — sending somebody hunting for
+    a column problem in a file that was never a spreadsheet."""
+    with pytest.raises(ValueError, match="text"):
+        read_grid(bytes([0x89]) + b"PNG" + bytes(range(256)) * 4)
 
 
 from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape, NamedCell
@@ -407,14 +414,20 @@ def test_the_skipped_blank_rows_are_reported():
 
 
 def test_a_file_that_is_not_utf8_still_loads_as_a_note_not_a_refusal():
-    """Decoding itself cannot refuse this any more (see
-    test_a_file_that_is_not_utf8_text_no_longer_raises); it is still refused,
-    but for the ordinary reason that its one garbled line does not carry the
-    headers this shape expects — not for its encoding, which is now a note."""
-    out = load(b"\xff\xfe\x00s", _orders_shape())
-    assert out.df is None
+    """An accented export loads; the encoding is worth mentioning because a
+    byte utf-8 rejected can still turn a header into mojibake, but it is not a
+    reason to turn the file away."""
+    text = "sym,qty,société\n0005.HK,10,x\n"
+    out = load(text.encode("cp1252"), _orders_shape())
+    assert out.df is not None
     assert any("UTF-8" in n for n in out.notes)
-    assert "UTF-8" not in out.problems[0].message
+
+
+def test_a_file_that_is_not_text_is_refused_for_that_reason():
+    """Not for the wrong columns it appeared to have once mangled."""
+    out = load(bytes([0x89]) + b"PNG" + bytes(range(256)) * 4, _orders_shape())
+    assert out.df is None
+    assert "text" in out.problems[0].message
 
 
 def test_an_empty_file_is_refused_rather_than_raising():
