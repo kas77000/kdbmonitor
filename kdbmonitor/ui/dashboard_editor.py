@@ -29,19 +29,39 @@ from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
     referenced_columns,
 )
+from kdbmonitor.core.qfmt import VALUE_TYPES, is_placeholder, q_date
 from kdbmonitor.core.timectx import (
     PERIOD_LABELS, PERIOD_MODES, PRESET_LABELS, PRESETS, coerce_spec,
     has_date_constraint, resolve,
 )
-from kdbmonitor.core.transform import Step, check_expression
+from kdbmonitor.core.transform import AGG_FUNCS, Step, check_expression
 from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
-VALUE_TYPES = ["symbol", "number", "string"]
-AGG_FUNCS = ["count", "nunique", "sum", "mean", "min", "max"]
+
+# Readable labels for core.qfmt.VALUE_TYPES — the label doubles as a sample of
+# what the type is for, since "expression" alone does not say it is the escape
+# hatch for a value q has to work out itself.
+VALUE_TYPE_LABELS = {
+    "symbol": "symbol (`AAPL)",
+    "number": "number",
+    "string": "string (\"text\")",
+    "date": "date (2026-07-30)",
+    "time": "time (09:30:00)",
+    "expression": "q expression (.z.D-1)",
+}
 TRANSFORM_KINDS = ["derive", "filter", "groupby", "sort", "limit", "rename"]
+
+# A dataset's own Period control — same three stored values as ds.time_mode
+# always has, worded so the choice says what it does rather than naming the
+# mechanism ('inherit') a reader has to already know to decode.
+PERIOD_MODE_LABELS = {
+    "inherit": "Follow the dashboard",
+    "realtime": "Always real-time",
+    "custom": "A historical range of its own",
+}
 WIDGET_TYPES = ["kpi", "table", "text", "bar", "line", "scatter", "hist",
                 "box", "heatmap", "pie"]
 REFERENCE_KINDS = ["constant", "mean", "median", "quantile", "column"]
@@ -369,6 +389,19 @@ def _kdb_dataset_problems(ds: Dataset, envs: dict, dashboard_time) -> list[str]:
         if _blank(f.value):
             problems.append(f"Dataset '{ds.name}', filter {i} on "
                             f"'{f.column}': no value entered.")
+        elif f.value_type == "date":
+            # A date read as subtraction is exactly the failure q_date exists
+            # to rule out (see core.qfmt) — worth catching here, before Save,
+            # rather than as a wrong number once the dashboard is running.
+            for v in (f.value if isinstance(f.value, list) else [f.value]):
+                if is_placeholder(v):
+                    continue
+                try:
+                    q_date(v)
+                except ValueError as exc:
+                    problems.append(f"Dataset '{ds.name}', filter {i} on "
+                                    f"'{f.column}': {exc}")
+                    break
 
     if ds.time_mode == "realtime":
         rt = resolve({"mode": "realtime"}, date.today())
@@ -728,6 +761,13 @@ def _connection_for(store, ds: Dataset):
 
 
 def _coerce(raw: str, value_type: str):
+    """Turn the text a text_input hands back into what the value_type needs.
+
+    Only ``number`` needs this: every other type — including the newer
+    ``date``, ``time`` and ``expression`` — is q-formatted from its text as
+    typed (see core.qfmt.format_q_value), so passing it through unchanged is
+    correct, not an oversight.
+    """
     if value_type != "number":
         return raw
     try:
@@ -743,26 +783,94 @@ def _kv_lines(text: str) -> dict:
                 if a.strip() and b.strip())
 
 
+def _ref_tokens(draft: Dashboard, index: int, store) -> list[str]:
+    """Every ``{{name.column}}`` a dataset at ``index`` could reference.
+
+    One token per column of a dataset declared *above* it — a later dataset's
+    frame is never fed forward until it too has run (see
+    ``core.dataset.run_datasets``), so referencing one is not a token that
+    will ever resolve. Reads the same ``dataset_columns`` a widget's own
+    pickers already trust, rather than builder.py's literal ``{{stepN.col}}``,
+    since a dashboard's schema is known well enough here to name the column
+    for real.
+    """
+    tokens: list[str] = []
+    for ds in draft.datasets[:index]:
+        conn = _connection_for(store, ds)
+        for col in dataset_columns(ds, conn, learned_columns(ds.name)):
+            tokens.append(f"{{{{{ds.name}.{col}}}}}")
+    return tokens
+
+
+def _insert_reference(tokens: list[str], text_key: str, key: str) -> None:
+    """The 'Insert reference' control, appending a token to the text widget at
+    ``text_key``. Must run *before* that widget is instantiated — writing to
+    ``st.session_state[text_key]`` after Streamlit has already built the
+    widget for this run raises, which is why this is always called ahead of
+    the text input it feeds rather than beside or after it.
+    """
+    if not tokens:
+        return
+    rc = st.columns([4, 1], vertical_alignment="bottom")
+    token = rc[0].selectbox("Insert reference", tokens, key=f"{key}_refsel")
+    if rc[1].button("Insert", key=f"{key}_refins", icon=":material/add:"):
+        st.session_state[text_key] = (
+            st.session_state.get(text_key, "") + " " + token).strip()
+        st.rerun()
+
+
 # --- dataset section -------------------------------------------------------
 
-def _filters_form(ds: Dataset, columns: list[str], key: str) -> None:
+def _filters_form(ds: Dataset, columns: list[str], key: str,
+                  ref_tokens: list[str] | None = None) -> None:
     st.caption("Filters — combined with AND, sent to KDB as the where clause.")
     for i, f in enumerate(list(ds.filters)):
-        c = st.columns([2, 1.2, 2, 1.4, 1, 0.6], vertical_alignment="bottom")
+        c = st.columns([1.7, 1, 1.7, 1.3, 0.8, 0.6, 0.6], vertical_alignment="bottom")
         f.column = _pick(c[0], "Column", columns, f.column, f"{key}_fc_{i}")
         f.op = c[1].selectbox("Op", OPS, index=OPS.index(f.op) if f.op in OPS else 0,
                               key=f"{key}_fo_{i}")
-        raw = c[2].text_input("Value",
-                              value=", ".join(map(str, f.value))
-                              if isinstance(f.value, list) else str(f.value),
-                              key=f"{key}_fv_{i}")
-        f.value_type = c[3].selectbox("Type", VALUE_TYPES,
-                                      index=VALUE_TYPES.index(f.value_type),
-                                      key=f"{key}_ft_{i}")
+
+        value_key = f"{key}_fv_{i}"
+        # A date picker rather than free text — but only while the value is
+        # not already a {{dataset.column}} reference, which a date_input has
+        # no way to hold. Column c[5]'s insert control runs before this one so
+        # a click there can still set session_state[value_key] safely.
+        use_picker = f.value_type == "date" and f.op != "in" \
+            and not is_placeholder(f.value)
+        if ref_tokens and not use_picker:
+            with c[5].popover("", icon=":material/data_object:",
+                              help="Insert a {{dataset.column}} reference to "
+                                   "an earlier dataset's output"):
+                token = st.selectbox("Reference", ref_tokens,
+                                     key=f"{key}_frefsel_{i}")
+                if st.button("Insert", icon=":material/add:",
+                             key=f"{key}_frefins_{i}"):
+                    st.session_state[value_key] = (
+                        st.session_state.get(value_key, "") + " " + token).strip()
+                    st.rerun()
+
+        if use_picker:
+            try:
+                current = (date.fromisoformat(str(f.value)) if f.value
+                          else date.today())
+            except ValueError:
+                current = date.today()
+            raw = c[2].date_input("Value", value=current,
+                                  key=value_key).isoformat()
+        else:
+            raw = c[2].text_input("Value",
+                                  value=", ".join(map(str, f.value))
+                                  if isinstance(f.value, list) else str(f.value),
+                                  key=value_key)
+        f.value_type = c[3].selectbox(
+            "Type", VALUE_TYPES,
+            index=VALUE_TYPES.index(f.value_type) if f.value_type in VALUE_TYPES
+            else 0, format_func=lambda v: VALUE_TYPE_LABELS.get(v, v),
+            key=f"{key}_ft_{i}")
         f.value = ([v.strip() for v in raw.split(",")] if f.op == "in"
                    else _coerce(raw, f.value_type))
         f.negated = c[4].checkbox("not", value=f.negated, key=f"{key}_fn_{i}")
-        if c[5].button("", icon=":material/close:", key=f"{key}_fx_{i}"):
+        if c[6].button("", icon=":material/close:", key=f"{key}_fx_{i}"):
             ds.filters.pop(i)
             _forget(rf"{key}_f")               # every filter below shuffles up
             st.rerun()
@@ -1019,15 +1127,19 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             ds.env = head[1].selectbox("Environment", envs or [ds.env],
                                        index=envs.index(ds.env) if ds.env in envs else 0,
                                        key=f"{key}_e")
-            modes = ["inherit", "realtime", "custom"]
+            modes = list(PERIOD_MODE_LABELS)
             market = is_marketdata_env(
                 store.list_environments().get(ds.env) or {})
             ds.time_mode = head[2].selectbox(
-                "Period", modes, index=modes.index(ds.time_mode), key=f"{key}_tm",
-                disabled=market,
+                "Period", modes,
+                index=modes.index(ds.time_mode) if ds.time_mode in modes else 0,
+                format_func=lambda m: PERIOD_MODE_LABELS[m],
+                key=f"{key}_tm", disabled=market,
                 help="Market data is not partitioned by date — the period does not "
                      "apply." if market
-                     else "inherit = follow the dashboard's period control")
+                     else "'A historical range of its own' is what reads history "
+                          "for this one dataset while the rest of the dashboard "
+                          "stays live — or the other way around.")
             ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
                                                    ds.max_rows, step=100, key=f"{key}_mr"))
             if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
@@ -1036,14 +1148,36 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 st.rerun()
 
             if ds.time_mode == "custom":
-                labels = [PRESET_LABELS[p] for p in PRESETS]
-                current = ((ds.time_context or {}).get("range") or {}).get("name", "last_30d")
-                chosen = st.selectbox("Its own period", labels,
-                                      index=list(PRESETS).index(current)
-                                      if current in PRESETS else 3, key=f"{key}_tc")
-                ds.time_context = {"mode": "historical",
-                                   "range": {"kind": "preset",
-                                             "name": PRESETS[labels.index(chosen)]}}
+                rng = ((ds.time_context or {}).get("range") or {})
+                kinds = ["preset", "absolute"]
+                kind = st.selectbox(
+                    "Its own period", kinds,
+                    index=kinds.index(rng.get("kind"))
+                    if rng.get("kind") in kinds else 0,
+                    format_func=lambda k: "A preset range" if k == "preset"
+                    else "A fixed date range", key=f"{key}_tck")
+                if kind == "preset":
+                    labels = [PRESET_LABELS[p] for p in PRESETS]
+                    current = rng.get("name", "last_30d")
+                    chosen = st.selectbox("Range", labels,
+                                          index=list(PRESETS).index(current)
+                                          if current in PRESETS else 3,
+                                          key=f"{key}_tc")
+                    ds.time_context = {"mode": "historical",
+                                       "range": {"kind": "preset",
+                                                 "name": PRESETS[labels.index(chosen)]}}
+                else:
+                    cc = st.columns(2, vertical_alignment="bottom")
+                    d1 = cc[0].date_input(
+                        "From", value=date.fromisoformat(rng["from"])
+                        if rng.get("from") else date.today(), key=f"{key}_tcf")
+                    d2 = cc[1].date_input(
+                        "To", value=date.fromisoformat(rng["to"])
+                        if rng.get("to") else date.today(), key=f"{key}_tct")
+                    ds.time_context = {"mode": "historical",
+                                       "range": {"kind": "absolute",
+                                                 "from": d1.isoformat(),
+                                                 "to": d2.isoformat()}}
 
             if market:
                 st.caption(":violet[Market data] — reference tables, queried the "
@@ -1059,8 +1193,11 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                                         if ds.table in tables else 0, key=f"{key}_t")
                 # Filters are the query's where clause, so they address the table
                 # as KDB holds it — not the shape the transforms leave behind.
-                _filters_form(ds, table_columns(ds, conn), key)
+                _filters_form(ds, table_columns(ds, conn), key,
+                             ref_tokens=_ref_tokens(draft, index, store))
             else:
+                _insert_reference(_ref_tokens(draft, index, store),
+                                  f"{key}_q", key)
                 ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
                                            help=RAW_HELP, key=f"{key}_q")
                 others = [e for e in sorted(store.list_environments()) if e != ds.env]
