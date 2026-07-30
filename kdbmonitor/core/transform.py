@@ -6,6 +6,7 @@ Python snippet.
 """
 from __future__ import annotations
 
+import ast
 import operator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -48,10 +49,77 @@ def _no_infinities(value: Any) -> Any:
     return value
 
 
+# What an arithmetic expression may be made of. The module's promise is that a
+# transform is data rather than a Python snippet, because dashboards are stored
+# in the database and imported from other people — and pandas' expression engine
+# does not keep that promise on its own: it chains method calls and walks
+# attributes as far as Python's class hierarchy.
+_EXPR_NODES = (
+    ast.Expression, ast.Name, ast.Load, ast.Constant,
+    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.UAdd, ast.USub, ast.Not, ast.Invert, ast.And, ast.Or,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+)
+
+_WINDOW_HINT = ("For .diff(), .shift() or a running total, use a window "
+                "transform — which can also partition by another column, so a "
+                "difference stops at the edge of each instrument.")
+
+
+def check_expression(expr: str) -> None:
+    """Refuse anything that is not arithmetic over column names.
+
+    Raises ``ValueError`` naming what it objected to. Checked before the
+    expression reaches pandas, because pandas will happily evaluate a chain of
+    method calls and by then it has already run.
+
+    This is only affordable because the window transform exists: the one
+    legitimate thing the gap allowed was row-over-row arithmetic, and there is
+    now a correct way to write it that can also partition.
+    """
+    try:
+        tree = ast.parse(expr or "", mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(
+            f"derive: '{expr}' is not an expression ({exc.msg})") from None
+    except RecursionError:
+        # CPython's own parser recurses per nesting level and gives up around
+        # a few thousand — a stored dashboard can hold a string that deep with
+        # nothing but repeated unary operators, no parentheses required. That
+        # must land as this function's ValueError too, or the one caller that
+        # only expects ValueError (the editor's build-time check) would crash
+        # outright instead of showing a problem.
+        raise ValueError(
+            f"derive: '{expr[:60]}...' is too deeply nested to parse.") \
+            from None
+
+    for node in ast.walk(tree):
+        if isinstance(node, _EXPR_NODES):
+            continue
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "attr", None) or \
+                getattr(node.func, "id", "that")
+            raise ValueError(
+                f"derive takes arithmetic over columns, not calls, so "
+                f"'{name}' cannot be used here. {_WINDOW_HINT}")
+        if isinstance(node, ast.Attribute):
+            raise ValueError(
+                f"derive takes arithmetic over columns, not attributes, so "
+                f"'.{node.attr}' cannot be used here. {_WINDOW_HINT}")
+        raise ValueError(
+            f"derive takes arithmetic over columns; "
+            f"{type(node).__name__} is not allowed in an expression.")
+
+
 def _derive(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     column, kind = p["column"], p.get("kind", "arithmetic")
     if kind == "arithmetic":
-        # pandas' own expression engine: column names only, no attribute access.
+        # Checked by check_expression before it ever reaches pandas: df.eval
+        # is not confined to column names, it chains method calls and walks
+        # attributes as far as Python's class hierarchy, and a dashboard is
+        # stored data that gets imported from other people.
+        check_expression(p["expr"])
         df[column] = _no_infinities(df.eval(p["expr"])) if len(df) \
             else pd.Series(dtype="float64")
         return df

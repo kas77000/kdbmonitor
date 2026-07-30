@@ -31,7 +31,7 @@ from kdbmonitor.core.timectx import (
     PERIOD_LABELS, PERIOD_MODES, PRESET_LABELS, PRESETS, coerce_spec,
     has_date_constraint, resolve,
 )
-from kdbmonitor.core.transform import Step
+from kdbmonitor.core.transform import Step, check_expression
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -233,6 +233,15 @@ def _transform_problems(ds_name: str, index: int, t: Transform) -> list[str]:
         if p.get("kind", "arithmetic") == "arithmetic":
             if _blank(p.get("expr")):
                 out.append(f"{where}: no expression entered.")
+            else:
+                # Caught here, while the author is still building the
+                # dashboard, rather than as a red panel when someone else
+                # opens it — the check itself lives with the transform, not
+                # the editor, so a bad expression can never reach df.eval.
+                try:
+                    check_expression(p["expr"])
+                except ValueError as exc:
+                    out.append(f"{where}: {exc}")
         else:
             if _blank(p.get("source")):
                 out.append(f"{where}: no source column chosen.")

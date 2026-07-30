@@ -132,6 +132,19 @@ def test_a_transform_problem_is_still_caught_on_a_file_dataset():
     assert validate(dash, _Store())
 
 
+def test_a_derive_expression_that_is_code_not_arithmetic_is_a_build_time_problem():
+    """The same guard df.eval would hit later is run while the dashboard is
+    still being built, so the author sees a plain-English problem instead of a
+    red panel the next time someone opens it."""
+    from kdbmonitor.core.dashboard_models import Transform
+    shape = FileShape(columns=[ColumnSpec(name="sym")])
+    dash = _file_dash(datasets=[_ds(shape=shape, transforms=[
+        Transform(kind="derive", params={"column": "x", "kind": "arithmetic",
+                                        "expr": "sym.diff()"})])])
+    joined = " ".join(validate(dash, _Store()))
+    assert "diff" in joined and "window" in joined
+
+
 def test_a_file_dataset_is_not_asked_about_q_it_no_longer_runs():
     """A dataset converted from a query keeps its raw_qsql and its extra
     connections, and the file editor shows neither. Complaining about them
