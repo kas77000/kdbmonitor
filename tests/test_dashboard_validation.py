@@ -130,3 +130,25 @@ def test_a_transform_problem_is_still_caught_on_a_file_dataset():
         Transform(kind="derive", params={"column": "", "kind": "arithmetic",
                                         "expr": ""})])])
     assert validate(dash, _Store())
+
+
+def test_a_file_dataset_is_not_asked_about_q_it_no_longer_runs():
+    """A dataset converted from a query keeps its raw_qsql and its extra
+    connections, and the file editor shows neither. Complaining about them
+    names a field its owner cannot reach, so the dashboard can never be saved."""
+    shape = FileShape(columns=[ColumnSpec(name="sym")])
+    stale = _ds(shape=shape, mode="raw", extra_connections=["GHOST"],
+                raw_qsql="select from t where x={{conn:GHOST}}")
+    joined = " ".join(validate(_file_dash(datasets=[stale]), _Store()))
+    assert "GHOST" not in joined
+
+
+def test_a_kdb_dataset_is_still_asked_about_its_connections():
+    """The guard must not stop the check where it belongs."""
+    kdb = Dataset(name="q", env="prod", source="kdb", mode="raw",
+                  extra_connections=["GHOST"],
+                  raw_qsql="select from t where date within "
+                           "({{date_from}};{{date_to}})")
+    dash = _file_dash(datasets=[kdb])
+    dash.source = "kdb"
+    assert any("GHOST" in p for p in validate(dash, _Store()))

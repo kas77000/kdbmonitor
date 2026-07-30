@@ -456,21 +456,27 @@ def validate(draft: Dashboard, store) -> list[str]:
         else:
             problems += _kdb_dataset_problems(ds, envs, dashboard_time)
 
-        # Raw q referencing another dataset or hopening a second environment —
-        # a no-op for a file dataset, whose raw_qsql and extra_connections stay
-        # unset, so these run unconditionally rather than dispatched by source.
-        for ref, _ in _REF.findall(ds.raw_qsql or ""):
-            if ref not in seen:
-                problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
-                                f"not defined above it.")
-        for env in ds.extra_connections:
-            if env not in envs:
-                problems.append(f"Dataset '{ds.name}' also-connects to unknown "
-                                f"environment '{env}'.")
-        for env in _CONN_REF.findall(ds.raw_qsql or ""):
-            if env.strip() not in envs:
-                problems.append(f"Dataset '{ds.name}' opens {{{{conn:{env.strip()}}}}}"
-                                f", which is not a known environment.")
+        # Raw q referencing another dataset or hopening a second environment.
+        # These live in the shared loop rather than in _kdb_dataset_problems
+        # because they need `seen` to know what was defined above this dataset —
+        # but they are still questions about q, so a file dataset is not asked
+        # them. It may well be carrying answers: a dataset converted from a
+        # query keeps its raw_qsql and extra_connections, and the file editor
+        # shows neither, so a complaint about them names a field its owner
+        # cannot reach and cannot clear.
+        if ds.source != "file":
+            for ref, _ in _REF.findall(ds.raw_qsql or ""):
+                if ref not in seen:
+                    problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
+                                    f"not defined above it.")
+            for env in ds.extra_connections:
+                if env not in envs:
+                    problems.append(f"Dataset '{ds.name}' also-connects to unknown "
+                                    f"environment '{env}'.")
+            for env in _CONN_REF.findall(ds.raw_qsql or ""):
+                if env.strip() not in envs:
+                    problems.append(f"Dataset '{ds.name}' opens {{{{conn:{env.strip()}}}}}"
+                                    f", which is not a known environment.")
         seen.append(ds.name)
 
     by_name = {ds.name: ds for ds in draft.datasets}
