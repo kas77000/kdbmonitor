@@ -97,7 +97,7 @@ def render(ds: Dataset, key: str) -> None:
 
     if upload is not None:
         try:
-            grid = read_grid(upload.getvalue())
+            grid = read_grid(upload.getvalue(), shape.delimiter)
         except ValueError as exc:
             st.error(str(exc), icon=":material/error:")
             return

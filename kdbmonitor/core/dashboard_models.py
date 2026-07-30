@@ -69,6 +69,10 @@ class FileShape:
     header_row: int = 0          # 0-based line carrying the headers
     first_col: int = 0           # 0-based column the table starts at
     data_start: int = 1          # 0-based first data line
+    # "auto" sniffs among , ; tab | ; anything else is used exactly as given and
+    # never second-guessed — a European export that happens to look sniffable as
+    # comma-separated must still be readable by naming its real delimiter.
+    delimiter: str = "auto"
     null_markers: list[str] = field(default_factory=lambda: list(DEFAULT_NULL_MARKERS))
     columns: list[ColumnSpec] = field(default_factory=list)
     cells: list[NamedCell] = field(default_factory=list)
@@ -207,6 +211,17 @@ def widget_from_dict(d: dict) -> Widget:
                   width=d.get("width", 1.0))
 
 
+def _text_or(value, default: str) -> str:
+    """A stored string, or the default if it is not one (or is empty).
+
+    Guards ``delimiter`` the same way ``_int`` guards a number: a hand-edited
+    bundle can put ``null`` or ``42`` where a delimiter belongs, and a stray
+    ``None`` reaching ``shape.delimiter != "auto"`` downstream would compare as
+    "explicit" and then blow up the first time it is handed to ``csv.reader``.
+    """
+    return value if isinstance(value, str) and value else default
+
+
 def _int(value, default: int) -> int:
     """A stored number, or the default if it is not one.
 
@@ -261,6 +276,7 @@ def _shape_from_dict(d: Optional[dict]) -> Optional[FileShape]:
         header_row=_int(d.get("header_row"), 0),
         first_col=_int(d.get("first_col"), 0),
         data_start=_int(d.get("data_start"), 1),
+        delimiter=_text_or(d.get("delimiter"), "auto"),
         null_markers=list(null_markers),
         columns=[_column_from_dict(c) for c in _dict_list(d.get("columns"))],
         cells=[_cell_from_dict(c) for c in _dict_list(d.get("cells"))])

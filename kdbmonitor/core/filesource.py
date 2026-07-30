@@ -15,29 +15,118 @@ from __future__ import annotations
 import csv
 import io
 import math
-from dataclasses import dataclass, field
+import re
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 import pandas as pd
 
 from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape
 
+# Tried in this order. utf-8-sig first because that is what everything
+# downstream assumes text to be; a plain, well-formed export never leaves it.
+# cp1252 next because it is what a European-locale Excel spells a
+# semicolon-delimited export in when it is not UTF-8 — an apostrophe or an
+# accented name is exactly the byte utf-8 refuses and cp1252 reads correctly.
+# latin-1 last because every byte value is a valid code point in it: it cannot
+# fail, so it is the backstop once cp1252 also refuses a byte, not a second
+# guess at which encoding is "really" right.
+_ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
 
-def read_grid(data: bytes) -> list[list[str]]:
-    """The file as a rectangular grid of strings, exactly as written.
+# Candidates tried when FileShape.delimiter is "auto". Order only matters as
+# the last tiebreaker, below.
+_DELIMITERS = (",", ";", "\t", "|")
+
+
+def _decode(data: bytes) -> tuple[str, str]:
+    """The file's text, and which encoding it actually took to read it.
+
+    latin-1 cannot raise — every byte from 0 to 255 is a defined code point in
+    it — so this always returns rather than raising. That is deliberate: a
+    file is not refused over its encoding any more, only over what is
+    afterwards found (or not found) inside it. The encoding name is passed
+    back so the caller can say, in a note, when it was not what was assumed.
+    """
+    for encoding in _ENCODINGS:
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise AssertionError("unreachable: latin-1 decodes every byte sequence")
+
+
+def _sniff_delimiter(text: str) -> str:
+    """Which of ``,`` ``;`` tab or ``|`` this file actually uses.
+
+    Decided by *parsing* the first ~20 non-blank lines with each candidate and
+    counting the fields that come out — not by counting delimiter characters,
+    which a quoted comma sitting inside a semicolon-delimited field would
+    inflate into a false positive.
+
+    A candidate that actually splits a line into more than one field always
+    beats one that does not, before consistency is even considered: a
+    delimiter absent from the text parses every line as a single field, which
+    is trivially "consistent" and would otherwise out-score the true
+    delimiter the moment one row in the real file is short or ragged. Only
+    once that is settled does the steadiest field count across lines decide
+    it, and only once that is also tied does comma — the format this module
+    has always assumed — break it.
+    """
+    lines = [line for line in text.splitlines() if line.strip()][:20]
+    if not lines:
+        return ","
+    best_delimiter = ","
+    best_score = None
+    for delimiter in _DELIMITERS:
+        try:
+            counts = [len(row) for row in csv.reader(lines, delimiter=delimiter)]
+        except csv.Error:
+            continue
+        if not counts:
+            continue
+        mode_count, frequency = Counter(counts).most_common(1)[0]
+        score = (mode_count > 1, frequency / len(counts), delimiter == ",")
+        if best_score is None or score > best_score:
+            best_score, best_delimiter = score, delimiter
+    return best_delimiter
+
+
+def _split(text: str, delimiter: str) -> list[list[str]]:
+    """Decoded text as a rectangular grid, using exactly the delimiter given.
 
     Padded to the widest row, because everything downstream addresses a cell by
-    ``(row, col)`` and a ragged grid makes that address a lie. ``utf-8-sig``
-    strips the byte-order mark Excel writes, which otherwise glues itself to the
-    first header and makes that column unmatchable by name.
+    ``(row, col)`` and a ragged grid makes that address a lie.
     """
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise ValueError("this file is not UTF-8 text") from exc
-    rows = [row for row in csv.reader(io.StringIO(text))]
+    rows = [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
     width = max((len(r) for r in rows), default=0)
     return [r + [""] * (width - len(r)) for r in rows]
+
+
+def _read_grid_and_encoding(data: bytes,
+                            delimiter: str) -> tuple[list[list[str]], str, str]:
+    """The grid, the encoding it took to read it, and the delimiter used.
+
+    The one place both decisions are made, so :func:`load` can report the
+    encoding and pass the resolved delimiter on to the number readers, which
+    have to know it and cannot sniff it again themselves from a grid that has
+    already been split.
+    """
+    text, encoding = _decode(data)
+    used = delimiter if delimiter != "auto" else _sniff_delimiter(text)
+    return _split(text, used), encoding, used
+
+
+def read_grid(data: bytes, delimiter: str = "auto") -> list[list[str]]:
+    """The file as a rectangular grid of strings, exactly as written.
+
+    ``delimiter`` defaults to sniffing among comma, semicolon, tab and pipe;
+    passing anything else uses it exactly as given and never second-guesses
+    it — a file whose real delimiter was declared gets read by that delimiter
+    even if it happens to also look plausible as something else.
+    """
+    grid, _, _ = _read_grid_and_encoding(data, delimiter)
+    return grid
 
 
 @dataclass
@@ -171,8 +260,30 @@ def is_blank(value: Any, markers: set[str]) -> bool:
     return str(value).strip().lower() in markers
 
 
-def _to_number(text: str) -> float:
-    """Commas and spaces are how a person writes a number, not part of it.
+# A valid thousands-grouped number: 1-3 digits, then any number of groups of
+# exactly 3, then an optional decimal part. "125,000" matches; "0,0215" does
+# not (its second group is 4 digits) — which is exactly how a comma-file
+# number column tells a real thousands separator from a decimal comma that
+# does not belong there, see _to_number.
+_THOUSANDS = re.compile(r"^-?\d{1,3}(,\d{3})*(\.\d+)?$")
+
+
+def _to_number(text: str, delimiter: str = ",") -> float:
+    """A person's number, read the way their file's own delimiter implies.
+
+    Where the delimiter *is* a comma, a comma in the value can only be a
+    thousands separator — the file already uses that character to end a
+    field, so a stray one inside a field arrived quoted on purpose. It is
+    stripped, but only after checking it groups digits in threes; "0,0215"
+    groups as 1-then-4, which is not how anyone writes a thousand, so it is
+    refused rather than silently read as 215 (or, worse, mistaken for the
+    decimal-comma reading below, which belongs to a different file format and
+    cannot be told apart from a thousands separator by the digits alone).
+
+    Where the delimiter is anything else, the file cannot mean a thousands
+    separator by a comma — that job already belongs to the delimiter — so a
+    comma here is Europe's decimal point, exactly as it is in the sample
+    export that motivated this: "0,0215" reads as 0.0215.
 
     ``float()`` turns an overflow like "1e400", or a literal "inf", into
     ``inf`` rather than raising — so that has to be caught here. Left alone it
@@ -181,14 +292,22 @@ def _to_number(text: str) -> float:
     _no_infinities`` exists to strip out of a derived column; a file should
     not be able to smuggle the same thing in from the other end.
     """
-    value = float(text.replace(",", "").replace(" ", ""))
+    cleaned = text.replace(" ", "")
+    if delimiter == ",":
+        if "," in cleaned:
+            if not _THOUSANDS.fullmatch(cleaned):
+                raise ValueError(f"{text} is not a number")
+            cleaned = cleaned.replace(",", "")
+    else:
+        cleaned = cleaned.replace(",", ".")
+    value = float(cleaned)
     if not math.isfinite(value):
         raise ValueError(f"{text} is not a finite number")
     return value
 
 
-def _to_integer(text: str) -> int:
-    value = _to_number(text)
+def _to_integer(text: str, delimiter: str = ",") -> int:
+    value = _to_number(text, delimiter)
     if value != int(value):
         raise ValueError(f"{text} is not a whole number")
     return int(value)
@@ -203,30 +322,74 @@ def _to_boolean(text: str) -> bool:
     raise ValueError(f"{text} is not true or false")
 
 
+# Days from this date to a value is how Excel spells a date as a plain number
+# — 1899-12-30 rather than the 1900-01-01 the format nominally starts from,
+# because Excel's serials carry a phantom 1900-02-29 that never existed, and
+# backdating the epoch by a day is how everyone's implementation quietly
+# absorbs that bug rather than reproducing it.
+_EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+
+
 def _to_date(text: str):
-    value = pd.to_datetime(text, errors="raise")
-    if pd.isna(value):
+    """A date, or — only for a column explicitly declared ``date`` — an Excel
+    time serial: a plain number spelling a date as days since 1899-12-30, with
+    a fractional part as the time of day (0.385416 of a day is 09:15).
+
+    Tried only *after* the ordinary parse, not before: pandas already reads a
+    bare "2026" as that calendar year, and trying the serial reading first
+    would turn every four-digit year into a date a century early, which is a
+    worse guess than the one already being made. The serial reading exists to
+    catch what the ordinary parse refuses — a fraction, or a whole number
+    outside pandas' notion of a plausible date string — not to compete with it.
+
+    This does mean a small integer in a date column — "5", say — reads as
+    1900-01-04 rather than being refused: nothing here can tell a serial from
+    a quantity typed in the wrong column, and the rule as specified does not
+    ask it to.
+    """
+    try:
+        value = pd.to_datetime(text, errors="raise")
+        if not pd.isna(value):
+            return value
+    except (ValueError, TypeError, pd.errors.ParserError):
+        pass
+    try:
+        serial = float(text)
+    except ValueError:
+        raise ValueError(f"{text} is not a date") from None
+    if not math.isfinite(serial):
         raise ValueError(f"{text} is not a date")
-    return value
+    return _EXCEL_EPOCH + pd.Timedelta(days=serial)
 
 
 _READERS = {"number": _to_number, "integer": _to_integer,
             "boolean": _to_boolean, "date": _to_date, "text": lambda t: t}
 
 
-def read_values(cells: list[str], type_name: str,
-                markers: set[str]) -> tuple[pd.Series, list[tuple[int, str]]]:
+def read_values(cells: list[str], type_name: str, markers: set[str],
+                delimiter: str = ",") -> tuple[pd.Series, list[tuple[int, str]]]:
     """A column read as ``type_name``, plus every value that would not read.
 
     Checking by *reading* rather than by inferring a type and comparing labels
     is what makes integers-where-numbers-were-expected work without a special
     case, and it is what lets a refusal quote the value that broke.
 
+    ``delimiter`` is the file's own field separator, passed in rather than
+    read off a global, because a number reader has to know it to tell a
+    thousands separator from a decimal comma — the same character means
+    opposite things depending on it. Only "number" and "integer" care; every
+    other type ignores it.
+
     An unrecognised type name reads as text rather than raising: it can only
     come from a hand-edited bundle, and refusing every row of a column because
     its declared type is misspelt helps nobody.
     """
-    reader = _READERS.get(type_name, _READERS["text"])
+    if type_name == "number":
+        reader = lambda t: _to_number(t, delimiter)
+    elif type_name == "integer":
+        reader = lambda t: _to_integer(t, delimiter)
+    else:
+        reader = _READERS.get(type_name, _READERS["text"])
     out: list[Any] = []
     failures: list[tuple[int, str]] = []
     for i, cell in enumerate(cells):
@@ -261,6 +424,20 @@ class FileLoad:
         return self.df is not None and not self.problems
 
 
+def _effective_delimiter(shape: FileShape) -> str:
+    """The delimiter to use when a comma might be a decimal point instead.
+
+    "auto" means nobody has resolved it for this shape yet — the shape editor's
+    live preview reads a grid it already built, rather than going through
+    :func:`load`, which is the only place "auto" gets replaced by whatever the
+    sniffer actually found. Treating an unresolved "auto" as comma is the
+    conservative reading: it keeps the existing thousands-separator behaviour
+    rather than guessing that the file's numbers use a decimal comma, which
+    would be exactly the kind of second guess this module does not make.
+    """
+    return shape.delimiter if shape.delimiter != "auto" else ","
+
+
 def read_cells(grid: list[list[str]], shape: FileShape) -> dict[str, Any]:
     """Every named cell, read from the raw grid by its own coordinates.
 
@@ -280,24 +457,37 @@ def read_cells(grid: list[list[str]], shape: FileShape) -> dict[str, Any]:
     the last line of the file instead would be a confident wrong answer.
     """
     markers = null_set(shape)
+    delimiter = _effective_delimiter(shape)
     out: dict[str, Any] = {}
     for cell in shape.cells:
         raw = ""
         if 0 <= cell.row < len(grid) and 0 <= cell.col < len(grid[cell.row]):
             raw = grid[cell.row][cell.col]
-        values, _ = read_values([raw], cell.type, markers)
+        values, _ = read_values([raw], cell.type, markers, delimiter)
         value = values.iloc[0]
         out[cell.name] = None if pd.isna(value) else value
     return out
 
 
 def load(data: bytes, shape: FileShape) -> FileLoad:
-    """An uploaded file read against ``shape``: a frame, or a refusal."""
-    try:
-        grid = read_grid(data)
-    except ValueError as exc:
-        return FileLoad(problems=[Problem(str(exc))])
-    return load_grid(grid, shape)
+    """An uploaded file read against ``shape``: a frame, or a refusal.
+
+    Resolves "auto" to whichever delimiter the sniffer actually found before
+    handing off to :func:`load_grid`, so every reader downstream — including
+    the number columns, which have to tell a thousands separator from a
+    decimal comma — sees the real delimiter rather than the unresolved word
+    "auto". Decoding itself no longer refuses a file: latin-1 always succeeds,
+    so what would once have been "this file is not UTF-8 text" is now a note
+    on a file that loaded anyway, worth knowing about because a byte utf-8
+    rejected can still turn a header into mojibake.
+    """
+    grid, encoding, used_delimiter = _read_grid_and_encoding(data, shape.delimiter)
+    resolved = shape if used_delimiter == shape.delimiter else replace(
+        shape, delimiter=used_delimiter)
+    out = load_grid(grid, resolved)
+    if encoding != "utf-8-sig":
+        out.notes = [f"this file was not UTF-8 text — read as {encoding}"] + out.notes
+    return out
 
 
 def load_grid(grid: list[list[str]], shape: FileShape) -> FileLoad:
@@ -359,11 +549,12 @@ def load_grid(grid: list[list[str]], shape: FileShape) -> FileLoad:
         notes.append(f"skipped {skipped} blank row(s)")
 
     markers = null_set(shape)
+    delimiter = _effective_delimiter(shape)
     word = _axis_word(shape)
     frame: dict[str, pd.Series] = {}
     for position, spec in enumerate(wanted):
         raw = [cells_of[position] for _, cells_of in records]
-        values, failures = read_values(raw, spec.type, markers)
+        values, failures = read_values(raw, spec.type, markers, delimiter)
         frame[spec.name] = values
 
         if failures:
