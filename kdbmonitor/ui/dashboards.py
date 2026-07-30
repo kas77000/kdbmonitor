@@ -18,6 +18,7 @@ from kdbmonitor.core.dashpdf import (
     report_plan,
 )
 from kdbmonitor.core.dataset import run_datasets
+from kdbmonitor.core.exporting import df_to_csv, df_to_excel_bytes, export_filename
 from kdbmonitor.core.plotmodel import build_plot_model
 from kdbmonitor.core.portability import (
     export_dashboards_json, import_dashboards_json,
@@ -33,6 +34,8 @@ DPI = 96
 
 REFRESH_OPTIONS = {"Off": 0, "5s": 5, "10s": 10, "15s": 15, "30s": 30,
                    "1m": 60, "5m": 300, "15m": 900}
+
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 TIME_OPTIONS = {"Real-time": None, **{PRESET_LABELS[p]: p for p in PRESETS},
                 "Custom range…": "custom"}
@@ -630,8 +633,53 @@ def _render_export(dashboard: Dashboard) -> None:
         e[3].caption("The PDF renders the numbers currently on screen — it does "
                      "not re-query.")
 
+    _render_dataset_exports(dashboard, payload)
+
     if st.session_state.get(preview_flag) and payload:
         _render_pdf_preview(dashboard, payload, pages)
+
+
+def _render_dataset_exports(dashboard: Dashboard, payload: dict | None) -> None:
+    """A CSV/Excel download per dataset, of the frame its widgets are drawn from.
+
+    Reads straight off ``payload["results"]`` — the same frames :func:`_live`
+    just rendered — rather than calling :func:`refresh` again: a download
+    button is a button like any other, so a rerun must not turn it into a
+    re-query any more than turning a PDF preview page does (see ``refresh``'s
+    docstring). A dataset with no frame yet — waiting for a file, or failed —
+    has nothing to export, so its buttons are disabled rather than sending an
+    empty or stale file.
+    """
+    if not dashboard.datasets:
+        return
+    results = (payload or {}).get("results", {})
+    chosen = parameters.chosen_values(dashboard)
+    as_of = (payload or {}).get("as_of") or datetime.now()
+
+    st.caption(":material/table_view: Download a dataset's data as its widgets "
+               "see it — after transforms, after the parameters chosen above.")
+    for ds in dashboard.datasets:
+        res = results.get(ds.name)
+        df = res.df if res is not None else None
+        row = st.columns([2.2, 1.1, 1.1, 3.6], vertical_alignment="center")
+        row[0].markdown(f"`{ds.name}`")
+        row[1].download_button(
+            "CSV", data=df_to_csv(df) if df is not None else "",
+            file_name=export_filename(dashboard.name, ds.name, chosen, as_of, "csv"),
+            mime="text/csv", icon=":material/download:", use_container_width=True,
+            disabled=df is None, key=f"dsexp_csv_{dashboard.id}_{ds.name}")
+        row[2].download_button(
+            "Excel", data=df_to_excel_bytes(df) if df is not None else b"",
+            file_name=export_filename(dashboard.name, ds.name, chosen, as_of, "xlsx"),
+            mime=_XLSX_MIME, icon=":material/download:", use_container_width=True,
+            disabled=df is None, key=f"dsexp_xlsx_{dashboard.id}_{ds.name}")
+        if df is None and res is not None and res.waiting:
+            row[3].caption(f":gray[Waiting for {ds.file_label or 'a file'} to be "
+                           f"uploaded.]")
+        elif df is None and res is not None and res.error:
+            row[3].caption(f":gray[Failed: {res.error}]")
+        elif df is None:
+            row[3].caption(":gray[Not run yet.]")
 
 
 def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None:
