@@ -8,12 +8,13 @@ flipping a dataset between environments lossless.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Optional
 
 import pandas as pd
 
+from kdbmonitor.core import parameters as params_mod
 from kdbmonitor.core.chain import filter_clause, substitute_refs
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset
 from kdbmonitor.core.models import KIND_LABELS, Connection
@@ -36,6 +37,10 @@ class DatasetResult:
     # The distinction is for the reader: "waiting for your export" is an
     # instruction, and a red panel saying the same thing reads as a fault.
     waiting: bool = False
+    # What each parameter offered, read from this dataset's frame as fetched.
+    # Carried on the result so the controls can be built from the last run
+    # rather than by fetching a second time.
+    choices: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -49,6 +54,9 @@ class DatasetTrace:
     qsql: str
     error: Optional[str]
     steps: list[Step] = field(default_factory=list)
+    # Same reasoning as DatasetResult.choices — read from the frame as fetched,
+    # before this dataset's own transforms could have narrowed it down.
+    choices: dict = field(default_factory=dict)
 
     @property
     def df(self) -> Optional[pd.DataFrame]:
@@ -245,28 +253,58 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
         return qsql, None, str(exc)
 
 
+def _shaped(ds: Dataset, values: Optional[dict]) -> list:
+    """This dataset's transforms with the reader's choices filled in.
+
+    Rebuilt rather than edited: the dashboard is stored, and substituting into
+    it would persist one reader's choice for whoever opens it next.
+    """
+    if not values:
+        return list(ds.transforms)
+    return [replace(t, params=params_mod.substitute(t.params, values))
+            for t in ds.transforms]
+
+
+def _apply(ds: Dataset, qsql: str, df: pd.DataFrame,
+          values: Optional[dict]) -> DatasetResult:
+    """The transform half of a run: shape the fetched frame, then cap it.
+
+    Split out of :func:`run_dataset` so :func:`run_datasets` can resolve a
+    dataset's parameter values — which needs that dataset's *raw* frame — after
+    the fetch but before this runs.
+    """
+    try:
+        shaped = apply_transforms(df, _shaped(ds, values))
+    except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
+        return DatasetResult(ds.name, None, qsql, str(exc))
+
+    total = len(shaped)
+    capped = shaped.head(ds.max_rows).reset_index(drop=True)
+    return DatasetResult(ds.name, capped, qsql, None,
+                         row_count=total, truncated=total > len(capped))
+
+
 def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
-                uploads: Optional[dict] = None) -> DatasetResult:
-    """Run one dataset, capturing any failure as an error on the result."""
+                uploads: Optional[dict] = None,
+                values: Optional[dict] = None) -> DatasetResult:
+    """Run one dataset, capturing any failure as an error on the result.
+
+    ``values`` are already-resolved ``{{param:name}}`` substitutions — see
+    :func:`run_datasets`, which is what resolves them dataset by dataset. A
+    caller with no parameters to thread through (the historical direct-call
+    shape) simply omits it and gets the old behaviour.
+    """
     qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
     if error is not None:
         return DatasetResult(ds.name, None, qsql, error,
                              waiting=ds.source == "file"
                              and error.startswith("waiting for"))
-
-    try:
-        df = apply_transforms(df, ds.transforms)
-    except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
-        return DatasetResult(ds.name, None, qsql, str(exc))
-
-    total = len(df)
-    capped = df.head(ds.max_rows).reset_index(drop=True)
-    return DatasetResult(ds.name, capped, qsql, None,
-                         row_count=total, truncated=total > len(capped))
+    return _apply(ds, qsql, df, values)
 
 
 def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
-                      uploads: Optional[dict] = None) -> DatasetTrace:
+                      uploads: Optional[dict] = None,
+                      values: Optional[dict] = None) -> DatasetTrace:
     """Run one dataset keeping the frame after every transform.
 
     Same query, same transforms, same order as :func:`run_dataset` — only the
@@ -276,22 +314,49 @@ def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
     qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
     if error is not None:
         return DatasetTrace(ds.name, qsql, error)
-    return DatasetTrace(ds.name, qsql, None, transform_steps(df, ds.transforms))
+    return DatasetTrace(ds.name, qsql, None,
+                        transform_steps(df, _shaped(ds, values)))
 
 
 def run_datasets(dashboard: Dashboard, store, mgr, today: date,
-                 uploads: Optional[dict] = None) -> dict[str, DatasetResult]:
+                 uploads: Optional[dict] = None,
+                 chosen: Optional[dict] = None) -> dict[str, DatasetResult]:
     """Run every dataset in declaration order, returning results by name.
 
-    Successful frames are fed forward so a later dataset can reference an earlier
-    one with ``{{name.column}}``.
+    Successful (transformed, capped) frames are fed forward as ``outputs`` so a
+    later dataset can reference an earlier one with ``{{name.column}}`` — that
+    query-level reference is unrelated to parameters and unaffected by them.
+
+    Parameters are different: a ``column`` parameter's choices must come from a
+    dataset's frame *as fetched*, before that dataset's own transforms run —
+    otherwise the very filter the parameter drives has already narrowed the
+    frame down to the one value it left in. So a second dict, ``raw``, is kept
+    of fetched-not-yet-transformed frames, and it is against that dict that
+    parameter values and choices are resolved, dataset by dataset as each is
+    fetched. A dataset can only see the raw frame of one declared before it —
+    the same ordering rule ``{{name.column}}`` already lives by, since a KDB
+    dataset's query can itself depend on an earlier dataset's finished output,
+    so every fetch cannot happen in a first pass before any transform runs.
     """
     dashboard_time = resolve(dashboard.time_context, today)
     outputs: dict[str, pd.DataFrame] = {}
+    raw: dict[str, pd.DataFrame] = {}
     results: dict[str, DatasetResult] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        res = run_dataset(ds, rt, store, mgr, outputs, uploads)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+        raw[ds.name] = df
+        values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
+        choices = {p.name: params_mod.choices_for(p, raw)
+                  for p in dashboard.parameters}
+        if error is not None:
+            res = DatasetResult(ds.name, None, qsql, error,
+                                waiting=ds.source == "file"
+                                and error.startswith("waiting for"),
+                                choices=choices)
+        else:
+            res = _apply(ds, qsql, df, values)
+            res.choices = choices
         results[ds.name] = res
         if res.df is not None:
             outputs[ds.name] = res.df
@@ -299,18 +364,32 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
 
 
 def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
-                   uploads: Optional[dict] = None) -> dict[str, DatasetTrace]:
+                   uploads: Optional[dict] = None,
+                   chosen: Optional[dict] = None) -> dict[str, DatasetTrace]:
     """Run every dataset step by step, in declaration order, results by name.
 
     Like :func:`run_datasets`, a dataset's finished frame is fed forward so a
-    later one can still reference it with ``{{name.column}}``.
+    later one can still reference it with ``{{name.column}}``, and parameter
+    values/choices are resolved against each dataset's raw (pre-transform)
+    frame as it is fetched — see that function's docstring for why.
     """
     dashboard_time = resolve(dashboard.time_context, today)
     outputs: dict[str, pd.DataFrame] = {}
+    raw: dict[str, pd.DataFrame] = {}
     traces: dict[str, DatasetTrace] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        trace = run_dataset_steps(ds, rt, store, mgr, outputs, uploads)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+        raw[ds.name] = df
+        values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
+        choices = {p.name: params_mod.choices_for(p, raw)
+                  for p in dashboard.parameters}
+        if error is not None:
+            trace = DatasetTrace(ds.name, qsql, error, choices=choices)
+        else:
+            trace = DatasetTrace(ds.name, qsql, None,
+                                 transform_steps(df, _shaped(ds, values)),
+                                 choices=choices)
         traces[ds.name] = trace
         if trace.df is not None:
             outputs[ds.name] = trace.df

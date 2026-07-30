@@ -1,11 +1,17 @@
+from datetime import date
+
 import pandas as pd
 
 from kdbmonitor.core.dashboard_models import (
-    Dashboard, Dataset, Parameter, Row, Transform, Widget,
+    ColumnSpec, Dashboard, Dataset, FileShape, Parameter, Row, Transform,
+    Widget,
 )
+from kdbmonitor.core.dataset import run_datasets, trace_datasets
 from kdbmonitor.core.parameters import (
     choices_for, params_in, resolve_values, substitute, unresolved_params,
 )
+
+TODAY = date(2026, 7, 31)
 
 
 # --- substitution ------------------------------------------------------------
@@ -189,3 +195,120 @@ def test_every_parameter_gets_a_value_even_if_empty():
 def test_resolved_values_are_always_text():
     p = Parameter(name="n", kind="number", default="10")
     assert isinstance(resolve_values([p], {"n": 42}, {})["n"], str)
+
+
+# --- through the pipeline -----------------------------------------------------
+
+def _profile_frame() -> pd.DataFrame:
+    return pd.DataFrame({"sym": ["A", "A", "B", "B"],
+                         "cum": [0.4, 1.0, 0.3, 1.0]})
+
+
+def _pick_instrument() -> Parameter:
+    return Parameter(name="instrument", kind="column", dataset="profile",
+                     column="sym", default="A")
+
+
+def _filter_by_param() -> Transform:
+    return Transform(kind="filter", params={
+        "column": "sym", "op": "=", "value": "{{param:instrument}}"})
+
+
+def _dash(parameters=None, transforms=None) -> Dashboard:
+    return Dashboard(
+        id=1, name="VP", source="file", parameters=parameters or [],
+        datasets=[Dataset(
+            name="profile", env="", source="file",
+            shape=FileShape(columns=[ColumnSpec(name="sym"),
+                                     ColumnSpec(name="cum", type="number")]),
+            transforms=transforms or [])])
+
+
+def test_a_parameter_filters_the_frame_a_widget_sees():
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()},
+                       chosen={"instrument": "B"})
+    assert out["profile"].df["sym"].tolist() == ["B", "B"]
+
+
+def test_without_a_choice_the_default_applies():
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()})
+    assert out["profile"].df["sym"].tolist() == ["A", "A"]
+
+
+def test_the_stored_transform_is_not_rewritten_by_a_run():
+    """The dashboard is saved; substituting into it would persist one reader's
+    choice for everybody who opens it next."""
+    t = _filter_by_param()
+    dash = _dash([_pick_instrument()], [t])
+    run_datasets(dash, None, None, TODAY,
+                 uploads={"profile": _profile_frame()},
+                 chosen={"instrument": "B"})
+    assert t.params["value"] == "{{param:instrument}}"
+
+
+def test_choices_are_taken_before_the_parameter_filters_them_away():
+    """The whole reason choices come from the fetched frame: after the filter
+    exactly one instrument is left, and a picker offering one is useless."""
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()},
+                       chosen={"instrument": "B"})
+    assert out["profile"].choices["instrument"] == ["A", "B"]
+
+
+def test_a_dashboard_with_no_parameters_runs_exactly_as_before():
+    out = run_datasets(_dash(), None, None, TODAY,
+                       uploads={"profile": _profile_frame()})
+    assert len(out["profile"].df) == 4
+    assert out["profile"].choices == {}
+
+
+def test_a_stale_choice_falls_back_rather_than_emptying_the_dashboard():
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()},
+                       chosen={"instrument": "DELISTED"})
+    assert out["profile"].df["sym"].tolist() == ["A", "A"]
+
+
+def test_a_parameter_reaches_a_window_transform_too():
+    """Substitution is into any transform's params, not just a filter's."""
+    dash = _dash(
+        [Parameter(name="by", kind="choice", choices=["sym"], default="sym")],
+        [Transform(kind="window", params={
+            "column": "cum", "op": "diff", "partition_by": ["{{param:by}}"],
+            "as": "share"})])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()})
+    # partitioned by sym, so no -0.7 walking from A into B
+    assert out["profile"].df["share"].min() > 0
+
+
+def test_the_editor_trace_runs_against_the_same_choices():
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    trace = trace_datasets(dash, None, None, TODAY,
+                           uploads={"profile": _profile_frame()},
+                           chosen={"instrument": "B"})["profile"]
+    assert trace.df["sym"].tolist() == ["B", "B"]
+    assert [s.kind for s in trace.steps] == ["query", "filter"]
+
+
+def test_a_failed_dataset_still_reports_the_choices_it_could_not_offer():
+    dash = _dash([_pick_instrument()], [_filter_by_param()])
+    out = run_datasets(dash, None, None, TODAY, uploads={})["profile"]
+    assert out.waiting is True
+    assert out.choices.get("instrument", []) == []
+
+
+def test_a_broken_transform_after_substitution_degrades_one_panel():
+    dash = _dash(
+        [Parameter(name="col", kind="choice", choices=["ghost"],
+                   default="ghost")],
+        [Transform(kind="sort", params={"columns": ["{{param:col}}"]})])
+    out = run_datasets(dash, None, None, TODAY,
+                       uploads={"profile": _profile_frame()})["profile"]
+    assert out.df is None and "ghost" in out.error
