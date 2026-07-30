@@ -29,10 +29,11 @@ TODAY = date(2026, 7, 31)
 
 EQUITY_Q = ('select sym from equity where date=.z.D-1, sym like "*.IB", '
             "ID_ISIN in `INE180A01020")
-ORDERS_Q = ("select from target where sym in `RELIANCE.IB`INFY.IB, "
-            "id_target in exec id_target from "
-            "(0!select last state by id_target from target_state) "
-            "where state=`activated")
+ORDERS_Q = ("{[s] t:select from target where sym in s; "
+            "live:exec id_target from (0!select last state by id_target "
+            "from target_state where id_target in t`id_target) "
+            "where state=`activated; "
+            "select from t where id_target in live}[`RELIANCE.IB`INFY.IB]")
 
 EQUITY_ROWS = pd.DataFrame({"sym": ["RELIANCE.IB", "INFY.IB"]})
 ORDER_ROWS = pd.DataFrame({"id_target": [11, 12],
@@ -121,6 +122,26 @@ def test_the_state_is_the_latest_one_not_any_one_that_ever_said_activated():
     # the naive form filters the state table before reducing it, which is the
     # question we are deliberately not asking
     assert "from target_state where state=" not in query
+
+
+def test_the_state_table_is_narrowed_before_it_is_grouped():
+    """This runs on every refresh. Grouping the whole of target_state to learn
+    about a handful of targets makes the cost of the dashboard the size of the
+    book rather than the size of the answer, so the ids are found first and the
+    state table is cut down to them before the grouping happens."""
+    dash = import_dashboards_json(BUNDLE.read_text(encoding="utf-8"))[0]
+    query = dash.datasets[1].raw_qsql
+    assert "target_state where id_target in" in query
+    grouped_at = query.index("last state by id_target")
+    narrowed_at = query.index("id_target in t`id_target")
+    assert narrowed_at > grouped_at        # the where sits inside the sub-select
+
+
+def test_target_is_read_once_not_twice():
+    """The obvious way to narrow the state table scans target for its ids and
+    again for the rows, on a table that is the whole live book."""
+    dash = import_dashboards_json(BUNDLE.read_text(encoding="utf-8"))[0]
+    assert dash.datasets[1].raw_qsql.count("select from target") == 1
 
 
 def test_the_dashboard_ends_on_the_columns_of_target(dash, store, mgr):

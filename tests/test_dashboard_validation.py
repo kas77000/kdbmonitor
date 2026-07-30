@@ -165,3 +165,89 @@ def test_a_kdb_dataset_is_still_asked_about_its_connections():
     dash = _file_dash(datasets=[kdb])
     dash.source = "kdb"
     assert any("GHOST" in p for p in validate(dash, _Store()))
+
+
+# --- parameters ---------------------------------------------------------------
+
+from kdbmonitor.core.dashboard_models import Parameter
+
+
+def _with_params(*parameters, transforms=None):
+    dash = _file_dash()
+    dash.parameters = list(parameters)
+    if transforms is not None:
+        dash.datasets[0].transforms = transforms
+    return dash
+
+
+def test_a_parameter_with_no_name_is_a_problem():
+    assert any("name" in p for p in
+               validate(_with_params(Parameter(name="  ")), _Store()))
+
+
+def test_two_parameters_with_one_name_is_a_problem():
+    dash = _with_params(Parameter(name="i", choices=["a"], default="a"),
+                        Parameter(name="i", choices=["b"], default="b"))
+    assert any("'i'" in p for p in validate(dash, _Store()))
+
+
+def test_a_choice_parameter_with_no_choices_is_a_problem():
+    assert any("choices" in p for p in
+               validate(_with_params(Parameter(name="i", kind="choice")),
+                        _Store()))
+
+
+def test_a_column_parameter_naming_an_unknown_dataset_is_a_problem():
+    dash = _with_params(Parameter(name="i", kind="column", dataset="ghost",
+                                  column="sym"))
+    assert any("ghost" in p for p in validate(dash, _Store()))
+
+
+def test_a_column_parameter_naming_an_unknown_column_is_a_problem():
+    dash = _with_params(Parameter(name="i", kind="column", dataset="orders",
+                                  column="ghost"))
+    assert any("ghost" in p for p in validate(dash, _Store()))
+
+
+def test_a_default_that_is_not_among_the_choices_is_a_problem():
+    dash = _with_params(Parameter(name="i", kind="choice", choices=["a", "b"],
+                                  default="z"))
+    assert any("z" in p for p in validate(dash, _Store()))
+
+
+def test_a_placeholder_with_no_parameter_declared_is_a_problem():
+    """A typo would otherwise arrive as an empty panel long after the mistake."""
+    from kdbmonitor.core.dashboard_models import Transform
+    dash = _with_params(transforms=[Transform(kind="filter", params={
+        "column": "sym", "op": "=", "value": "{{param:typo}}"})])
+    assert any("typo" in p for p in validate(dash, _Store()))
+
+
+def test_a_declared_and_used_parameter_is_no_problem():
+    from kdbmonitor.core.dashboard_models import Transform
+    dash = _with_params(
+        Parameter(name="i", kind="column", dataset="orders", column="sym",
+                  default=""),
+        transforms=[Transform(kind="filter", params={
+            "column": "sym", "op": "=", "value": "{{param:i}}"})])
+    assert validate(dash, _Store()) == []
+
+
+def test_a_parameter_reading_a_dataset_declared_after_its_user_is_a_problem():
+    """Choices come from the frame as fetched, and datasets run in order — so a
+    parameter reading a later dataset silently falls back to its default."""
+    from kdbmonitor.core.dashboard_models import Dataset, Transform
+    dash = _file_dash()
+    dash.datasets.append(Dataset(name="later", env="", source="file",
+                                 shape=dash.datasets[0].shape))
+    dash.parameters = [Parameter(name="i", kind="column", dataset="later",
+                                 column="sym")]
+    dash.datasets[0].transforms = [Transform(kind="filter", params={
+        "column": "sym", "op": "=", "value": "{{param:i}}"})]
+    assert any("later" in p for p in validate(dash, _Store()))
+
+
+def test_an_unknown_parameter_kind_is_a_problem():
+    assert any("kind" in p.lower() for p in
+               validate(_with_params(Parameter(name="i", kind="sasquatch")),
+                        _Store()))

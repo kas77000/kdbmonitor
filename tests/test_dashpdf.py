@@ -398,6 +398,72 @@ def test_dropping_the_header_gives_later_pages_more_room():
     assert page_limit(2) > page_limit(1)
 
 
+# --- the chosen parameters print on the first page --------------------------
+
+def test_the_chosen_parameters_are_named_on_the_first_page():
+    """A PDF outlives the screen it came from. A report filtered to one
+    instrument that does not say which will be read as the whole book."""
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=True,
+            chosen={"instrument": "ICICIBC.IN"})
+    text = " ".join(t.get_text() for t in fig.texts)
+    plt.close(fig)
+    assert "instrument" in text and "ICICIBC.IN" in text
+
+
+def test_several_chosen_values_are_all_named():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=True,
+            chosen={"instrument": "A", "mode": "local"})
+    text = " ".join(t.get_text() for t in fig.texts)
+    plt.close(fig)
+    assert "A" in text and "local" in text
+
+
+def test_a_dashboard_with_no_parameters_prints_no_caption():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=True, chosen={})
+    lines = [t.get_text() for t in fig.texts]
+    plt.close(fig)
+    assert len(lines) == 2                 # the name and the period, nothing more
+
+
+def test_continuation_pages_carry_no_parameter_caption():
+    import matplotlib.pyplot as plt
+    from kdbmonitor.core.dashpdf import _header
+
+    fig = plt.figure()
+    _header(fig, _dash([]), RT, AS_OF, first=False, chosen={"instrument": "A"})
+    texts = list(fig.texts)
+    plt.close(fig)
+    assert texts == []
+
+
+def test_a_pdf_of_a_parameterised_dashboard_still_renders():
+    dash = _dash([Row(height_in=2.0, widgets=[
+        Widget(type="table", dataset="by_market", title="By market")])])
+    out = dashboard_to_pdf_bytes(dash, _results(), RT, AS_OF,
+                                 chosen={"instrument": "A"})
+    assert out.startswith(b"%PDF")
+
+
+def test_the_caption_does_not_print_over_the_first_row():
+    """The title band has to grow to make room, or the caption and the first
+    widget occupy the same inch of paper."""
+    from kdbmonitor.core.dashpdf import header_height
+
+    assert header_height(chosen={"instrument": "A"}) > header_height(chosen={})
+
+
 # --- report period line -----------------------------------------------------
 
 def test_a_date_range_prints_as_a_range():

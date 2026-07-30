@@ -24,6 +24,7 @@ from kdbmonitor.core.dataset import (
     is_marketdata_env, run_datasets, standalone_side, trace_datasets,
 )
 from kdbmonitor.core.models import KIND_LABELS, Filter
+from kdbmonitor.core.parameters import params_in, unresolved_params
 from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
     referenced_columns,
@@ -428,6 +429,104 @@ def _file_dataset_problems(ds: Dataset) -> list[str]:
     return out
 
 
+def _parameter_raw_columns(ds: Dataset | None, conn) -> list[str]:
+    """What a ``column`` parameter can read from ``ds`` — its frame as fetched,
+    before its own transforms run.
+
+    The same frame :func:`~kdbmonitor.core.parameters.choices_for` resolves
+    against at run time, so a column that only exists after a transform (say, a
+    derive) is correctly still unknown here: the parameter never sees it either.
+    A raw query's columns cannot be known without running it, so it answers
+    nothing rather than guessing — which is why the caller skips this check
+    wherever the list comes back empty.
+    """
+    if ds is None:
+        return []
+    if ds.source == "file":
+        return [c.name for c in (ds.shape.columns if ds.shape else [])]
+    return table_columns(ds, conn)
+
+
+def _parameter_problems(draft: Dashboard, store) -> list[str]:
+    """Everything wrong with this dashboard's parameters, in plain English.
+
+    Covers the definition itself — a name, a usable kind, choices where the
+    kind needs them, a default actually on offer — and the two ways a
+    parameter misfires quietly rather than loudly: a ``{{param:name}}`` nobody
+    declared (caught while the dashboard is still being built, rather than as
+    an empty panel afterwards), and a ``column`` parameter reading a dataset
+    that has not been fetched yet by the time the parameter is needed — see
+    :func:`~kdbmonitor.core.dataset.run_datasets`, which resolves parameters
+    against only the raw frames fetched so far.
+    """
+    problems: list[str] = []
+    order = {ds.name: i for i, ds in enumerate(draft.datasets)}
+    by_name = {ds.name: ds for ds in draft.datasets}
+    seen: list[str] = []
+
+    # Which parameters each dataset's own transforms reference — the ordering
+    # rule only cares about transforms, since a widget reads the results only
+    # after every dataset has finished running.
+    used_in: list[set] = []
+    for ds in draft.datasets:
+        refs: set = set()
+        for t in ds.transforms:
+            refs |= params_in(t.params)
+        used_in.append(refs)
+
+    for p in draft.parameters:
+        name = p.name.strip()
+        label = name or p.name or "(unnamed)"
+        if not name:
+            problems.append("A parameter has no name.")
+        elif name in seen:
+            problems.append(f"Two parameters are both named '{name}'.")
+        seen.append(name)
+
+        if p.kind not in PARAMETER_KINDS:
+            problems.append(f"Parameter '{label}' has an unknown kind "
+                            f"'{p.kind}'.")
+            continue
+
+        if p.kind == "choice":
+            if not p.choices:
+                problems.append(f"Parameter '{label}' has no choices.")
+            elif p.default and p.default not in p.choices:
+                problems.append(f"Parameter '{label}': default '{p.default}' "
+                                f"is not among its choices.")
+
+        if p.kind == "column":
+            ds = by_name.get(p.dataset)
+            if ds is None:
+                problems.append(f"Parameter '{label}' reads dataset "
+                                f"'{p.dataset}', which does not exist.")
+                continue
+
+            conn = _connection_for(store, ds)
+            columns = _parameter_raw_columns(ds, conn)
+            if columns and p.column not in columns:
+                problems.append(f"Parameter '{label}' reads column "
+                                f"'{p.column}' from dataset '{ds.name}', which "
+                                f"does not produce it.")
+
+            my_index = order[ds.name]
+            for i, refs in enumerate(used_in):
+                if name in refs and my_index > i:
+                    problems.append(
+                        f"Parameter '{label}' reads dataset '{ds.name}', "
+                        f"declared after '{draft.datasets[i].name}' — its "
+                        f"choices will not be ready when "
+                        f"'{draft.datasets[i].name}' runs.")
+                    break
+
+    declared = {p.name.strip() for p in draft.parameters if p.name.strip()}
+    for name in sorted(unresolved_params(draft) - declared):
+        problems.append(f"'{{{{param:{name}}}}}' is used but no parameter "
+                        f"named '{name}' is declared.")
+
+    return problems
+
+
 def validate(draft: Dashboard, store) -> list[str]:
     """Everything wrong with this dashboard, in plain English. Empty when fine.
 
@@ -445,6 +544,8 @@ def validate(draft: Dashboard, store) -> list[str]:
         problems += _periods_problems(draft, envs)
     else:
         dashboard_time = resolve({"mode": "realtime"}, date.today())
+
+    problems += _parameter_problems(draft, store)
 
     if _blank(draft.name):
         problems.append("The dashboard has no name.")
@@ -1443,8 +1544,12 @@ def _render_layout(store, draft: Dashboard) -> None:
     # the layout can be arranged here rather than by generating and re-checking.
     # The editor has no results, so 'auto' plans against portrait — the page it
     # would print on today. A dashboard pinned to landscape plans against that.
+    # ``chosen`` is passed too, or a dashboard with parameters would show page
+    # breaks here that disagree with the real PDF, which has a caption to make
+    # room for.
     sheet = choose_page(draft)
-    placements = {p.index: p for p in plan_rows(draft.rows, sheet)}
+    chosen = ui_parameters.chosen_values(draft)
+    placements = {p.index: p for p in plan_rows(draft.rows, sheet, chosen)}
     total_pages = max((p.page for p in placements.values()), default=1)
     if draft.rows:
         turns = (" On 'auto' a table too wide for the page turns the whole "

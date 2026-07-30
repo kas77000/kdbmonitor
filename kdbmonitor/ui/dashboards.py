@@ -591,7 +591,8 @@ def _render_export(dashboard: Dashboard) -> None:
     # Counted against the rows on screen: a table longer than its slot carries
     # on over further pages, so only the data knows how long the report is.
     sheet, pages = report_plan(dashboard,
-                               payload["results"] if payload else None)
+                               payload["results"] if payload else None,
+                               parameters.chosen_values(dashboard))
     # Why the page turned, said once and only where it did: a report that comes
     # out sideways with no explanation reads as a bug.
     turned = (" — turned landscape to fit a table's columns"
@@ -605,7 +606,8 @@ def _render_export(dashboard: Dashboard) -> None:
     if e[0].button("Generate PDF", icon=":material/picture_as_pdf:", type="primary",
                    use_container_width=True, disabled=not payload):
         st.session_state[f"pdf_{dashboard.id}"] = dashboard_to_pdf_bytes(
-            dashboard, payload["results"], payload["rt"], payload["as_of"])
+            dashboard, payload["results"], payload["rt"], payload["as_of"],
+            chosen=parameters.chosen_values(dashboard))
 
     # One button both ways: opened, the only thing you want from it is to get
     # the page back, and a preview with no way out is a preview you regret.
@@ -696,7 +698,7 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
         if page_no not in cache["pages"]:
             cache["pages"][page_no] = dashboard_page_png_bytes(
                 dashboard, payload["results"], payload["rt"], stamp,
-                page_no=page_no)
+                page_no=page_no, chosen=parameters.chosen_values(dashboard))
 
         st.image(cache["pages"][page_no], use_container_width=True)
 

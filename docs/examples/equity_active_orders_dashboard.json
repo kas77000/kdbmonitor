@@ -42,7 +42,7 @@
           "mode": "raw",
           "table": "",
           "filters": [],
-          "raw_qsql": "select from target where sym in {{equity_syms.sym}}, id_target in exec id_target from (0!select last state by id_target from target_state) where state=`activated",
+          "raw_qsql": "{[s] t:select from target where sym in s; live:exec id_target from (0!select last state by id_target from target_state where id_target in t`id_target) where state=`activated; select from t where id_target in live}[{{equity_syms.sym}}]",
           "extra_connections": [],
           "transforms": [],
           "max_rows": 5000,

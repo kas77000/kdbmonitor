@@ -27,6 +27,22 @@ HEADER_H_CONT = 0.15
 FOOTER_H = 0.45
 GUTTER = 0.28                      # between rows and between widgets
 
+# Room a printed caption line costs the title band. Only page 1 carries one, so
+# only page 1's header grows — a continuation page has no caption to make room
+# for, and giving it back the space keeps a long table's page count unchanged.
+CAPTION_H = 0.20
+
+
+def header_height(chosen: Optional[dict] = None) -> float:
+    """Height of the page-1 title band, wider when a caption will print under
+    the period line.
+
+    Every place that lays out page 1 — pagination, the editor's page-break
+    preview, the header itself — must ask here rather than read
+    ``HEADER_H_FIRST`` directly, or the caption prints over the first row.
+    """
+    return HEADER_H_FIRST + (CAPTION_H if chosen else 0.0)
+
 
 @dataclass(frozen=True)
 class Page:
@@ -44,9 +60,10 @@ class Page:
     def content_w(self) -> float:
         return self.w - MARGIN * 2
 
-    def limit(self, page_no: int) -> float:
-        """Usable height on a page — page 1 gives up more to the title band."""
-        header = HEADER_H_FIRST if page_no == 1 else HEADER_H_CONT
+    def limit(self, page_no: int, chosen: Optional[dict] = None) -> float:
+        """Usable height on a page — page 1 gives up more to the title band,
+        and a little more still when a parameter caption prints under it."""
+        header = header_height(chosen) if page_no == 1 else HEADER_H_CONT
         return self.h - MARGIN * 2 - header - FOOTER_H
 
 
@@ -184,16 +201,19 @@ def split_rows(rows: list[Row], results: Optional[dict] = None,
 
 def paginate(rows: list[Row], results: Optional[dict] = None,
              cache: Optional[dict] = None,
-             sheet: Page = PORTRAIT) -> list[list[tuple[Part, float]]]:
+             sheet: Page = PORTRAIT,
+             chosen: Optional[dict] = None) -> list[list[tuple[Part, float]]]:
     """Split rows into pages of ``(part, y_top)``, y measured in inches from the
     top of the page.
 
     A row taller than a whole page is placed anyway rather than looping forever —
-    it simply overflows its page.
+    it simply overflows its page. ``chosen`` widens page 1's header when a
+    parameter caption will print under the period line, so the first row does
+    not start under the caption's feet.
     """
     pages: list[list[tuple[Part, float]]] = []
     page: list[tuple[Part, float]] = []
-    y = MARGIN + HEADER_H_FIRST
+    y = MARGIN + header_height(chosen)
     limit = sheet.h - MARGIN - FOOTER_H
 
     for part in split_rows(rows, results, cache):
@@ -225,20 +245,25 @@ class RowPlacement:
     free_after: float   # inches still free on the page below this row
 
 
-def page_limit(page_no: int, sheet: Page = PORTRAIT) -> float:
-    """Usable height on a page — page 1 gives up more to the title band."""
-    return sheet.limit(page_no)
+def page_limit(page_no: int, sheet: Page = PORTRAIT,
+               chosen: Optional[dict] = None) -> float:
+    """Usable height on a page — page 1 gives up more to the title band, and
+    more again when a parameter caption is printing under it."""
+    return sheet.limit(page_no, chosen)
 
 
-def plan_rows(rows: list[Row], sheet: Page = PORTRAIT) -> list[RowPlacement]:
+def plan_rows(rows: list[Row], sheet: Page = PORTRAIT,
+             chosen: Optional[dict] = None) -> list[RowPlacement]:
     """Which page each row prints on, so the editor can show it while you build.
 
     Same pagination the PDF uses — derived from :func:`paginate` rather than
-    reimplemented, so the editor can never disagree with the output.
+    reimplemented, so the editor can never disagree with the output. ``chosen``
+    must match what the PDF will actually print, or the editor's page-break
+    preview disagrees with the report it is meant to preview.
     """
     placements: list[RowPlacement] = []
     index = 0
-    pages = paginate(rows, sheet=sheet)
+    pages = paginate(rows, sheet=sheet, chosen=chosen)
     for page_no, page in enumerate(pages, start=1):
         bottom = sheet.h - MARGIN - FOOTER_H
         for position, (row, y_top) in enumerate(page):
@@ -369,13 +394,27 @@ def report_period(rt: ResolvedTime, as_of: datetime) -> str:
     return f"{as_of:%Y-%m-%d %H:%M}"
 
 
+def _caption(chosen: dict) -> str:
+    """The chosen values, as one line — a parameter resolving to nothing has
+    nothing to say, so it is left out rather than printed blank."""
+    parts = [f"{name}: {value}" for name, value in chosen.items()
+             if str(value).strip()]
+    return " · ".join(parts)
+
+
 def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
-            first: bool, sheet: Page = PORTRAIT) -> None:
+            first: bool, sheet: Page = PORTRAIT,
+            chosen: Optional[dict] = None) -> None:
     """Title band — page 1 only.
 
     Continuation pages get no header: the report is one document, and repeating
     its name on every page is filler. The footer's page number already says
     where you are.
+
+    A PDF outlives the screen it was taken from. Filtered to one instrument, a
+    report that does not say which reads as the whole book — so ``chosen``
+    prints as a third line, under the period, naming the selection that
+    produced this page.
     """
     if not first:
         return
@@ -387,7 +426,12 @@ def _header(fig, dashboard: Dashboard, rt: ResolvedTime, as_of: datetime,
     fig.text(MARGIN / sheet.w, 1 - 0.78 / sheet.h,
              report_period(rt, as_of), fontsize=11, color=theme.INK2, va="top")
 
-    rule_y = 1 - (MARGIN + HEADER_H_FIRST - 0.18) / sheet.h
+    caption = _caption(chosen) if chosen else ""
+    if caption:
+        fig.text(MARGIN / sheet.w, 1 - 1.00 / sheet.h, caption,
+                 fontsize=9.5, color=theme.MUTED, va="top")
+
+    rule_y = 1 - (MARGIN + header_height(chosen) - 0.18) / sheet.h
     fig.add_artist(plt.Line2D([MARGIN / sheet.w, 1 - MARGIN / sheet.w],
                               [rule_y, rule_y], color=theme.GRID, lw=1,
                               transform=fig.transFigure))
@@ -408,13 +452,15 @@ def _footer(fig, as_of: datetime, page_no: int, total: int,
 
 def _render_page(dashboard: Dashboard, page: list, results: dict,
                  rt: ResolvedTime, as_of: datetime, page_no: int, total: int,
-                 cache: Optional[dict] = None, sheet: Page = PORTRAIT):
+                 cache: Optional[dict] = None, sheet: Page = PORTRAIT,
+                 chosen: Optional[dict] = None):
     """Build one A4 figure. The caller owns closing it."""
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(sheet.w, sheet.h))
     fig.patch.set_facecolor(theme.SURFACE)
-    _header(fig, dashboard, rt, as_of, first=page_no == 1, sheet=sheet)
+    _header(fig, dashboard, rt, as_of, first=page_no == 1, sheet=sheet,
+            chosen=chosen)
 
     for part, y_top in page:
         widgets = part.row.widgets
@@ -456,21 +502,26 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
 
 
 def dashboard_to_pdf_bytes(dashboard: Dashboard, results: dict,
-                           rt: ResolvedTime, as_of: datetime) -> bytes:
-    """Render the dashboard's current state to a multi-page A4 PDF."""
+                           rt: ResolvedTime, as_of: datetime,
+                           chosen: Optional[dict] = None) -> bytes:
+    """Render the dashboard's current state to a multi-page A4 PDF.
+
+    ``chosen`` is the selection that produced ``results`` — printed as a
+    caption on page 1 so the report says which slice of the data it is.
+    """
     theme.apply_seaborn_theme()
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
     cache: dict = {}
     sheet = choose_page(dashboard, results, cache)
-    pages = paginate(dashboard.rows, results, cache, sheet) or [[]]
+    pages = paginate(dashboard.rows, results, cache, sheet, chosen) or [[]]
     buf = io.BytesIO()
 
     with PdfPages(buf) as pdf:
         for page_no, page in enumerate(pages, start=1):
             fig = _render_page(dashboard, page, results, rt, as_of,
-                               page_no, len(pages), cache, sheet)
+                               page_no, len(pages), cache, sheet, chosen)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -479,7 +530,8 @@ def dashboard_to_pdf_bytes(dashboard: Dashboard, results: dict,
 
 def dashboard_page_png_bytes(dashboard: Dashboard, results: dict,
                              rt: ResolvedTime, as_of: datetime,
-                             page_no: int = 1, dpi: int = 110) -> bytes:
+                             page_no: int = 1, dpi: int = 110,
+                             chosen: Optional[dict] = None) -> bytes:
     """One page as a PNG, for the on-screen 'Preview PDF' — the real printed
     page, not an approximation of it."""
     theme.apply_seaborn_theme()
@@ -487,18 +539,18 @@ def dashboard_page_png_bytes(dashboard: Dashboard, results: dict,
 
     cache: dict = {}
     sheet = choose_page(dashboard, results, cache)
-    pages = paginate(dashboard.rows, results, cache, sheet) or [[]]
+    pages = paginate(dashboard.rows, results, cache, sheet, chosen) or [[]]
     index = max(1, min(page_no, len(pages)))
     fig = _render_page(dashboard, pages[index - 1], results, rt, as_of,
-                       index, len(pages), cache, sheet)
+                       index, len(pages), cache, sheet, chosen)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
     return buf.getvalue()
 
 
-def report_plan(dashboard: Dashboard,
-                results: Optional[dict] = None) -> tuple[Page, int]:
+def report_plan(dashboard: Dashboard, results: Optional[dict] = None,
+                chosen: Optional[dict] = None) -> tuple[Page, int]:
     """The sheet this dashboard prints on, and how many of them it fills.
 
     Both together, over one cache: settling the sheet and counting the pages
@@ -507,17 +559,19 @@ def report_plan(dashboard: Dashboard,
     """
     cache: dict = {}
     sheet = choose_page(dashboard, results, cache)
-    return sheet, len(paginate(dashboard.rows, results, cache, sheet) or [[]])
+    return sheet, len(paginate(dashboard.rows, results, cache, sheet, chosen)
+                      or [[]])
 
 
-def page_count(dashboard: Dashboard, results: Optional[dict] = None) -> int:
+def page_count(dashboard: Dashboard, results: Optional[dict] = None,
+              chosen: Optional[dict] = None) -> int:
     """How many pages this dashboard prints on.
 
     Pass the results to count truthfully: a table longer than its row adds
     pages, and only the data says how many — and on a turned page, fewer rows
     fit down it, so the sheet has to be settled before the pages are counted.
     """
-    return report_plan(dashboard, results)[1]
+    return report_plan(dashboard, results, chosen)[1]
 
 
 def pdf_filename(dashboard: Dashboard, as_of: datetime) -> str:
