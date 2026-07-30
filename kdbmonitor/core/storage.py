@@ -182,13 +182,38 @@ class Storage:
 
         A connection with a blank ``env`` forms its own single-slot environment
         named after itself, so pre-existing connections keep working untouched.
+
+        A slot holds one server. Where two connections claim the same one the
+        first by name wins, deterministically — it used to be whichever the
+        database happened to return last, so which of a desk's order and quote
+        servers was reachable could change when an unrelated one was renamed.
+        The loser is not reported here; :meth:`duplicate_slots` is what says so,
+        because a silent disappearance is the failure and every caller of this
+        method wants the mapping rather than the complaint.
         """
         envs: dict[str, dict[str, Optional[Connection]]] = {}
-        for c in self.list_connections():
+        for c in sorted(self.list_connections(), key=lambda c: c.name):
             slot = envs.setdefault(c.env or c.name,
                                    {k: None for k in CONNECTION_KINDS})
-            slot[c.kind] = c
+            if slot[c.kind] is None:
+                slot[c.kind] = c
         return envs
+
+    def duplicate_slots(self) -> list[tuple[str, str, list[str]]]:
+        """Environments where more than one connection claims the same kind.
+
+        ``[(env, kind, [names])]``, names sorted, only where there is more than
+        one. An environment holds one server per kind, so a second registered
+        against the same pair does not collide loudly — it simply stops
+        existing: gone from every dropdown, never queried, with nothing said.
+        Admin asks here so it can say so instead.
+        """
+        seen: dict[tuple[str, str], list[str]] = {}
+        for c in self.list_connections():
+            seen.setdefault((c.env or c.name, c.kind), []).append(c.name)
+        return [(env, kind, sorted(names))
+                for (env, kind), names in sorted(seen.items())
+                if len(names) > 1]
 
     # --- dashboards ---
     def add_dashboard(self, d: Dashboard) -> int:

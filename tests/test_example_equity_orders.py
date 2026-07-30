@@ -46,9 +46,12 @@ ORDER_ROWS = pd.DataFrame({"id_target": [11, 12],
 def store(tmp_path):
     s = Storage(str(tmp_path / "t.db"))
     s.init_db()
-    # Reference data: no live/historical pair, and none is coming.
+    # A date-partitioned database with no live counterpart, and none coming —
+    # which is what `standalone` is for: the missing side is the design, not
+    # setup left half-done.
     s.add_connection(Connection(id=None, name="equity", host="equity-host",
-                                port=1, kind="marketdata", env="EQUITY DATA"))
+                                port=1, kind="historical", env="EQUITY DATA",
+                                standalone=True))
     s.add_connection(Connection(id=None, name="oms", host="oms-host", port=2,
                                 kind="realtime", env="OMS RT"))
     return s
@@ -175,3 +178,34 @@ def test_a_dead_reference_database_degrades_one_panel(dash, store, mgr):
     results = run_datasets(dash, store, mgr, TODAY)
     assert results["equity_syms"].error is not None
     assert results["active_orders"].error is not None      # it had nothing to ask
+
+
+def test_the_equity_query_goes_to_the_historical_server(dash, store, mgr, sent):
+    """EQUITY DATA is date-partitioned and has no live twin, so the dataset is
+    pinned to a historical period of its own while the dashboard stays live."""
+    from kdbmonitor.core.dataset import effective_time
+    from kdbmonitor.core.timectx import resolve
+
+    dashboard_time = resolve(dash.time_context, TODAY)
+    modes = [effective_time(ds, dashboard_time, TODAY).mode
+             for ds in dash.datasets]
+    assert modes == ["historical", "realtime"]
+
+    run_datasets(dash, store, mgr, TODAY)
+    assert [host for host, _ in sent] == ["equity-host", "oms-host"]
+
+
+def test_the_historical_query_satisfies_the_date_guard(dash, store, mgr, sent):
+    """An unconstrained read of a partitioned database does not error, it reads
+    years and hangs the page — so a historical raw query must mention date, and
+    this one pins it with .z.D-1."""
+    results = run_datasets(dash, store, mgr, TODAY)
+    assert results["equity_syms"].error is None
+    assert "date=" in sent[0][1]
+
+
+def test_the_dashboard_validates_against_a_historical_only_environment(dash,
+                                                                       store):
+    """A one-sided environment must not read as setup half-done."""
+    from kdbmonitor.ui.dashboard_editor import validate
+    assert validate(dash, store) == []

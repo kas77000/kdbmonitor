@@ -8,7 +8,7 @@
     {
       "id": null,
       "name": "Active orders on yesterday's IB equities",
-      "description": "Yesterday's matching symbols from EQUITY DATA, then the live target orders on them whose latest state is activated. A target has many target_state rows, so the state is taken as the last one per id_target rather than as any row that ever said activated.",
+      "description": "Yesterday's matching symbols from EQUITY DATA (a historical, date-partitioned database), then the live target orders on them whose latest state is activated. A target has many target_state rows, so the state is taken as the last one per id_target rather than as any row that ever said activated.",
       "refresh_secs": 15,
       "periods": "realtime",
       "orientation": "auto",
@@ -21,8 +21,14 @@
         {
           "name": "equity_syms",
           "env": "EQUITY DATA",
-          "time_mode": "realtime",
-          "time_context": null,
+          "time_mode": "custom",
+          "time_context": {
+            "mode": "historical",
+            "range": {
+              "kind": "preset",
+              "name": "yesterday"
+            }
+          },
           "mode": "raw",
           "table": "",
           "filters": [],

@@ -304,7 +304,17 @@ def _periods_problems(draft: Dashboard, envs: dict) -> list[str]:
     dashboard promising to switch to it is wrong today and wrong for good.
     """
     out: list[str] = []
-    for env in sorted({ds.env for ds in draft.datasets if ds.env}):
+    # Only the datasets that actually follow the dashboard's period are judged
+    # against what it offers. One pinned to a period of its own does not care
+    # what the control at the top says, and a dashboard reading a live order
+    # book beside a historical reference database is an ordinary thing to want
+    # — the engine has always run it. Judging every environment against the
+    # declaration made that dashboard impossible to *save*, because Save is
+    # disabled while any problem is listed, so the editor refused to let out a
+    # thing the rest of the app was happy to do.
+    inheriting = {ds.env for ds in draft.datasets
+                  if ds.env and ds.time_mode == "inherit"}
+    for env in sorted(inheriting):
         side = standalone_side(envs.get(env) or {})
         if side is None or draft.periods == side:
             continue

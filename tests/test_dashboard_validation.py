@@ -251,3 +251,56 @@ def test_an_unknown_parameter_kind_is_a_problem():
     assert any("kind" in p.lower() for p in
                validate(_with_params(Parameter(name="i", kind="sasquatch")),
                         _Store()))
+
+
+# --- a dataset pinned to its own period is not judged by the dashboard's -----
+
+def _cross_period_dash():
+    """A live dashboard reading one historical-only database beside a live one:
+    query the reference data for yesterday's symbols, then ask the live book
+    about them. The engine has always run this."""
+    from kdbmonitor.core.dashboard_models import Dashboard, Dataset
+    return Dashboard(
+        id=1, name="Cross", periods="realtime",
+        time_context={"mode": "realtime"},
+        datasets=[
+            Dataset(name="ref", env="EQUITY", time_mode="custom",
+                    time_context={"mode": "historical",
+                                  "range": {"kind": "preset",
+                                            "name": "yesterday"}},
+                    mode="raw",
+                    raw_qsql="select sym from equity where date=.z.D-1"),
+            Dataset(name="live", env="OMS", time_mode="realtime", mode="raw",
+                    raw_qsql="select from target where sym in {{ref.sym}}")],
+        rows=[Row(widgets=[Widget(type="table", dataset="live")])])
+
+
+class _PairedStore:
+    """EQUITY is historical and says so; OMS is an ordinary live/historical pair."""
+
+    def list_environments(self):
+        from kdbmonitor.core.models import Connection
+        hdb = Connection(id=1, name="equity-hdb", host="h", port=1,
+                         kind="historical", env="EQUITY", standalone=True)
+        rdb = Connection(id=2, name="oms-rdb", host="h", port=2,
+                         kind="realtime", env="OMS")
+        return {"EQUITY": {"realtime": None, "historical": hdb,
+                           "marketdata": None},
+                "OMS": {"realtime": rdb, "historical": None,
+                        "marketdata": None}}
+
+
+def test_a_dataset_pinned_to_its_own_period_does_not_constrain_the_dashboard():
+    """Save is disabled while any problem is listed, so judging a pinned
+    dataset's environment against the dashboard's declaration made a
+    cross-period dashboard impossible to save at all."""
+    joined = " ".join(validate(_cross_period_dash(), _PairedStore()))
+    assert "historical only" not in joined
+
+
+def test_a_dataset_that_does_inherit_is_still_judged():
+    """The check has to keep working where it applies."""
+    dash = _cross_period_dash()
+    dash.datasets[0].time_mode = "inherit"
+    assert any("historical only" in p
+               for p in validate(dash, _PairedStore()))

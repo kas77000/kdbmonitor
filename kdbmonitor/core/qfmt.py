@@ -14,6 +14,18 @@ from typing import Any
 
 VALUE_TYPES = ("symbol", "number", "string", "date", "time", "expression")
 
+# A placeholder another stage fills in: {{dataset.column}} from an earlier
+# dataset, {{param:name}} from the reader, {{date_from}} from the period. It is
+# not a value yet, so it is passed through rather than formatted — a symbol type
+# would otherwise turn {{orders.sym}} into `{`{`o`r`d`e`r`s..., one backtick per
+# character, and the substitution that came next would find nothing to replace.
+_PLACEHOLDER = re.compile(r"^\s*\{\{[^{}]+\}\}\s*$")
+
+
+def is_placeholder(value: Any) -> bool:
+    """Whether this value is a token for a later stage rather than a value."""
+    return isinstance(value, str) and _PLACEHOLDER.match(value) is not None
+
 # A date written any of the ordinary ways. q wants dots; people type dashes,
 # slashes, or paste whatever their last export used.
 _DATE_TEXT = re.compile(r"^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s*$")
@@ -42,6 +54,8 @@ def q_date(value: Any) -> str:
 
 
 def format_q_value(value: Any, value_type: str) -> str:
+    if is_placeholder(value):
+        return str(value).strip()
     if value_type == "symbol":
         return "`" + str(value)
     if value_type == "number":
@@ -64,6 +78,12 @@ def format_q_value(value: Any, value_type: str) -> str:
 
 
 def format_q_list(values: list, value_type: str) -> str:
+    # One placeholder standing in for the whole list. Whatever fills it in
+    # produces a q list already, so it must not be enlisted or type-formatted
+    # here — `sym in {{orders.sym}}` becomes `sym in `AAPL`MSFT`, which is the
+    # list, not a list holding one thing.
+    if len(values) == 1 and is_placeholder(values[0]):
+        return str(values[0]).strip()
     if value_type == "symbol":
         if not values:
             return "`$()"          # empty symbol vector — keeps `x in ...` valid

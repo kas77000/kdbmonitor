@@ -17,7 +17,9 @@ import pandas as pd
 from kdbmonitor.core import parameters as params_mod
 from kdbmonitor.core.chain import filter_clause, substitute_refs
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset
-from kdbmonitor.core.models import KIND_LABELS, Connection
+from kdbmonitor.core.models import (
+    CONNECTION_KINDS, KIND_LABELS, Connection,
+)
 from kdbmonitor.core.timectx import (
     ResolvedTime, date_clause, has_date_constraint, resolve, substitute_dates,
     unresolved_date_refs,
@@ -154,18 +156,63 @@ def effective_time(ds: Dataset, dashboard_time: ResolvedTime,
 _CONN_REF = re.compile(r"\{\{conn:([^{}]+)\}\}")
 
 
-def substitute_connections(qsql: str, store, rt: ResolvedTime) -> str:
-    r"""Resolve every ``{{conn:ENV}}`` to that environment's ``\`:host:port``.
+def resolve_handle(store, target: str, rt: ResolvedTime) -> Connection:
+    """The server a ``{{conn:...}}`` names, in any of its three forms.
 
-    The environment is resolved under the same time context as the dataset, so a
-    historical dashboard federates to the historical twin and a market-data env
-    to its (always real-time) server. An unknown env or a missing side raises,
-    which ``run_dataset`` captures as the panel's error.
+    ``ENV``
+        that environment's server for the period in force — the original form,
+        and still the one to reach for when a dashboard should federate to the
+        historical twin on a historical period and the live one otherwise.
+    ``ENV:historical`` / ``ENV:realtime`` / ``ENV:marketdata``
+        one named side of it, whatever period the dataset is running under. A
+        live query that needs yesterday's reference data asks for it plainly
+        rather than being told it is asking for today's.
+    ``name``
+        one connection, by its own name. An environment holds a single server
+        per kind, but a desk's environment holds many databases, so a query
+        that must reach one of them in particular has to be able to say which.
+
+    Raises with what it was given, which ``run_dataset`` captures as the panel's
+    error rather than letting it blank the page.
+    """
+    text = target.strip()
+    if ":" in text:
+        env, _, kind = text.partition(":")
+        env, kind = env.strip(), kind.strip().lower()
+        if kind not in CONNECTION_KINDS:
+            raise ValueError(
+                f"'{kind}' is not a kind of server "
+                f"(have: {', '.join(CONNECTION_KINDS)})")
+        pair = store.list_environments().get(env)
+        if pair is None:
+            raise ValueError(f"unknown environment: '{env}'")
+        conn = pair.get(kind)
+        if conn is None:
+            raise ValueError(
+                f"environment '{env}' has no {KIND_LABELS[kind].lower()} server")
+        return conn
+
+    envs = store.list_environments()
+    if text in envs:
+        return resolve_target(store, text, rt)[0]
+
+    by_name = {c.name: c for c in store.list_connections()}
+    if text in by_name:
+        return by_name[text]
+    raise ValueError(
+        f"'{text}' is neither an environment nor a connection. Known "
+        f"environments: {', '.join(sorted(envs)) or '(none)'}.")
+
+
+def substitute_connections(qsql: str, store, rt: ResolvedTime) -> str:
+    r"""Resolve every ``{{conn:...}}`` to that server's ``\`:host:port``.
+
+    See :func:`resolve_handle` for what may go inside. An unknown name or a
+    missing side raises, which ``run_dataset`` captures as the panel's error.
     """
     def repl(m: re.Match) -> str:
-        env = m.group(1).strip()
-        conn, _ = resolve_target(store, env, rt)
-        return f"`:{conn.host}:{conn.port}"
+        return f"`:{resolve_handle(store, m.group(1), rt).host}:" \
+               f"{resolve_handle(store, m.group(1), rt).port}"
 
     return _CONN_REF.sub(repl, qsql)
 
