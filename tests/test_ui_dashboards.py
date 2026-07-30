@@ -1,8 +1,11 @@
-from kdbmonitor.core.dashboard_models import Dashboard, Dataset, Row, Transform, Widget
+from kdbmonitor.core.dashboard_models import (
+    ColumnSpec, Dashboard, Dataset, FileShape, Row, Transform, Widget,
+)
 from kdbmonitor.core.models import Connection
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.ui import dashboard_editor as ed
 from kdbmonitor.ui import dashboards
+from kdbmonitor.ui.dashboard_editor import dataset_columns
 
 
 # --- the view page ---------------------------------------------------------
@@ -587,3 +590,62 @@ def test_column_pickers_work_for_a_marketdata_dataset(tmp_path):
     s = _md_store(tmp_path)
     ds = Dataset(name="ref", env="marketdata", table="instrument")
     assert ed.dataset_columns(ds, ed._connection_for(s, ds)) == ["sym", "sector"]
+
+
+def _file_ds(**kw) -> Dataset:
+    kw.setdefault("name", "orders")
+    kw.setdefault("env", "")
+    kw.setdefault("source", "file")
+    return Dataset(**kw)
+
+
+def test_a_file_dataset_offers_the_columns_its_shape_declares():
+    """No sample in hand after reopening — the stored contract is the answer."""
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="sym"),
+                                           ColumnSpec(name="qty")]))
+    assert dataset_columns(ds, None) == ["sym", "qty"]
+
+
+def test_a_file_dataset_needs_no_connection_to_know_its_columns():
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="sym")]))
+    assert dataset_columns(ds, None, learned=["ignored"]) == ["sym"]
+
+
+def test_a_file_dataset_still_accounts_for_its_transforms():
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="sym"),
+                                           ColumnSpec(name="qty")]),
+                  transforms=[Transform(kind="groupby", params={
+                      "keys": ["sym"],
+                      "aggs": [{"column": "qty", "func": "sum",
+                                "as": "total"}]})])
+    assert dataset_columns(ds, None) == ["sym", "total"]
+
+
+def test_a_derive_on_a_file_dataset_offers_its_new_column():
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="qty")]),
+                  transforms=[Transform(kind="derive", params={
+                      "column": "double", "kind": "arithmetic",
+                      "expr": "qty * 2"})])
+    assert dataset_columns(ds, None) == ["qty", "double"]
+
+
+def test_a_rename_on_a_file_dataset_is_reflected():
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="qty")]),
+                  transforms=[Transform(kind="rename",
+                                        params={"mapping": {"qty": "quantity"}})])
+    assert dataset_columns(ds, None) == ["quantity"]
+
+
+def test_a_file_dataset_with_no_shape_offers_nothing_rather_than_raising():
+    assert dataset_columns(_file_ds(shape=None), None) == []
+
+
+def test_a_file_dataset_ignores_a_stale_table_name():
+    """A dataset converted from a query keeps its table; it must not be read."""
+    ds = _file_ds(shape=FileShape(columns=[ColumnSpec(name="sym")]),
+                  mode="guided", table="orders_table")
+
+    class _Conn:
+        schema = {"orders_table": ["wrong", "columns"]}
+
+    assert dataset_columns(ds, _Conn()) == ["sym"]

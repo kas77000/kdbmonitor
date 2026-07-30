@@ -161,6 +161,11 @@ def dataset_columns(ds: Dataset, conn, learned: list[str] | None = None) -> list
     """The columns a dataset is expected to produce, so widget forms can offer a
     picker instead of a free-text box.
 
+    A file dataset's columns come from its stored shape rather than a live
+    schema, since the shape is the contract that was saved when the file was
+    uploaded — needing neither a server nor a run is what lets the dashboard
+    be edited again after it has simply been reopened.
+
     A raw query's columns cannot be known without running it — ``learned`` is
     what a real run returned (the query's own columns, before transforms), which
     the editor remembers from the last preview.
@@ -174,7 +179,14 @@ def dataset_columns(ds: Dataset, conn, learned: list[str] | None = None) -> list
     """
     if ds is None:
         return []
-    if ds.mode == "raw" or conn is None:
+    if ds.source == "file":
+        # The shape is the contract and it is stored, so a file dataset's
+        # columns are known without a sample, a server or a run — which is what
+        # makes a dashboard editable again after it has been reopened. A dataset
+        # converted from a query keeps its table name; reading that instead
+        # would offer the columns of a table this dataset no longer touches.
+        cols = [c.name for c in (ds.shape.columns if ds.shape else [])]
+    elif ds.mode == "raw" or conn is None:
         cols = list(learned or [])
     else:
         cols = list(getattr(conn, "schema", {}).get(ds.table, []))
@@ -947,7 +959,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 # Columns available to a transform are those produced by the
                 # ones before it, not the dataset's final shape.
                 upstream = Dataset(name=ds.name, env=ds.env, mode=ds.mode,
-                                   table=ds.table, transforms=ds.transforms[:i])
+                                   table=ds.table, transforms=ds.transforms[:i],
+                                   source=ds.source, shape=ds.shape)
                 _transform_form(t, dataset_columns(upstream, conn,
                                                    learned_columns(ds.name)),
                                 f"{key}_t{i}")
