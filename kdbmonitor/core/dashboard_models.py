@@ -285,7 +285,11 @@ def _dataset_from_dict(d: dict) -> Dataset:
     )
 
 
-def _parameter_from_dict(d: dict) -> Parameter:
+def parameter_to_dict(p: Parameter) -> dict:
+    return asdict(p)
+
+
+def parameter_from_dict(d: dict) -> Parameter:
     """A stored parameter, field by field.
 
     Choices and the default are coerced to text because substitution is textual:
@@ -320,7 +324,7 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],
-        parameters=[_parameter_from_dict(p)
+        parameters=[parameter_from_dict(p)
                     for p in _dict_list(d.get("parameters"))],
     )
 

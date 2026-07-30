@@ -13,8 +13,9 @@ from datetime import date, datetime
 import streamlit as st
 
 from kdbmonitor.core.dashboard_models import (
-    Component, Dashboard, Dataset, Row, Transform, Widget,
-    transform_from_dict, transform_to_dict, widget_from_dict, widget_to_dict,
+    Component, Dashboard, Dataset, PARAMETER_KINDS, Parameter, Row, Transform,
+    Widget, parameter_from_dict, parameter_to_dict, transform_from_dict,
+    transform_to_dict, widget_from_dict, widget_to_dict,
 )
 from kdbmonitor.core.dashpdf import (
     ORIENTATION_LABELS, ORIENTATIONS, choose_page, plan_rows,
@@ -32,6 +33,7 @@ from kdbmonitor.core.timectx import (
     has_date_constraint, resolve,
 )
 from kdbmonitor.core.transform import Step, check_expression
+from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -759,7 +761,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
 # name or a new one. Nothing is linked: changing a dashboard never rewrites the
 # library, and saving to the library never reaches into a dashboard.
 
-LIBRARY_KINDS = {"transform": "step", "widget": "widget"}
+LIBRARY_KINDS = {"transform": "step", "widget": "widget", "parameter": "parameter"}
 
 
 def _component_summary(c: Component) -> str:
@@ -768,6 +770,8 @@ def _component_summary(c: Component) -> str:
     p = c.payload or {}
     if c.kind == "widget":
         return f"{p.get('type', '?')} · {p.get('title') or 'untitled'}"
+    if c.kind == "parameter":
+        return f"{p.get('kind', '?')} · {p.get('name') or 'unnamed'}"
 
     kind, params = p.get("kind", "?"), p.get("params", {})
     if kind == "derive":
@@ -1010,6 +1014,94 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             st.rerun()
 
 
+def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
+    """One parameter's definition — what it is called, what kind it is, and
+    where a 'column' kind reads its values from.
+
+    Keyed by position (``pm{index}``) like a dataset card, and for the same
+    reason: deleting or reordering renumbers every card below it, and
+    ``_forget`` clears the stale widget state so the next pass reads from the
+    draft rather than from a control that used to sit at that position.
+    """
+    key = f"pm{index}"
+    with st.expander(f"**{p.name or '(unnamed)'}** · {p.kind}", expanded=True):
+        head = st.columns([2, 2, 1.6, 0.7, 0.7], vertical_alignment="bottom")
+        was = p.name
+        p.name = head[0].text_input("Name", value=p.name, key=f"{key}_n")
+        # Session state remembers a reader's pick by name — follow a rename the
+        # same way fileshape.rename_sample follows a dataset's, or whoever had
+        # already picked something loses that pick the moment it is renamed.
+        ui_parameters.rename(draft, was, p.name)
+        p.label = head[1].text_input(
+            "Label", value=p.label, key=f"{key}_lbl",
+            help="Shown on the control. Falls back to the name.")
+        p.kind = head[2].selectbox(
+            "Kind", PARAMETER_KINDS,
+            index=PARAMETER_KINDS.index(p.kind) if p.kind in PARAMETER_KINDS
+            else 0, key=f"{key}_k")
+        _save_to_library(head[3], store, "parameter", parameter_to_dict(p),
+                         key, suggested=p.name)
+        if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
+            st.session_state.pop(ui_parameters.value_key(draft.id, p.name), None)
+            draft.parameters.pop(index)
+            _forget(r"pm\d+")              # every card below renumbers
+            st.rerun()
+
+        if p.kind == "choice":
+            raw = st.text_input(
+                "Choices (comma-separated)",
+                value=", ".join(p.choices), key=f"{key}_ch")
+            p.choices = [c.strip() for c in raw.split(",") if c.strip()]
+        elif p.kind == "column":
+            names = [ds.name for ds in draft.datasets]
+            c = st.columns(2, vertical_alignment="bottom")
+            p.dataset = c[0].selectbox(
+                "Dataset", names or [p.dataset],
+                index=names.index(p.dataset) if p.dataset in names else 0,
+                key=f"{key}_ds")
+            ds = next((d for d in draft.datasets if d.name == p.dataset), None)
+            conn = _connection_for(store, ds) if ds else None
+            columns = (dataset_columns(ds, conn, learned_columns(p.dataset))
+                      if ds else [])
+            p.column = _pick(c[1], "Column", columns, p.column, f"{key}_col")
+
+        p.default = st.text_input(
+            "Default", value=p.default, key=f"{key}_def",
+            help="What applies until a reader picks something else, and what "
+                 "a stale or missing pick falls back to.")
+
+
+def _render_parameters(store, draft: Dashboard) -> None:
+    """Controls the reader of this dashboard will get, defined here.
+
+    A 'column' parameter's picker offers whatever the last preview run's frame
+    actually held — that is decided at run time, in ``core.parameters`` — but
+    which dataset and which column it reads is a fact about the dashboard,
+    settled here while it is built.
+    """
+    st.markdown("**Parameters**")
+    st.caption("Controls the reader sets when viewing this dashboard. A "
+               "parameter never reaches a query — only the transforms "
+               "downstream of it re-shape when it changes.")
+    for i, p in enumerate(list(draft.parameters)):
+        _parameter_card(store, p, i, draft)
+
+    add = st.columns([1.6, 1.6, 4.8], vertical_alignment="bottom")
+    if add[0].button("Add parameter", icon=":material/add:",
+                     key="dash_param_addb"):
+        draft.parameters.append(Parameter(
+            name=unique_name("param", [p.name for p in draft.parameters])))
+        st.rerun()
+    saved = _load_from_library(add[1], store, "parameter", "dash_param_lib")
+    if saved:
+        loaded = parameter_from_dict(saved.payload)
+        taken = [p.name for p in draft.parameters]
+        if loaded.name in taken:
+            loaded.name = unique_name(loaded.name, taken)
+        draft.parameters.append(loaded)
+        st.rerun()
+
+
 def _render_data(store, mgr, draft: Dashboard) -> None:
     if draft.source != "file" and not store.list_environments():
         st.warning("No connections yet — add one in Admin first.",
@@ -1025,6 +1117,9 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
             env="" if draft.source == "file" else (envs[0] if envs else ""),
             source=draft.source))
         st.rerun()
+
+    st.divider()
+    _render_parameters(store, draft)
 
     if draft.datasets and st.button("Run and inspect each step",
                                     icon=":material/play_arrow:",
@@ -1076,22 +1171,21 @@ def _render_step(step: Step) -> None:
 
 
 def run_preview(store, mgr, draft: Dashboard):
-    """Run every dataset stage by stage, if the Data section asked for it.
+    """Every dataset run step by step, so the editor can show what each did.
 
-    Done before the forms are drawn, not after: a run is the only way to learn a
-    raw query's columns, and the pickers are built from them.
-
-    A file dataset has no query to send; it previews against the sample its
-    shape editor is holding, which is the same frame a viewer's upload would
-    produce. Without it the transform steps would have nothing to work on and
-    the author would be building the pipeline blind.
+    A file dataset previews against the sample its shape editor is holding, so
+    the frame the author sees is the same one a viewer's upload would produce.
+    Every dataset previews against the parameter values currently selected —
+    otherwise the author would be building a pipeline against a different
+    frame from the one their reader will actually see.
     """
     if not st.session_state.pop("dash_preview_data", False):
         return None
     from kdbmonitor.ui.fileshape import stored_sample
     uploads = {ds.name: stored_sample(ds.name) for ds in draft.datasets
                if ds.source == "file" and stored_sample(ds.name) is not None}
-    traces = trace_datasets(draft, store, mgr, date.today(), uploads=uploads)
+    traces = trace_datasets(draft, store, mgr, date.today(), uploads=uploads,
+                            chosen=ui_parameters.chosen_values(draft))
     for name, trace in traces.items():
         # The query's own columns are the only reliable knowledge we have of a
         # raw dataset's shape — keep them for the column pickers.
@@ -1466,13 +1560,31 @@ def _render_layout(store, draft: Dashboard) -> None:
 
 
 def _render_preview(store, mgr, draft: Dashboard) -> None:
+    """The dashboard as its reader will actually see it — widgets and all.
+
+    The parameter controls are drawn here too, live, so the author is picking
+    from the same row of controls a reader gets rather than trusting the
+    definitions alone. ``choices`` comes from the last Refresh, kept in session
+    state across reruns for the same reason the real view keeps it on the
+    dashboard's payload: a picker has to offer something before the very first
+    click, not just after it.
+    """
     if not draft.datasets:
         st.caption("Nothing to preview yet.")
         return
+
+    last = st.session_state.get("dash_preview_last") or {}
+    choices: dict = {}
+    for res in last.values():
+        choices.update(getattr(res, "choices", None) or {})
+    ui_parameters.render(draft, choices, on_change=lambda: None)
+
     if not st.button("Refresh preview", icon=":material/play_arrow:"):
         st.caption("Run the datasets to see the real page.")
         return
-    results = run_datasets(draft, store, mgr, date.today())
+    results = run_datasets(draft, store, mgr, date.today(),
+                           chosen=ui_parameters.chosen_values(draft))
+    st.session_state["dash_preview_last"] = results
     for r_i, row in enumerate(draft.rows):
         if not row.widgets:
             continue

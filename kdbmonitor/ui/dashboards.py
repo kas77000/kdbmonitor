@@ -26,6 +26,7 @@ from kdbmonitor.core.render_plotly import figure
 from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
 )
+from kdbmonitor.ui import parameters
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
 DPI = 96
@@ -217,7 +218,8 @@ def comes_due(dashboard: Dashboard, as_of: datetime,
 
 
 def refresh(store, mgr, dashboard: Dashboard,
-            uploads: dict | None = None) -> dict:
+            uploads: dict | None = None,
+            chosen: dict | None = None) -> dict:
     """The dashboard's frames, re-querying only when they are actually due.
 
     A rerun is not a reason to re-query. Every button on the page reruns the
@@ -228,6 +230,11 @@ def refresh(store, mgr, dashboard: Dashboard,
     Refresh button drops them. A file dashboard never comes due on its own — see
     :func:`comes_due` — so for it this only ever runs once per uploaded file,
     when Refresh drops the cache after :func:`_render_uploads` sees a new one.
+
+    ``chosen`` is the reader's parameter picks. They never change whether a
+    re-fetch is due — a parameter reaches a transform, not a query — so a
+    picker change reaches this function only through :func:`drop_derived`,
+    which forces the re-run that applies it.
     """
     cached = st.session_state.get(frames_key(dashboard.id))
     if cached and not comes_due(dashboard, cached["as_of"]):
@@ -241,7 +248,7 @@ def refresh(store, mgr, dashboard: Dashboard,
         dashboard.time_context = coerce_spec(dashboard.time_context,
                                              dashboard.periods)
     payload = {"results": run_datasets(dashboard, store, mgr, date.today(),
-                                       uploads=uploads),
+                                       uploads=uploads, chosen=chosen),
                "as_of": datetime.now(),
                "rt": resolve(dashboard.time_context, date.today())}
     st.session_state[frames_key(dashboard.id)] = payload
@@ -257,6 +264,19 @@ def force_refresh(dashboard_id: int) -> None:
     st.session_state.pop(frames_key(dashboard_id), None)
     st.session_state.pop(f"pdf_{dashboard_id}", None)
     st.rerun()
+
+
+def drop_derived(dashboard_id) -> None:
+    """Re-run the transforms, keeping whatever was fetched.
+
+    A parameter never reaches a query or a file's shape, so the frames on hand
+    are still the right frames — only the shaping of them has changed. Dropping
+    the fetched ones too would ask a reader to upload their file again for
+    having picked a different instrument.
+    """
+    st.session_state.pop(frames_key(dashboard_id), None)
+    st.session_state.pop(f"pdf_{dashboard_id}", None)
+    st.session_state.pop(f"pdfpages_{dashboard_id}", None)
 
 
 def _active_id(store) -> int | None:
@@ -544,12 +564,21 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         _render_period(store, dashboard,
                        st.session_state.get(frames_key(dashboard.id)))
 
+    payload = st.session_state.get(frames_key(dashboard.id))
+    choices: dict = {}
+    if payload:
+        for res in payload["results"].values():
+            choices.update(getattr(res, "choices", None) or {})
+    parameters.render(dashboard, choices,
+                      on_change=lambda: drop_derived(dashboard.id))
+
     uploads = _render_uploads(dashboard)
 
     @st.fragment(run_every=None if dashboard.source == "file"
                  else (dashboard.refresh_secs or None))
     def _live() -> None:
-        data = refresh(store, mgr, dashboard, uploads)
+        data = refresh(store, mgr, dashboard, uploads,
+                       chosen=parameters.chosen_values(dashboard))
         render_rows(dashboard, data["results"])
 
     _live()
