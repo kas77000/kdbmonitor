@@ -56,6 +56,14 @@ def transform_summary(transform) -> str:
     if kind == "rename":
         renames = ", ".join(f"{k} → {v}" for k, v in (p.get("mapping") or {}).items())
         return f"rename {renames or '?'}"
+    if kind == "window":
+        op = p.get("op") or "?"
+        # row_number counts rows rather than reading one, so there is no
+        # source column to name.
+        of = "" if op == "row_number" else f" of {p.get('column') or '?'}"
+        by = p.get("partition_by") or []
+        return (f"window: {op}{of}"
+                f"{' by ' + ', '.join(by) if by else ''} → {p.get('as') or '?'}")
     return kind
 
 

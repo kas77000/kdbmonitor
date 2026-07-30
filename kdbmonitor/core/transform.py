@@ -119,9 +119,74 @@ def _rename(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     return df.rename(columns=p["mapping"])
 
 
+# Row-over-row arithmetic, and the reason it is a transform of its own rather
+# than an expression: it has to be able to partition. A volume profile stacks
+# every instrument in one frame, so the difference between consecutive rows
+# walks out of one instrument and into the next at every boundary — which does
+# not raise, it just reports a share of -1.0 and makes that instrument's shares
+# sum to nothing like one.
+_WINDOW_OPS = ("diff", "cumsum", "shift", "rolling_mean", "rolling_sum",
+               "row_number", "pct_of_total", "rank")
+
+
+def _window(df: pd.DataFrame, p: dict) -> pd.DataFrame:
+    op = p.get("op", "diff")
+    if "as" not in p:
+        raise ValueError("window: no 'as' column name given")
+    target = p["as"]
+    keys = list(p.get("partition_by") or [])
+    # `p.get("periods") or 1` would silently turn an explicit 0 into 1 — 0 is
+    # falsy — which is wrong for shift/diff, where periods=0 has a real,
+    # different meaning (compare a row with itself) from periods=1.
+    periods = int(p["periods"]) if p.get("periods") is not None else 1
+    if op not in _WINDOW_OPS:
+        raise ValueError(f"unknown window op: {op} "
+                         f"(have: {', '.join(_WINDOW_OPS)})")
+    for k in keys:
+        _need(df, k, "window")
+
+    if op == "row_number":
+        df[target] = (pd.Series(dtype="int64") if df.empty
+                      else (df.groupby(keys, dropna=False).cumcount() if keys
+                            else pd.Series(range(len(df)), index=df.index)))
+        return df
+
+    column = p["column"]
+    _need(df, column, "window")
+    if df.empty:
+        df[target] = pd.Series(dtype=df[column].dtype)
+        return df
+
+    def run(series: pd.Series) -> pd.Series:
+        if op == "diff":
+            return series.diff(periods)
+        if op == "cumsum":
+            return series.cumsum()
+        if op == "shift":
+            return series.shift(periods)
+        if op == "rolling_mean":
+            return series.rolling(periods).mean()
+        if op == "rolling_sum":
+            return series.rolling(periods).sum()
+        if op == "pct_of_total":
+            total = series.sum()
+            # A total of zero is how an infinity gets into a report — the same
+            # divide-by-zero _no_infinities exists for. A share of nothing is
+            # a gap, not a number, so it gets the null the codebase already
+            # uses for that rather than inf.
+            return series / total if total else series * float("nan")
+        return series.rank(method="min")
+
+    # transform() keeps every value where it was: these files are in session
+    # order, and a profile resorted around midnight is wrong.
+    df[target] = (df.groupby(keys, dropna=False)[column].transform(run) if keys
+                  else run(df[column]))
+    return df
+
+
 _KINDS: dict[str, Callable[[pd.DataFrame, dict], pd.DataFrame]] = {
     "derive": _derive, "filter": _filter, "groupby": _groupby,
-    "sort": _sort, "limit": _limit, "rename": _rename,
+    "sort": _sort, "limit": _limit, "rename": _rename, "window": _window,
 }
 
 

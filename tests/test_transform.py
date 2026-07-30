@@ -237,6 +237,11 @@ def test_steps_are_labelled_with_what_each_one_does():
     (Transform(kind="derive", params={"column": "pct", "kind": "arithmetic",
                                       "expr": "100 * executed / size"}),
      "derive pct = 100 * executed / size"),
+    (Transform(kind="window", params={"column": "cum", "op": "diff",
+                                      "partition_by": ["sym"], "as": "share"}),
+     "window: diff of cum by sym → share"),
+    (Transform(kind="window", params={"op": "row_number", "as": "n"}),
+     "window: row_number → n"),
 ])
 def test_transform_summaries_read_as_the_action(transform, expected):
     assert transform_summary(transform) == expected
