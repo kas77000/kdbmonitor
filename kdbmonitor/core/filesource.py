@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from kdbmonitor.core.dashboard_models import FileShape
+from kdbmonitor.core.dashboard_models import ColumnSpec, FileShape
 
 
 def read_grid(data: bytes) -> list[list[str]]:
@@ -385,3 +385,55 @@ def load_grid(grid: list[list[str]], shape: FileShape) -> FileLoad:
     if problems:
         return FileLoad(cells=cells, problems=problems, notes=notes)
     return FileLoad(df=pd.DataFrame(frame), cells=cells, notes=notes)
+
+
+# Tried in order; the first that reads every non-blank value wins. `text` always
+# succeeds, so this terminates.
+_INFERENCE_ORDER = ("date", "integer", "number", "boolean", "text")
+
+# A date has to look like one. Without this, pandas reads '2026' as a year and a
+# column of quantities profiles as dates — which the author would then have to
+# undo on every dashboard they build. It makes inference stricter than
+# validation, deliberately: a column explicitly declared a date still accepts
+# whatever pandas can parse.
+_DATE_HINTS = ("-", "/", ":")
+
+
+def _reads_as(values: list[str], type_name: str) -> bool:
+    if type_name == "date" and not all(any(h in v for h in _DATE_HINTS)
+                                       for v in values):
+        return False
+    reader = _READERS[type_name]
+    for value in values:
+        try:
+            reader(value)
+        except (ValueError, TypeError, OverflowError, pd.errors.ParserError):
+            return False
+    return True
+
+
+def profile_columns(grid: list[list[str]], shape: FileShape) -> list[ColumnSpec]:
+    """A first guess at the column contract, read off a sample.
+
+    Only the *types* are read from the file. Where the table sits was declared,
+    not discovered — see the module docstring. Even the types are a starting
+    value the author corrects: a column of integer-looking order IDs is text,
+    and only a human knows that.
+    """
+    oriented = orient(grid, shape.header_axis)
+    columns, problems = header_columns(oriented, shape)
+    if problems and not columns:
+        return []
+
+    records, _ = data_records(oriented, shape, columns)
+    markers = null_set(shape)
+    specs: list[ColumnSpec] = []
+    for position, (name, _) in enumerate(columns):
+        values = [str(cells[position]).strip() for _, cells in records]
+        real = [v for v in values if not is_blank(v, markers)]
+        # A column with nothing in it cannot be typed. Text accepts whatever
+        # turns up later, which is the honest answer to "we do not know".
+        kind = next((t for t in _INFERENCE_ORDER if _reads_as(real, t)), "text") \
+            if real else "text"
+        specs.append(ColumnSpec(name=name, type=kind))
+    return specs

@@ -521,3 +521,97 @@ def test_two_cells_can_be_named():
                                  NamedCell(name="When", row=0, col=1)])
     out = load(PREAMBLE, shape)
     assert out.cells == {"Title": "Working orders", "When": "2026-07-30"}
+
+
+from kdbmonitor.core.filesource import profile_columns
+
+
+def test_a_column_is_typed_from_what_is_in_it():
+    grid = [["sym", "qty", "when", "live"],
+            ["0005.HK", "10", "2026-07-30", "true"],
+            ["7203.JP", "20", "2026-07-29", "false"]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert [(s.name, s.type) for s in specs] == [
+        ("sym", "text"), ("qty", "integer"), ("when", "date"),
+        ("live", "boolean")]
+
+
+def test_a_column_of_decimals_is_a_number_not_an_integer():
+    grid = [["px"], ["1284.55"], ["1290.00"]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert specs[0].type == "number"
+
+
+def test_a_bare_number_is_not_mistaken_for_a_date():
+    """pandas reads '2026' as a year; a column of quantities is not dates."""
+    grid = [["qty"], ["2026"], ["1999"]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert specs[0].type == "integer"
+
+
+def test_blanks_do_not_drag_a_column_to_text():
+    grid = [["qty"], ["10"], [""], ["N/A"], ["20"]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert specs[0].type == "integer"
+
+
+def test_a_column_blank_throughout_the_sample_is_typed_as_text():
+    grid = [["notes"], [""], [""]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert specs[0].type == "text"
+
+
+def test_profiling_reads_headers_that_run_down_a_column():
+    """Transposed first, so the types come off the records, not the labels."""
+    grid = [["sym", "0005.HK", "7203.JP"], ["qty", "10", "20"]]
+    shape = FileShape(header_axis="column", header_row=0, data_start=1)
+    specs = profile_columns(grid, shape)
+    assert [(s.name, s.type) for s in specs] == [("sym", "text"),
+                                                 ("qty", "integer")]
+
+
+def test_profiling_honours_a_declared_header_line_it_did_not_choose():
+    """Structure is declared, never detected. A preamble is stepped over
+    because the author said so, not because anything sniffed it out."""
+    grid = [["Working orders", "2026-07-30"], ["", ""],
+            ["sym", "qty"], ["0005.HK", "10"]]
+    specs = profile_columns(grid, FileShape(header_row=2, data_start=3))
+    assert [(s.name, s.type) for s in specs] == [("sym", "text"),
+                                                 ("qty", "integer")]
+
+
+def test_profiling_an_empty_grid_yields_no_columns_rather_than_raising():
+    assert profile_columns([], FileShape()) == []
+
+
+def test_profiling_a_header_line_that_is_not_there_yields_no_columns():
+    assert profile_columns([["sym"]], FileShape(header_row=5,
+                                                data_start=6)) == []
+
+
+def test_a_profiled_column_starts_out_required_and_nullable():
+    """The author tightens these; the guess must not tighten them for them."""
+    specs = profile_columns([["sym"], ["0005.HK"]],
+                            FileShape(header_row=0, data_start=1))
+    assert specs[0].required is True and specs[0].allow_null is True
+
+
+def test_profiling_a_sample_with_a_header_but_no_rows_still_names_the_columns():
+    """Half-built is normal: the author has the header and no data yet."""
+    specs = profile_columns([["sym", "qty"]], FileShape(header_row=0,
+                                                       data_start=1))
+    assert [(s.name, s.type) for s in specs] == [("sym", "text"),
+                                                 ("qty", "text")]
+
+
+def test_a_timestamp_column_profiles_as_a_date():
+    grid = [["ts"], ["09:15:03.221"], ["15:29:58.004"]]
+    specs = profile_columns(grid, FileShape(header_row=0, data_start=1))
+    assert specs[0].type == "date"
+
+
+def test_profiling_respects_the_shapes_own_null_markers():
+    """A column where '-' is a real category is text, not an empty integer."""
+    grid = [["side"], ["-"], ["10"]]
+    loose = FileShape(header_row=0, data_start=1, null_markers=["", "N/A"])
+    assert profile_columns(grid, loose)[0].type == "text"
