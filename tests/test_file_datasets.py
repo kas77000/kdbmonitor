@@ -123,3 +123,21 @@ def test_a_file_frame_is_fed_forward_so_a_later_dataset_can_reference_it():
     dash = _dash()
     out = run_datasets(dash, None, None, TODAY, uploads={"orders": _frame()})
     assert out["orders"].df is not None
+
+
+def test_a_kdb_dataset_is_never_waiting_whatever_the_server_said():
+    """`waiting` decides whether the reader is shown an instruction or a fault,
+    so it is settled by the dataset's source, not by the wording of an error.
+    A q-side message that happened to begin "waiting for" would otherwise ask
+    somebody to upload a file to a dashboard that has no upload box."""
+    from kdbmonitor.core.dataset import run_dataset
+    from kdbmonitor.core.timectx import ResolvedTime
+
+    class _Store:
+        def list_environments(self):
+            return {}
+
+    kdb = Dataset(name="q", env="nowhere", source="kdb")
+    out = run_dataset(kdb, ResolvedTime("realtime", None, None), _Store(),
+                      None, {})
+    assert out.error and out.waiting is False

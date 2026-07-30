@@ -251,7 +251,8 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
     qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
     if error is not None:
         return DatasetResult(ds.name, None, qsql, error,
-                             waiting=error.startswith("waiting for"))
+                             waiting=ds.source == "file"
+                             and error.startswith("waiting for"))
 
     try:
         df = apply_transforms(df, ds.transforms)
