@@ -313,6 +313,98 @@ def _periods_hint(draft: Dashboard, store) -> str:
     return "Reads " + ", ".join(parts) + "."
 
 
+def _kdb_dataset_problems(ds: Dataset, envs: dict, dashboard_time) -> list[str]:
+    """Everything wrong with a KDB-backed dataset.
+
+    Lifted out of ``validate`` whole when file datasets arrived: nearly all of it
+    is about servers, periods and q, and wrapping each check in a source test
+    would have made a long function longer without making it clearer.
+    """
+    problems: list[str] = []
+    if _blank(ds.env):
+        problems.append(f"Dataset '{ds.name}' has no environment selected.")
+
+    if ds.mode == "raw" and _blank(ds.raw_qsql):
+        problems.append(f"Dataset '{ds.name}' is set to raw q but the query is "
+                        f"empty.")
+
+    for i, f in enumerate(ds.filters, start=1):
+        if _blank(f.column):
+            problems.append(f"Dataset '{ds.name}', filter {i}: no column chosen.")
+        if _blank(f.value):
+            problems.append(f"Dataset '{ds.name}', filter {i} on "
+                            f"'{f.column}': no value entered.")
+
+    if ds.time_mode == "realtime":
+        rt = resolve({"mode": "realtime"}, date.today())
+    elif ds.time_mode == "custom":
+        rt = resolve(ds.time_context or {"mode": "realtime"}, date.today())
+    else:
+        rt = dashboard_time
+
+    # Market-data environments hold reference data: no date partitioning, so
+    # the period simply does not apply to them.
+    market = ds.env in envs and is_marketdata_env(envs[ds.env])
+    if market:
+        rt = resolve({"mode": "realtime"}, date.today())
+
+    if ds.env not in envs:
+        problems.append(f"Dataset '{ds.name}' uses unknown environment "
+                        f"'{ds.env}'.")
+    elif not market and envs[ds.env][rt.mode] is None:
+        # An environment declared one-sided is not waiting for the other
+        # half, so say what it does instead of naming a server to add.
+        solo = standalone_side(envs[ds.env])
+        wanted = "date ranges" if rt.mode == "historical" else "real-time"
+        if solo:
+            problems.append(
+                f"Dataset '{ds.name}': environment '{ds.env}' is "
+                f"{KIND_LABELS[solo].lower()} only, so it cannot show "
+                f"{wanted}. Give this dataset a period it can answer.")
+        else:
+            problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has "
+                            f"no {KIND_LABELS[rt.mode].lower()} server — add "
+                            f"one in Admin.")
+
+    if rt.mode == "historical" and ds.mode == "raw" \
+            and not has_date_constraint(ds.raw_qsql or ""):
+        problems.append(
+            f"Dataset '{ds.name}' is historical but its q never constrains "
+            "'date'. Add a date within ({{date_from}};{{date_to}}) clause.")
+
+    if ds.mode == "guided" and not ds.table:
+        problems.append(f"Dataset '{ds.name}' has no table selected.")
+
+    return problems
+
+
+def _file_dataset_problems(ds: Dataset) -> list[str]:
+    """Everything wrong with a file-backed dataset, in plain English.
+
+    None of the KDB checks apply: there is no environment, no period and no
+    query. What it has instead is a shape, and a shape nothing can be read
+    through is the one way it fails before anybody has uploaded anything.
+    """
+    shape = ds.shape
+    if shape is None:
+        return [f"Dataset '{ds.name}' has no shape yet — upload a sample file "
+                f"and confirm where its table sits."]
+
+    out: list[str] = []
+    names = [c.name.strip() for c in shape.columns]
+    if not names:
+        out.append(f"Dataset '{ds.name}' has no columns — confirm its shape "
+                   f"against a sample file.")
+    if any(not n for n in names):
+        out.append(f"Dataset '{ds.name}' has a column with no name.")
+    for name in sorted({n for n in names if n and names.count(n) > 1}):
+        out.append(f"Dataset '{ds.name}' has two columns called '{name}'.")
+    if shape.data_start <= shape.header_row:
+        out.append(f"Dataset '{ds.name}': data starts on or above its header "
+                   f"line — the header is line {shape.header_row + 1}.")
+    return out
+
+
 def validate(draft: Dashboard, store) -> list[str]:
     """Everything wrong with this dashboard, in plain English. Empty when fine.
 
@@ -321,11 +413,15 @@ def validate(draft: Dashboard, store) -> list[str]:
     """
     problems: list[str] = []
     envs = store.list_environments()
-    # The declaration decides what the stored period may be, so validate against
-    # what this dashboard will actually run with rather than what it was left on.
-    draft.time_context = coerce_spec(draft.time_context, draft.periods)
-    dashboard_time = resolve(draft.time_context, date.today())
-    problems += _periods_problems(draft, envs)
+    if draft.source != "file":
+        # The declaration decides what the stored period may be, so validate
+        # against what this dashboard will actually run with rather than what
+        # it was left on.
+        draft.time_context = coerce_spec(draft.time_context, draft.periods)
+        dashboard_time = resolve(draft.time_context, date.today())
+        problems += _periods_problems(draft, envs)
+    else:
+        dashboard_time = resolve({"mode": "realtime"}, date.today())
 
     if _blank(draft.name):
         problems.append("The dashboard has no name.")
@@ -341,70 +437,32 @@ def validate(draft: Dashboard, store) -> list[str]:
             problems.append("A dataset has no name.")
         if ds.name in seen:
             problems.append(f"Duplicate dataset name '{ds.name}'.")
-        if _blank(ds.env):
-            problems.append(f"Dataset '{ds.name}' has no environment selected.")
-
-        if ds.mode == "raw" and _blank(ds.raw_qsql):
-            problems.append(f"Dataset '{ds.name}' is set to raw q but the query is "
-                            f"empty.")
-
-        for i, f in enumerate(ds.filters, start=1):
-            if _blank(f.column):
-                problems.append(f"Dataset '{ds.name}', filter {i}: no column chosen.")
-            if _blank(f.value):
-                problems.append(f"Dataset '{ds.name}', filter {i} on "
-                                f"'{f.column}': no value entered.")
 
         for i, t in enumerate(ds.transforms, start=1):
             problems += _transform_problems(ds.name, i, t)
 
-        if ds.time_mode == "realtime":
-            rt = resolve({"mode": "realtime"}, date.today())
-        elif ds.time_mode == "custom":
-            rt = resolve(ds.time_context or {"mode": "realtime"}, date.today())
-        else:
-            rt = dashboard_time
-
-        # Market-data environments hold reference data: no date partitioning, so
-        # the period simply does not apply to them.
-        market = ds.env in envs and is_marketdata_env(envs[ds.env])
-        if market:
-            rt = resolve({"mode": "realtime"}, date.today())
-
-        if ds.env not in envs:
-            problems.append(f"Dataset '{ds.name}' uses unknown environment "
-                            f"'{ds.env}'.")
-        elif not market and envs[ds.env][rt.mode] is None:
-            # An environment declared one-sided is not waiting for the other
-            # half, so say what it does instead of naming a server to add.
-            solo = standalone_side(envs[ds.env])
-            wanted = "date ranges" if rt.mode == "historical" else "real-time"
-            if solo:
-                problems.append(
-                    f"Dataset '{ds.name}': environment '{ds.env}' is "
-                    f"{KIND_LABELS[solo].lower()} only, so it cannot show "
-                    f"{wanted}. Give this dataset a period it can answer.")
-            else:
-                problems.append(f"Dataset '{ds.name}': environment '{ds.env}' has "
-                                f"no {KIND_LABELS[rt.mode].lower()} server — add "
-                                f"one in Admin.")
-
-        if rt.mode == "historical" and ds.mode == "raw" \
-                and not has_date_constraint(ds.raw_qsql or ""):
+        # The dashboard's source governs its datasets. Switching a saved
+        # dashboard between sources leaves the old ones behind, and a dataset
+        # nobody is going to run is worth saying so about now rather than
+        # leaving to show up as an empty panel.
+        if ds.source != draft.source:
+            reads = ("an uploaded file" if draft.source == "file"
+                     else "KDB queries")
             problems.append(
-                f"Dataset '{ds.name}' is historical but its q never constrains "
-                "'date'. Add a date within ({{date_from}};{{date_to}}) clause.")
+                f"Dataset '{ds.name}' does not match this dashboard, which "
+                f"reads {reads}. Delete it, or change the dashboard's source.")
+        elif ds.source == "file":
+            problems += _file_dataset_problems(ds)
+        else:
+            problems += _kdb_dataset_problems(ds, envs, dashboard_time)
 
-        if ds.mode == "guided" and not ds.table:
-            problems.append(f"Dataset '{ds.name}' has no table selected.")
-
+        # Raw q referencing another dataset or hopening a second environment —
+        # a no-op for a file dataset, whose raw_qsql and extra_connections stay
+        # unset, so these run unconditionally rather than dispatched by source.
         for ref, _ in _REF.findall(ds.raw_qsql or ""):
             if ref not in seen:
                 problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
                                 f"not defined above it.")
-
-        # Cross-process connections: every declared extra env, and every
-        # {{conn:ENV}} the query hopens, must name a known environment.
         for env in ds.extra_connections:
             if env not in envs:
                 problems.append(f"Dataset '{ds.name}' also-connects to unknown "
