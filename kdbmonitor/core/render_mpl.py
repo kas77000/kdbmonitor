@@ -24,6 +24,20 @@ def _bare(ax, keep_bottom: bool = True) -> None:
     ax.tick_params(length=0, labelsize=9, colors=theme.INK2)
 
 
+def _is_number(value) -> bool:
+    """Whether this is a figure a chart can place.
+
+    A gap is not: NaN compares equal to nothing, including itself, and one of
+    them reaching an axis limit makes it NaN, which matplotlib refuses. Gaps
+    are ordinary here — every unreadable value this app meets becomes one on
+    purpose — so they are stepped over rather than defended against.
+    """
+    try:
+        return value is not None and float(value) == float(value)
+    except (TypeError, ValueError):
+        return False
+
+
 def _value_formatter(values) -> Callable[[float], str]:
     """One format for the whole series — mixing '88.2' and '12' in a single
     chart reads as sloppy, so the decimals are decided once.
@@ -415,6 +429,29 @@ def _draw_extras(ax, pm: PlotModel) -> None:
         ax.set_ylim(value_lim)
 
 
+# How many of a categorical axis's labels can be read at once, and how many
+# bars can carry a printed value. A trading session is seventy-odd buckets: all
+# their labels ran together into a grey band and all their values into a black
+# one, so the chart carried less than it would have carried with none.
+# Twelve rather than more: a bucket time is eight characters, and eighteen of
+# them want half again the width an A4 chart has.
+MAX_TICK_LABELS = 12
+MAX_LABELLED_BARS = 24
+
+
+def _thin_ticks(positions: list, labels: list) -> tuple[list, list]:
+    """Every nth label, so a long categorical axis stays readable.
+
+    Keeps the first and evenly spaced ones after it rather than dropping from
+    the end, so the axis still starts where the data starts.
+    """
+    if len(labels) <= MAX_TICK_LABELS:
+        return positions, labels
+    step = -(-len(labels) // MAX_TICK_LABELS)        # ceil
+    keep = range(0, len(labels), step)
+    return [positions[i] for i in keep], [labels[i] for i in keep]
+
+
 def _bar(ax, pm: PlotModel) -> None:
     _bare(ax)
     n = max(len(pm.series), 1)
@@ -428,6 +465,7 @@ def _bar(ax, pm: PlotModel) -> None:
                    label=s.label, zorder=3)
     labels = [str(v) for v in pm.series[0].x] if pm.series else []
     centres = [p + 0.4 - 0.4 / n for p in range(len(labels))]
+    centres, labels = _thin_ticks(centres, labels)
     if pm.orientation == "h":
         ax.set_yticks(centres, labels)
         ax.set_xticks([])
@@ -436,12 +474,19 @@ def _bar(ax, pm: PlotModel) -> None:
 
     # Label values directly. With a single series the axis ticks are hidden, so
     # without these the chart carries no readable numbers at all.
-    values = [v for s in pm.series for v in s.y]
+    # Gaps are ordinary here — every value this app cannot read becomes one
+    # deliberately, and a bucket share taken as a difference has no value on
+    # the first row by construction. A null in the span made the axis limit
+    # NaN, which matplotlib refuses outright, so the whole panel printed as an
+    # error over one missing number.
+    values = [v for s in pm.series for v in s.y if _is_number(v)]
     span = max([abs(v) for v in values] or [1]) or 1
-    if len(pm.series) == 1:
+    if len(pm.series) == 1 and len(pm.series[0].y) <= MAX_LABELLED_BARS:
         s = pm.series[0]
-        fmt = _value_formatter(s.y)
+        fmt = _value_formatter([v for v in s.y if _is_number(v)])
         for i, v in enumerate(s.y):
+            if not _is_number(v):
+                continue           # nothing to label, and nowhere to put it
             pos = i + 0.4 - 0.4 / n
             if pm.orientation == "h":
                 ax.text(v + span * 0.02, pos, fmt(v), va="center",
@@ -466,6 +511,13 @@ def _line(ax, pm: PlotModel) -> None:
         ax.plot(s.x, s.y, color=s.color, label=s.label, marker="o",
                 markersize=3.5, linewidth=1.8)
     ax.grid(axis="y", color=theme.GRID, linewidth=0.8)
+    # A categorical x — bucket times, venue names — gets one tick per point,
+    # which for a trading session is seventy-odd labels printed over each
+    # other. A numeric or date axis picks its own and is left alone.
+    if pm.series and all(isinstance(v, str) for v in pm.series[0].x):
+        labels = [str(v) for v in pm.series[0].x]
+        positions, kept = _thin_ticks(list(range(len(labels))), labels)
+        ax.set_xticks(positions, kept)
     if len(pm.series) > 1:
         ax.legend(frameon=False, fontsize=9)
 

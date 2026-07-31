@@ -1,0 +1,180 @@
+{
+  "kind": "kdbmonitor-export",
+  "version": 2,
+  "exported_at": null,
+  "connections": [],
+  "alerts": [],
+  "dashboards": [
+    {
+      "id": null,
+      "name": "Volume profile",
+      "description": "An intraday volume profile read from a CSV: the cumulated curve against the pace a flat schedule would have traced, the share traded in each bucket against the average bucket, and the full bucket table. Pick the instrument at the top. Built entirely from generic pieces — the even-pace line is a row number turned into a share and accumulated, not a feature that knows what a volume profile is.",
+      "refresh_secs": 0,
+      "periods": "realtime",
+      "orientation": "auto",
+      "source": "file",
+      "time_context": {
+        "mode": "realtime"
+      },
+      "parameters": [
+        {
+          "name": "instrument",
+          "label": "Instrument",
+          "kind": "column",
+          "choices": [],
+          "dataset": "profile",
+          "column": "#FidessaCode",
+          "default": "ICICIBC.IN"
+        }
+      ],
+      "datasets": [
+        {
+          "name": "profile",
+          "env": "",
+          "time_mode": "inherit",
+          "time_context": null,
+          "mode": "guided",
+          "table": "",
+          "filters": [],
+          "raw_qsql": null,
+          "extra_connections": [],
+          "source": "file",
+          "file_label": "your volume profile export",
+          "shape": {
+            "header_axis": "row",
+            "header_row": 1,
+            "first_col": 0,
+            "data_start": 2,
+            "delimiter": "auto",
+            "null_markers": ["", "NA", "N/A", "NaN", "NULL", "NONE", "-", "--", "#N/A"],
+            "columns": [
+              {"name": "#FidessaCode", "type": "text", "required": true, "allow_null": false},
+              {"name": "ReutersCode", "type": "text", "required": false, "allow_null": true},
+              {"name": "Venue", "type": "text", "required": false, "allow_null": true},
+              {"name": "TimeZone", "type": "text", "required": false, "allow_null": true},
+              {"name": "Time", "type": "text", "required": true, "allow_null": false},
+              {"name": "CumulatedPercentage", "type": "number", "required": true, "allow_null": true}
+            ],
+            "cells": [
+              {"name": "Header", "row": 0, "col": 0, "type": "text", "allow_null": true}
+            ]
+          },
+          "transforms": [
+            {
+              "kind": "filter",
+              "params": {"column": "#FidessaCode", "op": "=",
+                         "value": "{{param:instrument}}"}
+            },
+            {
+              "kind": "window",
+              "params": {"column": "CumulatedPercentage", "op": "diff",
+                         "partition_by": ["#FidessaCode"], "as": "share"}
+            },
+            {
+              "kind": "derive",
+              "params": {"column": "one", "kind": "arithmetic", "expr": "1"}
+            },
+            {
+              "kind": "window",
+              "params": {"column": "one", "op": "pct_of_total",
+                         "partition_by": ["#FidessaCode"], "as": "even_step"}
+            },
+            {
+              "kind": "window",
+              "params": {"column": "even_step", "op": "cumsum",
+                         "partition_by": ["#FidessaCode"], "as": "even_pace"}
+            }
+          ],
+          "max_rows": 5000
+        }
+      ],
+      "rows": [
+        {
+          "height_in": 0.9,
+          "widgets": [
+            {
+              "type": "kpi",
+              "dataset": "profile",
+              "title": "Buckets",
+              "spec": {"column": "Time", "agg": "count", "fmt": ",.0f"},
+              "width": 1.0
+            },
+            {
+              "type": "kpi",
+              "dataset": "profile",
+              "title": "Busiest bucket",
+              "spec": {"column": "share", "agg": "max", "fmt": ".2%"},
+              "width": 1.0
+            }
+          ]
+        },
+        {
+          "height_in": 3.1,
+          "widgets": [
+            {
+              "type": "line",
+              "dataset": "profile",
+              "title": "Cumulated volume",
+              "spec": {
+                "x": "Time",
+                "y": "CumulatedPercentage",
+                "references": [
+                  {"kind": "column", "column": "even_pace", "label": "even pace"}
+                ],
+                "bands": [
+                  {"from": "0:00:00", "to": "9:15:00", "label": "pre-open"}
+                ]
+              },
+              "width": 1.0
+            }
+          ]
+        },
+        {
+          "height_in": 2.8,
+          "widgets": [
+            {
+              "type": "bar",
+              "dataset": "profile",
+              "title": "Volume per bucket",
+              "spec": {
+                "x": "Time",
+                "y": "share",
+                "references": [
+                  {"kind": "mean", "label": "average bucket"}
+                ],
+                "bands": [
+                  {"from": "0:00:00", "to": "9:15:00", "label": "pre-open"}
+                ]
+              },
+              "width": 1.0
+            }
+          ]
+        },
+        {
+          "height_in": 4.0,
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "profile",
+              "title": "Buckets",
+              "spec": {
+                "columns": ["Time", "CumulatedPercentage", "share", "even_pace"],
+                "labels": {
+                  "CumulatedPercentage": "cumulated",
+                  "share": "this bucket",
+                  "even_pace": "even pace"
+                },
+                "formats": {
+                  "CumulatedPercentage": ".2%",
+                  "share": ".2%",
+                  "even_pace": ".2%"
+                }
+              },
+              "width": 1.0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

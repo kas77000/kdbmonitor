@@ -351,3 +351,96 @@ def test_large_values_drop_the_decimal(ax):
 def test_small_values_keep_their_decimal(ax):
     draw(ax, PlotModel(kind="bar", series=[_series(y=[61.4, 88.2])]))
     assert "61.4" in _texts(ax)
+
+
+def test_a_bar_chart_survives_a_gap_in_its_values(ax):
+    """Every value this app cannot read becomes a null on purpose, and a share
+    taken as a difference has none on its first row by construction. One of
+    them in the axis limit made it NaN, which matplotlib refuses outright — so
+    the whole panel printed as an error over one missing number."""
+    pm = PlotModel(kind="bar", title="T", series=[
+        Series("share", ["a", "b", "c"], [float("nan"), 0.2, 0.3],
+               theme.color_for(0))])
+    draw(ax, pm)
+    assert pm.kind == "bar"
+    bottom, top = ax.get_ylim()
+    assert bottom == bottom and top == top          # neither is NaN
+    assert top > 0.3
+
+
+def test_a_gap_gets_no_value_label(ax):
+    """There is nothing to write and nowhere to put it."""
+    draw(ax, PlotModel(kind="bar", title="T", series=[
+        Series("share", ["a", "b"], [float("nan"), 0.5], theme.color_for(0))]))
+    assert len([t for t in ax.texts if t.get_text().strip()]) == 1
+
+
+def test_a_bar_chart_of_nothing_but_gaps_still_draws(ax):
+    draw(ax, PlotModel(kind="bar", title="T", series=[
+        Series("s", ["a", "b"], [float("nan"), float("nan")],
+               theme.color_for(0))]))
+    bottom, top = ax.get_ylim()
+    assert bottom == bottom and top == top
+
+
+def test_a_horizontal_bar_survives_a_gap_too(ax):
+    pm = PlotModel(kind="bar", title="T", orientation="h", series=[
+        Series("s", ["a", "b"], [float("nan"), 0.5], theme.color_for(0))])
+    draw(ax, pm)
+    left, right = ax.get_xlim()
+    assert left == left and right == right
+
+
+# --- a long categorical axis has to stay readable ---------------------------
+
+def _many(n: int) -> PlotModel:
+    return PlotModel(kind="bar", title="T", series=[
+        Series("share", [f"{9 + i // 12}:{(i % 12) * 5:02d}" for i in range(n)],
+               [0.01 * (i + 1) for i in range(n)], theme.color_for(0))])
+
+
+def test_a_long_axis_shows_a_readable_number_of_labels(ax):
+    """A trading session is seventy-odd buckets; all their labels ran together
+    into a grey band, so the axis carried less than it would have with none."""
+    draw(ax, _many(78))
+    shown = [t for t in ax.get_xticklabels() if t.get_text().strip()]
+    assert 2 <= len(shown) <= 12
+
+
+def test_a_short_axis_keeps_every_label(ax):
+    draw(ax, _many(6))
+    assert len([t for t in ax.get_xticklabels() if t.get_text().strip()]) == 6
+
+
+def test_the_thinned_axis_still_starts_where_the_data_starts(ax):
+    draw(ax, _many(78))
+    shown = [t.get_text() for t in ax.get_xticklabels() if t.get_text().strip()]
+    assert shown[0] == "9:00"
+
+
+def test_many_bars_carry_no_printed_values(ax):
+    """Seventy-eight of them printed over each other into a black band."""
+    draw(ax, _many(78))
+    assert len([t for t in ax.texts if t.get_text().strip()]) == 0
+
+
+def test_a_few_bars_still_carry_their_values(ax):
+    draw(ax, _many(6))
+    assert len([t for t in ax.texts if t.get_text().strip()]) == 6
+
+
+def test_a_long_line_chart_thins_its_labels_too(ax):
+    pm = _many(78)
+    pm.kind = "line"
+    draw(ax, pm)
+    shown = [t for t in ax.get_xticklabels() if t.get_text().strip()]
+    assert 2 <= len(shown) <= 12
+
+
+def test_a_line_chart_on_numbers_is_left_to_choose_its_own_ticks(ax):
+    """Only a categorical axis gets one tick per point."""
+    pm = PlotModel(kind="line", title="T", series=[
+        Series("v", list(range(100)), [float(i) for i in range(100)],
+               theme.color_for(0))])
+    draw(ax, pm)
+    assert len(ax.get_xticks()) < 100
