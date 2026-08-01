@@ -49,8 +49,11 @@ Deliberately out of scope, and to stay that way:
 - Authoring or editing alerts from the trader machine.
 - Any two-way messaging, chat, or trader-to-trader features.
 - Mobile or out-of-building delivery.
-- Showing result rows, tables, or charts on the trader machine. An alert is a
-  headline. If somebody needs the rows, the rows are in KdbMonitor.
+- Showing the result table, or any chart, on the trader machine. An alert is a
+  headline; where a long result has to be worked through, the agent lists its
+  identifiers and tracks which are done (§6.4), and anybody who needs the
+  columns opens it in KdbMonitor. The line is between *a worklist of keys* and
+  *a second application for looking at data*, and only the first belongs here.
 - Acting on the trading platform — no order cancellation, no click-through
   into the platform, nothing that touches a live order.
 
@@ -203,9 +206,10 @@ exactly the attention this design exists to protect. So an expired event leaves
 the screen. It stays in DeskAlert's history panel and in KdbMonitor, where
 looking backwards is the point.
 
-Red events are the exception: they persist until acknowledged, however old they
-get, because an unacknowledged red is precisely the thing that must not quietly
-disappear.
+Two exceptions. **Red** persists until acknowledged, however old it gets,
+because an unacknowledged red is precisely the thing that must not quietly
+disappear. **Pinned** persists until unpinned (§6.4) — a trader working through
+a long list must not have it expire underneath them at minute six.
 
 ### 5.4 Grouping
 
@@ -489,6 +493,9 @@ Red and amber events also raise a card, stacked in one fixed corner:
 
 The stack is bounded — five cards, then a collapsed count. An unbounded stack
 covers the screen during exactly the incident where the screen matters most.
+Pinned cards (§6.4) sit above the five in their own region and are not counted
+against the cap, since the whole point of pinning is that nothing pushes them
+out.
 
 **The stack is ordered by severity, then oldest first within a severity, and it
 does not re-sort.** Not newest-first: during a burst, newest-first makes the
@@ -529,6 +536,72 @@ login and the timestamp. There is a bulk *ack all amber*, because at volume the
 alternative is fourteen clicks.
 
 ---
+
+### 6.4 Working a long list
+
+A stack of forty is a headline, and a headline is not a worklist. Nobody deals
+with forty orders in a glance; they deal with them over several minutes while
+the desk keeps moving, and during those minutes everything else in this design
+is trying to take the stack away — the TTL wants to expire it, the five-card
+cap wants to push it out, and newer alerts keep arriving. So there has to be
+somewhere the work happens and a way to hold it still.
+
+**Pinning.** Any card or stack can be pinned, and a pinned one:
+
+- ignores its time to live (§5.3);
+- ignores the five-card cap, sitting in its own region above the transient
+  cards, so nothing pushes it off;
+- survives an agent restart, because a machine that reboots mid-incident must
+  not lose what somebody was working on;
+- **stays after it clears**, marked as cleared, until the trader lets it go.
+  Something they were halfway through must not vanish because the underlying
+  condition resolved itself — that is the moment they most want to see what
+  they had.
+
+Nothing pins itself. A stack of forty is an obvious candidate and the tool
+still does not do it, for the same reason it does not choose thresholds
+(§5.4.2): the trader knows which one they are working on and the tool does not.
+
+**The worklist.** A pinned stack opens into its rows — subject, key, age — each
+tickable as handled. Forty becomes thirty-seven becomes thirty, and the count
+on the card follows, so the trader can see progress without counting.
+
+**Two states, and they are independent.** This is the part that would be easy
+to get wrong:
+
+| | comes from | means |
+|---|---|---|
+| **live / cleared** | the query's latest result | the condition is or is not still true |
+| **unhandled / handled** | the trader ticking a row | they have dealt with it, or are on it |
+
+A row the trader has handled does not come back when the next run still
+returns it — they know, and telling them again is noise. It leaves for good
+only when it genuinely clears. Conversely a row that clears on its own is done
+whether or not anybody ticked it. Collapsing these two into one state would
+either resurrect handled rows every fifteen seconds or lose track of what the
+query still says.
+
+**The list is live, and says what changed.** Rows arriving since the trader
+opened it are flagged as new; rows that have cleared are struck through before
+they go. Working a list whose contents change underneath you is only tolerable
+if the changes are visible — otherwise a trader finishes a list that quietly
+grew by six while they were reading it.
+
+**Copy the lot.** One button putting every key in the list on the clipboard, to
+paste into a platform window or a spreadsheet. The single-card copy (§6.2)
+saves a retype; this saves forty.
+
+**Full detail is one click into KdbMonitor.** The agent shows identifiers and
+their state — not the result table. §2 rules out putting rows, tables and
+charts on the trader machine and that still holds; a list of keys with a tick
+against each is not a result table, and anybody who needs the columns has the
+whole thing waiting in KdbMonitor. Keeping that line drawn is what stops the
+agent slowly becoming a second application to maintain.
+
+**Progress goes back to the desk.** The handled count travels with the
+acknowledgements that already flow (§9), so KdbMonitor can show *"jsmith is
+working this, 12 of 40"*. On a desk where several people receive the same
+alert, that is what stops two of them working the same list from opposite ends.
 
 ## 7. The day has phases
 
@@ -771,7 +844,12 @@ event_groups      (id, alert_id, variant, stacked,
                    opened_at, closed_at, row_count, subject_count,
                    spread_json, peak_severity)
 deliveries        (event_id, recipient_id, agent_id,
-                   delivered_at, acked_at, ack_login)
+                   delivered_at, acked_at, ack_login,
+                   handled_at)                       -- §6.4; per row, per
+                                                     -- person, independent of
+                                                     -- whether it cleared
+pins              (recipient_id, group_id, pinned_at)-- survives restart, and
+                                                     -- survives clearing
 ```
 
 `row_key` and `first_seen` are what make a run comparable to the one before it.
@@ -830,6 +908,10 @@ The section a spec is judged by.
 | `stack_at` set too high | Twenty cards instead of one stack | Obvious on the day; a settings change, and the noise report counts it |
 | `stack_at` set too low | Three ordinary rows become a stack | Harmless, and the stack still expands |
 | The query returns thousands of rows | One stack, breakdown truncated to what fits | `RESULT_MAX_ROWS` already caps this at 500 upstream |
+| Agent restarts while a list is half worked | Pins and handled marks come back | Both live on the daemon, not only in the agent (§6.4) |
+| A pinned stack clears mid-work | Stays, marked cleared, until unpinned | It is the moment the trader most wants to see what they had |
+| Two traders work the same stack | Both see the other's progress count | `handled_at` per recipient, surfaced in KdbMonitor (§9) |
+| A trader pins a stack and forgets it | It stays until unpinned, by design | Pinned-but-cleared items are listed in the panel and on the Agents page |
 | Burst detector fails to fire | Up to the rate limit in cards, then rolled anyway | The rate limit is the floor under the detector |
 | Agent reconnects mid-burst | Receives the group, not its hundreds of member events | `event_groups` survives the reconnect |
 | A burst never clears | Red persists unacknowledged, correctly | It stays on the strip; that is the point |
@@ -935,6 +1017,14 @@ reshaping cards into a stack and back; a duplicate key detected rather than
 silently collapsing two orders into one; and a red that clears acknowledging
 itself.
 
+The worklist (§6.4) turns on two states staying independent, which is where it
+would break: a handled row not reappearing when the next run still returns it;
+a handled row leaving for good only once it clears; a row that clears while
+still unhandled being done anyway; rows arriving mid-work being flagged as new
+rather than silently swelling the list; a pinned stack outliving its TTL and
+outliving its own clearing; and pins and handled marks surviving a restart of
+the agent.
+
 **Integration:** relay tested against a scripted fake agent — connect, receive,
 acknowledge, drop the connection, reconnect, receive the backlog, confirm
 expired events are absent, and confirm a mid-burst reconnect delivers one group
@@ -970,6 +1060,10 @@ Each step should leave something that works.
    variant columns, coverage protection, sound at onset. Thresholds are typed
    in by a person, informed by replaying real `alert_runs` history rather than
    guessed — and never computed (§5.4.2).
+   **Pinning and the worklist (§6.4) ship with this step, not after it.** A
+   stack of forty that cannot be held open and worked through is not a feature,
+   it is a notification the trader cannot act on, and shipping the stack
+   without the list would make the burst worse rather than better.
 5. **Volume control.** Rate limits, kill switch, snooze, the noise report.
 6. **Trust.** Connection dot, acknowledgement tracking, the three warnings,
    history panel.
