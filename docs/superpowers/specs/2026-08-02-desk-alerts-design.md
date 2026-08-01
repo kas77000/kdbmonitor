@@ -143,6 +143,8 @@ Each event carries:
 | `alert_id` | which alert produced it |
 | `severity` | `red` · `amber` · `grey` (see §6) |
 | `subject` | the thing it is about — for a coverage desk, the sym |
+| `scope_kind` | `instance` · `market` · `sym` · `none` — the blast radius (§5.4.1) |
+| `scope_value` | which instance, which market — what a burst groups by |
 | `dedupe_key` | `alert_id` + `subject`, the identity used to coalesce |
 | `group_id` | the burst it belongs to, if any (§5.4) |
 | `headline` | the one line the trader reads, already rendered |
@@ -224,30 +226,85 @@ The card does not move, flash, or re-sound. A card that jumps every time its
 condition re-fires is a card the eye has to re-find, which is the opposite of
 what a fixed position is for.
 
-**Rolled up** — same alert, *many different* subjects. This is the open and the
-close. Forty orders across twenty-five names showing one symptom is one thing
-that has happened, not twenty-five, and the trader needs to see it that way:
+**Rolled up** — same alert, *many different* subjects sharing a scope. This is
+the open, the close, and any infrastructure failure. Forty orders showing one
+symptom is one thing that has happened, not forty, and the trader needs to see
+it that way.
 
-```
-┌────────────────────────────────────────────────────┐
-│▌ 40 orders stuck NEW · 25 names       2m    ▾    ▪│
-│    RIL.IB 7 · INFY.IB 5 · TCS.IB 4 · +22 more     │
-└────────────────────────────────────────────────────┘
-```
-
-Top three subjects by count, then a tally, expandable to the full list. One
-glance gives both the systemic fact and the worst names.
-
-Coalescing by subject would have made this *worse*, not better — every name is
-distinct, so nothing coalesces and twenty-five cards arrive. Rolling up is the
+Coalescing by subject would make this *worse*, not better — every name is
+distinct, so nothing coalesces and forty cards arrive. Rolling up is the
 mechanism that actually protects the open.
 
-**The switch is automatic.** An alert enters rolled-up mode when it produces
-events for more than `burst_subjects` distinct subjects inside `burst_window`
-(defaults: four subjects in sixty seconds), and leaves it when it falls below
-that for a full window. Stated in one sentence, which is how it should be
-explainable to a trader: *if one alert starts hitting a lot of names at once,
-it becomes one card instead of a lot of them.*
+### 5.4.1 Blast radius
+
+**What a burst is grouped by depends on what broke**, and getting this wrong
+means telling the trader the wrong story about their own morning. The desk has
+a ladder of three:
+
+| Scope | What fails | Reaches |
+|---|---|---|
+| **instance** | market data on an algo instance | every order that instance carries — *across several markets at once* |
+| **market** | one market misbehaving | every order on that market, many names |
+| **sym** | one name — limit up/down, a halt | that name's orders |
+
+So each alert declares a **scope column** alongside its subject column — the
+column in its result that names the thing that broke. Roll-up then groups by
+*that*, not by the sym:
+
+```
+┌──────────────────────────────────────────────────────┐
+│▌ INST-03   market data stale · 40 orders · 3 markets │  instance
+│     .IB 22 · .T 12 · .HK 6                           │
+├──────────────────────────────────────────────────────┤
+│▌ .IB       38 orders stuck NEW · 25 names            │  market
+│     RIL.IB 7 · INFY.IB 5 · TCS.IB 4 · +22 more       │
+├──────────────────────────────────────────────────────┤
+│▌ RIL.IB    limit up · 3 orders                       │  sym
+└──────────────────────────────────────────────────────┘
+```
+
+Each card names its scope, then counts one rung *down* the ladder — an instance
+card counts markets, a market card counts names. That second number is the one
+that tells a trader what kind of problem they are in.
+
+**The cross-market case is why this is worth the extra field.** When instance
+03 loses market data and it carries India, Japan and Hong Kong, a trader
+covering India sees their orders failing and would otherwise conclude their
+names are in trouble. A card reading *INST-03 · 3 markets* tells them in one
+glance that it is infrastructure, that it is not about their names, and that
+other people are already seeing it too. Without the scope, three traders on
+three markets each go hunting the same problem separately.
+
+`scope: none` exists for an alert where rolling up would destroy the
+information, and each event then stands alone. Use it sparingly — even alerts
+that feel inherently per-name burst market-wide on a big day, which is exactly
+the market-scoped burst the desk already sees.
+
+### 5.4.2 The switch
+
+**Detection is per scope value, not per alert.** An alert enters rolled-up mode
+for a given scope value when it produces events for more than `burst_subjects`
+distinct subjects sharing that value inside `burst_window` (defaults: four in
+sixty seconds), and leaves it after a full quiet window.
+
+Per scope value rather than per alert matters: two instances failing at once
+are two problems and get two cards. A per-alert detector would have merged them
+into one and hidden the fact that it was happening twice.
+
+Stated in one sentence, which is the test of whether it can be explained to a
+trader: *if one alert starts hitting a lot of orders behind the same instance,
+market or name, it becomes one card instead of a lot of them.*
+
+### 5.4.3 Escalating with the blast radius
+
+An alert may declare that it changes severity as it spreads — *amber normally,
+red beyond N subjects.* One stuck order is worth a look; forty behind one
+instance is worth interrupting somebody.
+
+This is opt-in and declared per alert, never inferred. Severity that moves on
+its own for reasons a trader cannot predict would undo the whole point of
+having three fixed colours (§5.2). Declared, it stays predictable: the alert
+says what it does, and the noise report can show how often it escalated.
 
 ### 5.5 Clearing
 
@@ -392,17 +449,32 @@ trader gets that name, per-subject cards, coalescing on repeats. This is what
 the design would be if it were the only phase, and it is where §5.4's
 *coalesced* mode lives.
 
-**A burst.** The open, the close, or a platform going wrong: several orders
-across many names showing symptoms at once. Everything below exists for this
-phase, because it is the one where a naive design actively harms the desk —
-twenty-five cards arriving in ten seconds is worse than no tool at all, since
-the trader now has to triage the alerts as well as the orders.
+**A burst.** The open, the close, or something breaking: many orders showing
+symptoms at once. Everything below exists for this phase, because it is the one
+where a naive design actively harms the desk — forty cards arriving in ten
+seconds is worse than no tool at all, since the trader now has to triage the
+alerts as well as the orders.
+
+Bursts are not all the same size or shape, and the difference is the alert's
+nature rather than the time of day. Most are **market-scoped** — one market
+misbehaving, many names on it. The dangerous one is **instance-scoped**: a
+market data problem on an algo instance takes out every order that instance
+carries, and those orders span several markets, so the burst crosses the
+boundary the desk normally thinks in. Some alerts barely burst at all. §5.4.1
+is how the design tells these apart; this section is what it does about them.
 
 ### 7.1 Surviving the burst
 
-**Roll up by condition, not by name** (§5.4). This is the mechanism that
+**Roll up by what broke, not by name** (§5.4). This is the mechanism that
 matters, and it is the inverse of what serves the quiet phase. Coalescing by
 subject does nothing at the open because every name is different.
+
+**A cross-market burst reaches people who do not share a market.** When an
+instance fails, everyone with orders on it is affected regardless of what they
+cover, so the roll-up card goes to all of them — and they all see the same
+card, with the same scope on it, so when they turn to each other they are
+describing the same thing rather than three separate mysteries. With
+coverage-based routing (§8.1) this falls out on its own.
 
 **The leading edge is the weak spot.** A detector that needs four subjects in
 sixty seconds lets the first three through as individual cards. That is a
@@ -487,8 +559,10 @@ must mean the same thing.
 
 ### 8.1 Coverage
 
-A recipient can also carry a **coverage list** — the syms that trader is
-responsible for. It does two things:
+A recipient can also carry a **coverage list** — the names, or whole markets,
+that trader is responsible for. Both kinds, because coverage is not always at
+the same granularity and a trader who covers India should not have to have
+every Indian name enumerated. It does two things:
 
 - **It protects their names during a burst** (§7.1). Their syms keep individual
   cards while everything else rolls up. Without this, the roll-up that saves the
@@ -585,7 +659,8 @@ New tables. Nothing existing changes shape.
 ```sql
 recipients        (id, name, email, enabled)
 recipient_logins  (recipient_id, login)              -- several per person
-recipient_coverage(recipient_id, sym, source)        -- §8.1; source =
+recipient_coverage(recipient_id, kind, value, source) -- §8.1; kind = 'sym' |
+                                                     -- 'market', source =
                                                      -- 'manual' | 'synced'
 desks             (id, name)
 desk_members      (desk_id, recipient_id)
@@ -597,11 +672,15 @@ agents            (id, login, hostname, version, screen,
                    first_seen, last_seen)
 snoozes           (recipient_id, alert_id, until, set_at)
 events            (id, alert_id, group_id, dedupe_key, severity, subject,
+                   scope_kind, scope_value,
                    headline, detail_json, count, created_at, expires_at,
                    cleared_at)
-event_groups      (id, alert_id, mode, opened_at, closed_at,
-                   subject_count, event_count)       -- mode = 'single' |
+event_groups      (id, alert_id, scope_kind, scope_value, mode,
+                   opened_at, closed_at, subject_count, event_count,
+                   spread_json, peak_severity)       -- mode = 'single' |
                                                      -- 'coalesced' | 'rolled'
+                                                     -- UNIQUE (alert_id,
+                                                     -- scope_value) while open
 deliveries        (event_id, recipient_id, agent_id,
                    delivered_at, acked_at, ack_login)
 ```
@@ -610,12 +689,18 @@ deliveries        (event_id, recipient_id, agent_id,
 trick. It gives the roll-up card an identity that survives a reconnect, gives
 the clear (§5.5) something to attach to, and gives the noise report a way to
 say *"the open produced three bursts lasting a total of nine minutes"* instead
-of only counting events.
+of only counting events. The uniqueness on `(alert_id, scope_value)` is what
+keeps two instances failing at once as two cards rather than one.
 
-Per-alert burst settings — `burst_subjects`, `burst_window`, the declared
-windows, the rate limit — live inside the existing `alert_json` blob, following
-the app's established habit of serialising an alert whole rather than
-normalising its every field into columns.
+`spread_json` holds the rung below the scope — the market breakdown under an
+instance, the name breakdown under a market — which is what the card's second
+line prints and what makes it useful without expanding.
+
+Per-alert settings — `scope_column`, `burst_subjects`, `burst_window`, the
+escalation threshold, the declared windows, the rate limit — live inside the
+existing `alert_json` blob, following the app's established habit of
+serialising an alert whole rather than normalising its every field into
+columns.
 
 `events` is separate from the existing `alert_runs` on purpose. `alert_runs`
 records *we checked*; `events` records *we told somebody*. Conflating them
@@ -645,6 +730,9 @@ The section a spec is judged by.
 | An alert misfires floor-wide | Kill switch, one click | Whoever sees it (§7) |
 | Trader mutes something quietly | Visible on the Agents page | Snoozes are recorded and shown (§7) |
 | Burst detector fires when it should not | A handful of related alerts show as one card that expands | The card says how many names; the noise report counts bursts |
+| Scope column missing or null on an event | Falls back to ungrouped — a card of its own | Logged; the alert's editor warns at design time |
+| Two instances fail at once | Two cards, one per instance | Groups are unique per scope value, not per alert |
+| An alert is given the wrong scope | Cards group by the wrong thing, but nothing is lost | Visible immediately on the first burst; a settings change, not a rebuild |
 | Burst detector fails to fire | Up to the rate limit in cards, then rolled anyway | The rate limit is the floor under the detector |
 | Agent reconnects mid-burst | Receives the group, not its hundreds of member events | `event_groups` survives the reconnect |
 | A burst never clears | Red persists unacknowledged, correctly | It stays on the strip; that is the point |
@@ -696,13 +784,18 @@ alerts arrive. It is whether they are still being read on day five.
 5. **Is there a source for coverage** (§8.1) that can be read or exported? If
    yes, sync it. If no, coverage is typed in and the burst protection is
    coarser.
-6. **How big is a real burst?** Twenty-five names or two hundred and fifty
-   changes whether the roll-up card needs a second level of grouping. Worth
-   measuring from the existing `alert_runs` history before choosing defaults —
-   the data to answer it is already in the database.
+6. **What names the instance and the market in the result?** The whole of
+   §5.4.1 rests on there being a column for each. If the algo tables carry an
+   instance identifier and a market or exchange code, this is free; if the
+   market has to be derived from the sym suffix, that derivation needs a home
+   and should live in `core/` beside the existing transforms rather than being
+   written into every alert's query by hand.
 7. **What are the real burst windows?** The open and the close were mentioned;
    whether they are the only ones, and their exact times per market, decides
-   what gets pre-armed.
+   what gets pre-armed. Note that a firm covering several markets has several
+   opens, so this is a list per market rather than one pair of times.
+8. **Which alerts escalate with spread** (§5.4.3), and at what count? Worth
+   deciding per alert with the desk rather than choosing a global default.
 
 ---
 
@@ -726,6 +819,14 @@ the roll-up; the group surviving a reconnect; leaving rolled-up mode only after
 a full quiet window rather than flapping on the first gap; a clear arriving for
 a group that was never opened; and a burst that starts inside a declared window
 with the lowered threshold.
+
+The scope logic (§5.4.1) needs its own cases on top: two instances failing at
+once staying two cards rather than merging; an instance-scoped burst spanning
+three markets counting markets and not names; the same events grouped by market
+instead of instance producing a different and equally correct set of cards; an
+event whose scope column is null or missing falling back to ungrouped rather
+than raising; and escalation firing at its declared count and not one subject
+earlier.
 
 **Integration:** relay tested against a scripted fake agent — connect, receive,
 acknowledge, drop the connection, reconnect, receive the backlog, confirm
