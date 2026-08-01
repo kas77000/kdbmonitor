@@ -138,8 +138,18 @@ def _run(db_path: str, seed: str = "", stub_pills: bool = False) -> AppTest:
 
 
 def _tabs(at) -> list[str]:
+    """The labels on the tab strip.
+
+    Streamlit hands an option back as a plain string on some versions and as an
+    object carrying its ``content`` on others, and the app is expected to run
+    across both — the printed-preview tests in this suite already skip below
+    1.49 for the same reason. Reading it either way keeps this test about the
+    tabs rather than about which Streamlit is installed.
+    """
     groups = [g for g in at.button_group if g.key == "dash_tabs"]
-    return [o.content for o in groups[0].options] if groups else []
+    if not groups:
+        return []
+    return [getattr(o, "content", o) for o in groups[0].options]
 
 
 def _qp(at, key: str) -> str | None:
