@@ -26,10 +26,13 @@ already knows, and understood without being studied.
 **Their time is the scarce resource.** Reading an alert must cost a glance.
 Not a sentence, not a click to expand, not a decision about whether it matters.
 
-**There will be a lot of alerts.** Not five a day. This is the constraint that
-drives most of the design, and it is covered on its own in §7. At volume the
-difficulty is no longer getting an alert onto the screen. It is stopping the
-screen from becoming wallpaper.
+**There will be a lot of alerts, and they arrive in bursts.** Not five a day,
+and not evenly spread. The day has phases: long quiet stretches, an ordinary
+state where one or two things are wrong, and sudden bursts — typically at the
+open or the close — where many orders across many names show symptoms at once.
+Designing for the average would get every phase wrong. This drives most of the
+document and has §7 to itself. At volume the difficulty is no longer getting an
+alert onto the screen; it is stopping the screen from becoming wallpaper.
 
 ---
 
@@ -141,10 +144,12 @@ Each event carries:
 | `severity` | `red` · `amber` · `grey` (see §6) |
 | `subject` | the thing it is about — for a coverage desk, the sym |
 | `dedupe_key` | `alert_id` + `subject`, the identity used to coalesce |
+| `group_id` | the burst it belongs to, if any (§5.4) |
 | `headline` | the one line the trader reads, already rendered |
 | `detail` | up to three short lines, shown only on hover or in the panel |
 | `created_at` | when it happened |
 | `expires_at` | when it stops being worth showing (§5.3) |
+| `cleared_at` | when the condition went away, if it has (§5.5) |
 
 ### 5.1 The headline
 
@@ -200,20 +205,74 @@ Red events are the exception: they persist until acknowledged, however old they
 get, because an unacknowledged red is precisely the thing that must not quietly
 disappear.
 
-### 5.4 Coalescing
+### 5.4 Grouping
 
-This is the single most important mechanism in the design.
+This is the single most important mechanism in the design, and it has three
+modes because the desk's day has three shapes (§7).
 
-Events sharing a `dedupe_key` do not stack. The existing card stays where it
-is, its count badge increments, and its age resets:
+**Single.** One event, one card. The quiet case.
+
+**Coalesced** — same alert, same subject. Events sharing a `dedupe_key` do not
+stack. The existing card stays where it is, its count badge increments, and its
+age resets:
 
 ```
 ▌ RIL.IB     7 orders stuck NEW      4m   ×7
 ```
 
 The card does not move, flash, or re-sound. A card that jumps every time its
-underlying condition re-fires is a card the eye has to re-find, which is the
-opposite of what the fixed-position design is for.
+condition re-fires is a card the eye has to re-find, which is the opposite of
+what a fixed position is for.
+
+**Rolled up** — same alert, *many different* subjects. This is the open and the
+close. Forty orders across twenty-five names showing one symptom is one thing
+that has happened, not twenty-five, and the trader needs to see it that way:
+
+```
+┌────────────────────────────────────────────────────┐
+│▌ 40 orders stuck NEW · 25 names       2m    ▾    ▪│
+│    RIL.IB 7 · INFY.IB 5 · TCS.IB 4 · +22 more     │
+└────────────────────────────────────────────────────┘
+```
+
+Top three subjects by count, then a tally, expandable to the full list. One
+glance gives both the systemic fact and the worst names.
+
+Coalescing by subject would have made this *worse*, not better — every name is
+distinct, so nothing coalesces and twenty-five cards arrive. Rolling up is the
+mechanism that actually protects the open.
+
+**The switch is automatic.** An alert enters rolled-up mode when it produces
+events for more than `burst_subjects` distinct subjects inside `burst_window`
+(defaults: four subjects in sixty seconds), and leaves it when it falls below
+that for a full window. Stated in one sentence, which is how it should be
+explainable to a trader: *if one alert starts hitting a lot of names at once,
+it becomes one card instead of a lot of them.*
+
+### 5.5 Clearing
+
+An event can be resolved as well as raised, and during a burst this matters as
+much as the raising.
+
+When forty cards' worth of trouble collapses into one card and then the
+condition goes away, the card simply vanishing tells the desk nothing. *"Is it
+over?"* is the question everybody has after an open goes badly, and a tool that
+cannot answer it sends people back to the platform windows to find out by hand.
+
+So a rolled-up or coalesced card whose condition clears shows a resolved state
+for a short while before it goes:
+
+```
+✓ 40 orders stuck NEW · cleared 09:31 · lasted 4m
+```
+
+KdbMonitor already tracks this. `RearmPolicy(mode="transition")` fires on the
+false-to-true edge, which means the true-to-false edge is known too and is
+currently discarded. Clear events are that edge, given somewhere to go.
+
+A cleared red is also acknowledged automatically — there is nothing left to
+act on, and making somebody dismiss a problem that has already gone is the kind
+of small tax that gets a tool resented.
 
 ---
 
@@ -224,17 +283,42 @@ opposite of what the fixed-position design is for.
 A frameless, always-on-top bar roughly 28 pixels high, docked to one edge of a
 monitor the trader chooses once. It is always there and never moves.
 
+It looks different in each of the day's three phases, and the difference is
+itself information.
+
+**Nothing wrong** — near-silent. No colour, no counts, just proof of life:
+
 ```
-▌2  ●14   RIL.IB  7 orders stuck NEW              ● 10:42
+                                                  ● 10:42
+```
+
+This matters more than it looks. A strip that is visually loud when it has
+nothing to say is a strip that gets tuned out by eleven o'clock, and then it is
+still tuned out at the open. Colour appearing at all must mean something
+happened.
+
+**One or two problems** — the ordinary case:
+
+```
+▌1  ●2    RIL.IB  7 orders stuck NEW              ● 10:42
  ▲   ▲    ▲                                       ▲
  red total  most severe live event            connection
 ```
 
-Permanence is the point. A Windows toast is the wrong answer for this: it
-appears in a corner that every trader has spent years learning to ignore, and
-then it vanishes whether or not anybody looked. A strip that has been in the
-same place all morning gets noticed when its colour changes, without being
-looked at.
+**A burst** — the open, the close, or an outage:
+
+```
+▌1  ●40   40 orders stuck NEW · 25 names          ● 09:16
+```
+
+The trader needs no badge saying BURST. *"25 names"* is the signal, and it is
+the fact they need anyway.
+
+Permanence is the point of all three. A Windows toast is the wrong answer here:
+it appears in a corner every trader has spent years learning to ignore, and then
+it vanishes whether or not anybody looked. A strip that has been in the same
+place all morning gets noticed when its colour changes, without being looked
+at.
 
 ### 6.2 The cards
 
@@ -252,6 +336,14 @@ Red and amber events also raise a card, stacked in one fixed corner:
 
 The stack is bounded — five cards, then a collapsed count. An unbounded stack
 covers the screen during exactly the incident where the screen matters most.
+
+**The stack is ordered by severity, then oldest first within a severity, and it
+does not re-sort.** Not newest-first: during a burst, newest-first makes the
+whole stack churn every few seconds and the trader can never finish reading a
+line. A card that has sat unacknowledged for four minutes stays at the top,
+which is also where the most neglected thing belongs. New arrivals appear
+below, and coalescing never moves anything. The result is that during the worst
+few minutes of the day the thing the eye is aiming at holds still.
 
 Clicking a card copies its subject to the clipboard, ready to paste into a
 platform window. Cheap to build, and it removes a retype from every single
@@ -284,24 +376,75 @@ alternative is fourteen clicks.
 
 ---
 
-## 7. Volume
+## 7. The day has phases
 
-The desk expects a lot of alerts. Everything in this section exists because of
-that, and it is the part most likely to decide whether the tool survives its
-first month.
+The load is not steady, and designing for an average would get both ends wrong.
+The desk described three shapes to its day, and the tool should have the same
+three.
+
+**Quiet.** Nothing is wrong, sometimes for hours. The design problem here is
+not missing an alert — it is the tool making itself ignorable before the alert
+arrives. Hence the near-silent strip (§6.1). A tool that is visually loud with
+nothing to say has spent its credibility before the open.
+
+**One or two problems.** The ordinary working state. A name has a problem, the
+trader gets that name, per-subject cards, coalescing on repeats. This is what
+the design would be if it were the only phase, and it is where §5.4's
+*coalesced* mode lives.
+
+**A burst.** The open, the close, or a platform going wrong: several orders
+across many names showing symptoms at once. Everything below exists for this
+phase, because it is the one where a naive design actively harms the desk —
+twenty-five cards arriving in ten seconds is worse than no tool at all, since
+the trader now has to triage the alerts as well as the orders.
+
+### 7.1 Surviving the burst
+
+**Roll up by condition, not by name** (§5.4). This is the mechanism that
+matters, and it is the inverse of what serves the quiet phase. Coalescing by
+subject does nothing at the open because every name is different.
+
+**The leading edge is the weak spot.** A detector that needs four subjects in
+sixty seconds lets the first three through as individual cards. That is a
+tolerable cost at 11:30 and a bad one at the open, where those three are noise
+and everybody knows a burst is coming. So the burst threshold can be lowered
+inside declared windows: **`Schedule` and `Window` already exist in the
+codebase** — same shape, same timezone handling — so an alert can say *expect
+bursts 09:15–09:30 and 15:20–15:30* and be pre-armed rather than always one
+burst behind.
+
+Detection stays adaptive underneath. Outages do not check the clock, and a
+schedule-only design would be defenceless at 11:30.
+
+**Sound collapses to onset.** One tone when a burst begins, then silence until
+it ends, regardless of how many events arrive. The existing rule — one sound
+per twenty seconds — is right for the ordinary phase and still far too much for
+the open. The information *"something big is starting"* is worth a sound
+exactly once.
+
+**Say when it is over** (§5.5). After a bad open, *"has it stopped?"* is the
+question, and answering it is worth as much as the original alert.
+
+**A trader's own names are never rolled up.** If a recipient covers RIL.IB and
+RIL.IB is caught in a burst, it keeps its own card and the other twenty-four
+names collapse behind it. This is the one place the design uses the fact that
+these are *coverage* traders rather than generic recipients, and it is what
+stops the roll-up hiding the very thing a given trader is responsible for. It
+depends on knowing who covers what (§8.1).
+
+### 7.2 The steady-state guardrails
+
+These apply in every phase.
 
 **Grey absorbs the volume.** Most alerts should be grey and never raise a card
 at all. The review question when adding an alert is not *"is this useful?"* but
 *"would I interrupt somebody's morning for this?"*, and the honest answer is
 usually no.
 
-**Coalescing by subject** (§5.4) turns a broken feed producing four hundred
-events into a handful of cards with large count badges.
-
-**Rate limiting per alert, per recipient.** Beyond N cards a minute the rest
-roll into one summary card — *"RIL.IB — 23 events in 2m"*. This is the
-guardrail against a misfiring alert papering the floor, and it works even when
-coalescing does not because the subjects differ.
+**Rate limiting per alert, per recipient.** A hard ceiling on cards per minute
+that sits above the roll-up. Roll-up handles a burst that makes sense; the rate
+limit handles an alert that has simply gone wrong, which is a different problem
+and needs a floor under it that does not depend on the events being related.
 
 **A floor-wide kill switch.** One click in KdbMonitor silences an alert for
 everybody, without editing it, without a deploy, and with a reason recorded.
@@ -341,6 +484,29 @@ being informed and being buried.
 Severity itself is set on the alert, not per person, so that everyone on the
 floor shares one vocabulary. When two traders say *"there's a red on RIL"* they
 must mean the same thing.
+
+### 8.1 Coverage
+
+A recipient can also carry a **coverage list** — the syms that trader is
+responsible for. It does two things:
+
+- **It protects their names during a burst** (§7.1). Their syms keep individual
+  cards while everything else rolls up. Without this, the roll-up that saves the
+  desk at the open can hide the one name a particular trader actually owns.
+- **It can route.** An alert can be addressed to *whoever covers the name in the
+  event* rather than to a fixed list, which is a much better fit for a coverage
+  desk than maintaining subscriptions by hand and keeps working when coverage
+  changes.
+
+This is the one place the design uses what the desk actually is rather than
+treating them as generic recipients, and it is worth the extra table.
+
+It does need the coverage data to exist and stay current, which is a question
+about your firm rather than about this tool — if it lives in a system that can
+be read or exported, the list should be synced from there rather than typed in
+and left to rot. If there is no such source, coverage is typed in per recipient
+and the burst protection degrades gracefully to *everything rolls up*, which is
+still the correct behaviour, just less kind.
 
 **There is no concept of a person in KdbMonitor today** — no users, no roles,
 no login of any kind. The only recipient notion in the codebase is
@@ -419,19 +585,37 @@ New tables. Nothing existing changes shape.
 ```sql
 recipients        (id, name, email, enabled)
 recipient_logins  (recipient_id, login)              -- several per person
+recipient_coverage(recipient_id, sym, source)        -- §8.1; source =
+                                                     -- 'manual' | 'synced'
 desks             (id, name)
 desk_members      (desk_id, recipient_id)
-subscriptions     (id, alert_id, recipient_id, desk_id, min_severity)
-                                                     -- exactly one of
-                                                     -- recipient_id/desk_id
+subscriptions     (id, alert_id, recipient_id, desk_id, min_severity,
+                   by_coverage)                      -- exactly one of
+                                                     -- recipient_id/desk_id,
+                                                     -- or by_coverage=1
 agents            (id, login, hostname, version, screen,
                    first_seen, last_seen)
 snoozes           (recipient_id, alert_id, until, set_at)
-events            (id, alert_id, dedupe_key, severity, subject,
-                   headline, detail_json, count, created_at, expires_at)
+events            (id, alert_id, group_id, dedupe_key, severity, subject,
+                   headline, detail_json, count, created_at, expires_at,
+                   cleared_at)
+event_groups      (id, alert_id, mode, opened_at, closed_at,
+                   subject_count, event_count)       -- mode = 'single' |
+                                                     -- 'coalesced' | 'rolled'
 deliveries        (event_id, recipient_id, agent_id,
                    delivered_at, acked_at, ack_login)
 ```
+
+`event_groups` is what makes a burst a first-class thing rather than a display
+trick. It gives the roll-up card an identity that survives a reconnect, gives
+the clear (§5.5) something to attach to, and gives the noise report a way to
+say *"the open produced three bursts lasting a total of nine minutes"* instead
+of only counting events.
+
+Per-alert burst settings — `burst_subjects`, `burst_window`, the declared
+windows, the rate limit — live inside the existing `alert_json` blob, following
+the app's established habit of serialising an alert whole rather than
+normalising its every field into columns.
 
 `events` is separate from the existing `alert_runs` on purpose. `alert_runs`
 records *we checked*; `events` records *we told somebody*. Conflating them
@@ -460,6 +644,10 @@ The section a spec is judged by.
 | SQLite locked | Writes retry, then back off | WAL mode; contention logged |
 | An alert misfires floor-wide | Kill switch, one click | Whoever sees it (§7) |
 | Trader mutes something quietly | Visible on the Agents page | Snoozes are recorded and shown (§7) |
+| Burst detector fires when it should not | A handful of related alerts show as one card that expands | The card says how many names; the noise report counts bursts |
+| Burst detector fails to fire | Up to the rate limit in cards, then rolled anyway | The rate limit is the floor under the detector |
+| Agent reconnects mid-burst | Receives the group, not its hundreds of member events | `event_groups` survives the reconnect |
+| A burst never clears | Red persists unacknowledged, correctly | It stays on the strip; that is the point |
 
 ---
 
@@ -505,6 +693,16 @@ alerts arrive. It is whether they are still being read on day five.
    red"*, or everything becomes red within a quarter and the design collapses.
    This is a process question, not a code one, and it is the most likely cause
    of failure in the whole document.
+5. **Is there a source for coverage** (§8.1) that can be read or exported? If
+   yes, sync it. If no, coverage is typed in and the burst protection is
+   coarser.
+6. **How big is a real burst?** Twenty-five names or two hundred and fifty
+   changes whether the roll-up card needs a second level of grouping. Worth
+   measuring from the existing `alert_runs` history before choosing defaults —
+   the data to answer it is already in the database.
+7. **What are the real burst windows?** The open and the close were mentioned;
+   whether they are the only ones, and their exact times per market, decides
+   what gets pre-armed.
 
 ---
 
@@ -514,14 +712,31 @@ Following the project's existing rule — logic in `core/`, unit-tested; `ui/`
 thin and not unit-tested.
 
 **Unit-tested in `core/`:** subscription resolution (recipients, desks, the
-overlap between them, `min_severity`), dedupe key derivation and coalescing,
-rate limiting, TTL and expiry, snooze windows, headline rendering and the
-60-character cap, and the daemon's evaluation tick — which becomes testable for
-the first time by virtue of leaving the browser.
+overlap between them, `min_severity`, coverage-based routing), dedupe key
+derivation and coalescing, rate limiting, TTL and expiry, snooze windows,
+headline rendering and the 60-character cap, and the daemon's evaluation tick —
+which becomes testable for the first time by virtue of leaving the browser.
+
+**The burst logic deserves its own test file**, because it is the part with
+real state and the part that fails in the way that matters. It is also easy to
+test properly: feed a timed sequence of events to a pure function and assert
+the grouping. Worth covering explicitly — entering rolled-up mode at the
+threshold and not one event before it; a trader's covered name staying out of
+the roll-up; the group surviving a reconnect; leaving rolled-up mode only after
+a full quiet window rather than flapping on the first gap; a clear arriving for
+a group that was never opened; and a burst that starts inside a declared window
+with the lowered threshold.
 
 **Integration:** relay tested against a scripted fake agent — connect, receive,
 acknowledge, drop the connection, reconnect, receive the backlog, confirm
-expired events are absent.
+expired events are absent, and confirm a mid-burst reconnect delivers one group
+rather than four hundred events.
+
+**Replay against real history.** The existing `alert_runs` table holds months
+of what actually happened. Before any of the burst thresholds are chosen they
+should be run against that history to see how many bursts a given setting would
+have declared on a real open. This costs almost nothing and replaces guesses
+with measurements.
 
 **Not unit-tested:** the Qt UI, consistent with the existing `ui/` rule. It
 gets a manual checklist per release, and the first item on it is that a card
@@ -538,12 +753,23 @@ Each step should leave something that works.
 1. **The pipe.** Relay, agent connects and heartbeats, Agents page, Send test.
    No real alerts yet — this proves deployment and the network path, which are
    the parts that can fail for reasons no amount of code will fix.
-2. **Routing.** Recipients, desks, subscriptions.
+2. **Routing.** Recipients, desks, subscriptions, coverage.
 3. **The alert.** Severity and headline template with live preview in the
    builder, then the strip, cards, sound, acknowledgement, coalescing, TTL.
-4. **Volume control.** Rate limits, kill switch, snooze, the noise report.
-5. **Trust.** Connection dot, acknowledgement tracking, the three warnings,
+   This is the *quiet* and *one or two problems* phases — a working tool for
+   an ordinary day.
+4. **The burst.** Roll-up, `event_groups`, clears, the pre-armed windows,
+   coverage protection, sound at onset. Thresholds chosen by replaying real
+   `alert_runs` history, not picked from the air.
+5. **Volume control.** Rate limits, kill switch, snooze, the noise report.
+6. **Trust.** Connection dot, acknowledgement tracking, the three warnings,
    history panel.
+
+Step 4 is separated from step 3 deliberately. The burst is the phase where the
+tool earns its place, but it is also the one that cannot be judged from a desk
+chair — it needs a real open to tell whether the roll-up threshold is right.
+Shipping step 3 first means arriving at that open with something already
+trusted on an ordinary day, and one variable to watch rather than ten.
 
 Steps 0 and 1 are worth doing before anybody commits to the rest. If a signed
 exe cannot be got onto trader machines, or the relay cannot be reached through
