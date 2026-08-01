@@ -217,13 +217,25 @@ def substitute_connections(qsql: str, store, rt: ResolvedTime) -> str:
     return _CONN_REF.sub(repl, qsql)
 
 
-def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None) -> str:
-    """The query for this dataset, with dates, dataset refs and cross-process
-    connection handles resolved. ``store`` is needed only to resolve
-    ``{{conn:ENV}}`` handles; omit it and those tokens are left untouched."""
+def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None,
+               params: Optional[dict] = None) -> str:
+    """The query for this dataset, with dates, dataset refs, cross-process
+    connection handles and the reader's parameters resolved. ``store`` is needed
+    only to resolve ``{{conn:ENV}}`` handles; omit it and those tokens are left
+    untouched.
+
+    ``params`` are already q literals — see
+    :func:`kdbmonitor.core.parameters.q_values` — and they are filled in last,
+    for both modes at once. A guided filter reaches here with its placeholder
+    still intact because ``qfmt`` passes one through rather than quoting it, so
+    "the value of this filter is a parameter" needs no separate machinery.
+    """
+    literals = params or {}
     if ds.mode == "raw":
         q = substitute_refs(substitute_dates(ds.raw_qsql or "", rt), outputs)
-        return substitute_connections(q, store, rt) if store is not None else q
+        if store is not None:
+            q = substitute_connections(q, store, rt)
+        return params_mod.substitute_query(q, literals)
 
     clauses: list[str] = []
     if rt.mode == "historical":
@@ -231,7 +243,7 @@ def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None) -> str:
     clauses += [filter_clause(f) for f in ds.filters]
     base = f"select from {ds.table}"
     q = base if not clauses else f"{base} where {', '.join(clauses)}"
-    return substitute_refs(q, outputs)
+    return params_mod.substitute_query(substitute_refs(q, outputs), literals)
 
 
 def _file_source(ds: Dataset) -> str:
@@ -250,8 +262,9 @@ def _file_source(ds: Dataset) -> str:
 
 
 def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
-           uploads: Optional[dict] = None) -> tuple[str, Optional[pd.DataFrame],
-                                                    Optional[str]]:
+           uploads: Optional[dict] = None,
+           params: Optional[dict] = None) -> tuple[str, Optional[pd.DataFrame],
+                                                   Optional[str]]:
     """Send the dataset's query — no transforms — as (qsql, frame, error).
 
     Never raises: every failure comes back as the error, along with whatever the
@@ -287,7 +300,7 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
 
     qsql = ""
     try:
-        qsql = build_qsql(ds, effective, outputs, store)
+        qsql = build_qsql(ds, effective, outputs, store, params)
         if unresolved_date_refs(qsql):
             # Only reachable in real-time, where nothing fills them. Sending
             # '{{date_from}}' to KDB would be a baffling parse error.
@@ -333,15 +346,17 @@ def _apply(ds: Dataset, qsql: str, df: pd.DataFrame,
 
 def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                 uploads: Optional[dict] = None,
-                values: Optional[dict] = None) -> DatasetResult:
+                values: Optional[dict] = None,
+                params: Optional[dict] = None) -> DatasetResult:
     """Run one dataset, capturing any failure as an error on the result.
 
-    ``values`` are already-resolved ``{{param:name}}`` substitutions — see
-    :func:`run_datasets`, which is what resolves them dataset by dataset. A
-    caller with no parameters to thread through (the historical direct-call
-    shape) simply omits it and gets the old behaviour.
+    ``values`` are already-resolved ``{{param:name}}`` substitutions for the
+    transforms, and ``params`` the same values formatted as q literals for the
+    query — see :func:`run_datasets`, which is what resolves both dataset by
+    dataset. A caller with no parameters to thread through (the historical
+    direct-call shape) omits them and gets the old behaviour.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params)
     if error is not None:
         return DatasetResult(ds.name, None, qsql, error,
                              waiting=ds.source == "file"
@@ -351,14 +366,15 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
 
 def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                       uploads: Optional[dict] = None,
-                      values: Optional[dict] = None) -> DatasetTrace:
+                      values: Optional[dict] = None,
+                      params: Optional[dict] = None) -> DatasetTrace:
     """Run one dataset keeping the frame after every transform.
 
     Same query, same transforms, same order as :func:`run_dataset` — only the
     intermediate frames are kept, so what you inspect step by step is what the
     dashboard will actually show.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params)
     if error is not None:
         return DatasetTrace(ds.name, qsql, error)
     return DatasetTrace(ds.name, qsql, None,
@@ -391,7 +407,12 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
     results: dict[str, DatasetResult] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+        # Before the fetch, because these go *into* the query — and from the raw
+        # frames known so far, which is the same ordering rule a `column`
+        # parameter already lives by: a dataset can only read one declared
+        # before it.
+        literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)
@@ -426,7 +447,12 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
     traces: dict[str, DatasetTrace] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads)
+        # Before the fetch, because these go *into* the query — and from the raw
+        # frames known so far, which is the same ordering rule a `column`
+        # parameter already lives by: a dataset can only read one declared
+        # before it.
+        literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)

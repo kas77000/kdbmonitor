@@ -13,8 +13,8 @@ from datetime import date, datetime
 import streamlit as st
 
 from kdbmonitor.core.dashboard_models import (
-    Component, Dashboard, Dataset, PARAMETER_KINDS, Parameter, Row, Transform,
-    Widget, parameter_from_dict, parameter_to_dict, transform_from_dict,
+    Component, Dashboard, Dataset, PARAMETER_KINDS, Parameter, Q_TYPES, Row,
+    Transform, Widget, parameter_from_dict, parameter_to_dict, transform_from_dict,
     row_from_dict, row_to_dict, transform_to_dict, widget_from_dict,
     widget_to_dict,
 )
@@ -25,6 +25,8 @@ from kdbmonitor.core.dataset import (
     is_marketdata_env, run_datasets, standalone_side, trace_datasets,
 )
 from kdbmonitor.core.models import KIND_LABELS, Filter
+from kdbmonitor.core import paramrules
+from kdbmonitor.core import parameters as core_parameters
 from kdbmonitor.core.parameters import params_in, unresolved_params
 from kdbmonitor.core.plotmodel import (
     FIELD_LABELS, build_plot_model, is_blank as _blank, missing_spec_fields,
@@ -559,6 +561,64 @@ def _parameter_raw_columns(ds: Dataset | None, conn) -> list[str]:
     return table_columns(ds, conn)
 
 
+def _rule_problems(p: Parameter, label: str) -> list[str]:
+    """Rules that cannot do what they say — caught while building.
+
+    A rule is a promise to the reader, so one that is broken (a pattern that
+    will not compile) or unkeepable (a default its own rules reject, a minimum
+    above its maximum) has to be the author's problem now rather than the
+    reader's later, when it arrives as a form that cannot be submitted.
+    """
+    from datetime import date as _date
+
+    problems: list[str] = []
+    if p.q_type and p.q_type not in Q_TYPES:
+        problems.append(f"Parameter '{label}' has an unknown q type "
+                        f"'{p.q_type}'.")
+        return problems
+    if p.pattern:
+        try:
+            re.compile(p.pattern)
+        except re.error as exc:
+            problems.append(f"Parameter '{label}': its pattern is not a valid "
+                            f"regular expression ({exc}).")
+    kind = paramrules.q_type_of(p)
+    if kind == "number":
+        low, high = paramrules.as_number(p.minimum), paramrules.as_number(p.maximum)
+        if p.minimum and low is None:
+            problems.append(f"Parameter '{label}': minimum '{p.minimum}' is "
+                            f"not a number.")
+        if p.maximum and high is None:
+            problems.append(f"Parameter '{label}': maximum '{p.maximum}' is "
+                            f"not a number.")
+        if low is not None and high is not None and low > high:
+            problems.append(f"Parameter '{label}': its minimum is above its "
+                            f"maximum, so nothing can pass.")
+    if kind == "date":
+        today = _date.today()
+        low = paramrules.resolve_bound(p.minimum, today)
+        high = paramrules.resolve_bound(p.maximum, today)
+        if p.minimum and low is None:
+            problems.append(f"Parameter '{label}': 'not before' — "
+                            f"'{p.minimum}' is neither a date nor a relative "
+                            f"one like today-30d.")
+        if p.maximum and high is None:
+            problems.append(f"Parameter '{label}': 'not after' — "
+                            f"'{p.maximum}' is neither a date nor a relative "
+                            f"one like today-30d.")
+        if low is not None and high is not None and low > high:
+            problems.append(f"Parameter '{label}': its earliest date is after "
+                            f"its latest, so nothing can pass.")
+    # The default is what a reader starts on and what a stale pick falls back
+    # to, so a default its own rules reject is a dashboard that opens blocked.
+    if p.default:
+        failing = paramrules.check(p, p.default, today=_date.today())
+        if failing:
+            problems.append(f"Parameter '{label}': its own default fails its "
+                            f"rules — {failing}")
+    return problems
+
+
 def _parameter_problems(draft: Dashboard, store) -> list[str]:
     """Everything wrong with this dashboard's parameters, in plain English.
 
@@ -630,6 +690,8 @@ def _parameter_problems(draft: Dashboard, store) -> list[str]:
                         f"choices will not be ready when "
                         f"'{draft.datasets[i].name}' runs.")
                     break
+
+        problems += _rule_problems(p, label)
 
     declared = {p.name.strip() for p in draft.parameters if p.name.strip()}
     for name in sorted(unresolved_params(draft) - declared):
@@ -1368,7 +1430,7 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
         _save_to_library(head[3], store, "parameter", parameter_to_dict(p),
                          key, suggested=p.name)
         if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
-            st.session_state.pop(ui_parameters.value_key(draft.id, p.name), None)
+            ui_parameters.forget_one(draft, p.name)
             draft.parameters.pop(index)
             _forget(r"pm\d+")              # every card below renumbers
             st.rerun()
@@ -1395,6 +1457,100 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
             "Default", value=p.default, key=f"{key}_def",
             help="What applies until a reader picks something else, and what "
                  "a stale or missing pick falls back to.")
+        p.help = st.text_input(
+            "Hint", value=p.help, key=f"{key}_help",
+            help="Shown under the control, in your words. Say what the value "
+                 "is for, not what the rules are — those speak for themselves.")
+        _parameter_query_form(p, key, draft)
+        _parameter_rules_form(p, key)
+
+
+def _parameter_query_form(p: Parameter, key: str, draft: Dashboard) -> None:
+    """How this parameter is written into a query, with the answer shown.
+
+    A q type only matters where a parameter reaches a query, so it is stated
+    here rather than guessed at the point of substitution — and the sample
+    beside it is the whole explanation: one text box is ``\\`AAPL`` or
+    ``"AAPL"`` depending on this and on nothing else.
+    """
+    reads = {ds.name for ds in draft.datasets
+             if p.name and p.name in core_parameters.params_in_query(ds)}
+    c = st.columns([2, 3], vertical_alignment="bottom")
+    kinds = list(Q_TYPES)
+    current = paramrules.q_type_of(p)
+    p.q_type = c[0].selectbox(
+        "Written into q as", kinds,
+        index=kinds.index(current) if current in kinds else 0,
+        key=f"{key}_qt",
+        help="Only used where this parameter appears in a query. 'expression' "
+             "sends what the reader types as q — powerful, and the one type "
+             "that is not checked for you.")
+    sample = p.default or "AAPL"
+    try:
+        written = core_parameters.as_q(p, sample)
+    except ValueError as exc:
+        written = f"({exc})"
+    c[1].markdown(f":gray[`{sample}` reaches the query as] `{written}`")
+    if reads:
+        c[1].caption(f":material/database: Read by the query of "
+                     f"{', '.join(sorted(reads))} — changing it re-runs that "
+                     f"query.")
+
+
+def _parameter_rules_form(p: Parameter, key: str) -> None:
+    """The author's rules. Every one optional, all checked before a query runs."""
+    # A bordered block rather than an expander: the card around it is already
+    # one, and Streamlit will not nest them.
+    with st.container(border=True):
+        st.markdown("**:material/rule: Rules** — what a valid value looks like")
+        st.caption("Checked before anything is sent. A value that fails one is "
+                   "reported on the form, and the query does not run.")
+        kind = paramrules.q_type_of(p)
+        top = st.columns([1.2, 3], vertical_alignment="center")
+        p.required = top[0].checkbox("Required", value=p.required,
+                                     key=f"{key}_req",
+                                     help="A blank value blocks the run.")
+        if kind == "number":
+            n = st.columns(3, vertical_alignment="bottom")
+            p.minimum = n[0].text_input("Minimum", value=p.minimum,
+                                        key=f"{key}_min")
+            p.maximum = n[1].text_input("Maximum", value=p.maximum,
+                                        key=f"{key}_max")
+            p.integer = n[2].checkbox("Whole numbers only", value=p.integer,
+                                      key=f"{key}_int")
+        elif kind == "date":
+            d = st.columns(3, vertical_alignment="bottom")
+            p.minimum = d[0].text_input(
+                "Not before", value=p.minimum, key=f"{key}_min",
+                placeholder="2026-01-01 or today-90d",
+                help="A date, or one relative to the day it is read: "
+                     "today, today-30d, today+1d.")
+            p.maximum = d[1].text_input(
+                "Not after", value=p.maximum, key=f"{key}_max",
+                placeholder="today",
+                help="Same forms. 'today' is the usual way to refuse a date "
+                     "in the future.")
+            p.weekdays_only = d[2].checkbox(
+                "Weekdays only", value=p.weekdays_only, key=f"{key}_wd",
+                help="A Saturday has no partition in most HDBs, so asking for "
+                     "one returns nothing and explains nothing.")
+        if kind in ("symbol", "string", "expression"):
+            t = st.columns([2, 3], vertical_alignment="bottom")
+            p.pattern = t[0].text_input(
+                "Must match", value=p.pattern, key=f"{key}_pat",
+                placeholder="^[A-Z]+$",
+                help="A regular expression. Left blank, anything the q type "
+                     "allows is accepted.")
+            p.pattern_message = t[1].text_input(
+                "Say instead", value=p.pattern_message, key=f"{key}_patmsg",
+                placeholder="Use an uppercase ticker, e.g. AAPL",
+                help="What the reader is told when it does not match. Worth "
+                     "writing: a regular expression is not an explanation.")
+        if kind == "expression":
+            st.warning(
+                "An 'expression' parameter is sent as q, so whoever fills the "
+                "form can run q. Use it where that is the point, and a rule "
+                "above where it is not.", icon=":material/warning:")
 
 
 def _render_parameters(store, draft: Dashboard) -> None:
@@ -2032,7 +2188,12 @@ def _render_preview(store, mgr, draft: Dashboard) -> None:
     choices: dict = {}
     for res in last.values():
         choices.update(getattr(res, "choices", None) or {})
-    ui_parameters.render(draft, choices, on_change=lambda: None)
+    # The author fills the same form a reader will, and it holds them to the
+    # same rules — a rule that only bites in the real view is a rule its author
+    # never sees working.
+    ready = ui_parameters.render(draft, choices, on_change=lambda: None)
+    if not ready:
+        return
 
     if not st.button("Refresh preview", icon=":material/play_arrow:"):
         st.caption("Run the datasets to see the real page.")

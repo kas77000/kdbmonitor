@@ -256,6 +256,19 @@ def refresh(store, mgr, dashboard: Dashboard,
     return payload
 
 
+def _drop_frames(dashboard_id: int) -> None:
+    """Drop the fetched frames without rerunning — for a form's Apply.
+
+    :func:`force_refresh` is the same thing plus ``st.rerun()``, which the
+    button behind it needs and the form does not: the form reruns itself once
+    it has stored what was applied, and rerunning from inside the callback
+    would abandon that.
+    """
+    st.session_state.pop(frames_key(dashboard_id), None)
+    st.session_state.pop(f"pdf_{dashboard_id}", None)
+    st.session_state.pop(f"pdfpages_{dashboard_id}", None)
+
+
 def force_refresh(dashboard_id: int) -> None:
     """Drop the frames so the next pass re-queries, and the PDF built from them.
 
@@ -912,8 +925,17 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
     # both the order somebody works in and the order the data needs: a picker
     # over a column cannot offer anything until there is a column to read.
     uploads = _render_uploads(dashboard)
-    parameters.render(dashboard, _parameter_choices(dashboard, uploads),
-                      on_change=lambda: drop_derived(dashboard.id))
+    # A parameter that only feeds a transform re-shapes frames already in hand;
+    # one a query reads has to go back to the server, so Apply drops the fetched
+    # frames rather than only the derived ones.
+    ready = parameters.render(
+        dashboard, _parameter_choices(dashboard, uploads),
+        on_change=lambda: drop_derived(dashboard.id),
+        on_apply=lambda: _drop_frames(dashboard.id))
+    if not ready:
+        # Deliberately no panels: a wall of failed widgets teaches the reader
+        # nothing that the message above them has not already said.
+        return
 
     @st.fragment(run_every=None if dashboard.source == "file"
                  else (dashboard.refresh_secs or None))

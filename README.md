@@ -528,6 +528,72 @@ The editor has four sections — **Data**, **Layout**, **Preview** and
 dataset names, forward references, missing tables, over-full rows and missing
 date constraints are all reported before anything is written.
 
+### Parameters — a form the reader fills in
+
+A dashboard can ask for values before it draws anything. You declare the inputs
+in **Data → Parameters**; the reader gets them as a row of controls above the
+page, and each is referenced as `{{param:name}}`.
+
+**Kinds** (what the reader is given): `text`, `number`, `date` (a date picker),
+`toggle`, `choice` (a fixed list), `column` (a list read from a dataset's own
+values). Nothing about the mechanism knows what any particular form is *for* —
+one dashboard asks for an instrument and a date, the next for a trader id, a
+venue and a threshold.
+
+**Where you put it decides what it costs:**
+
+| `{{param:x}}` appears in | changing it |
+|---|---|
+| a transform or a widget spec | re-shapes frames already in hand — no round trip, controls stay live |
+| **a dataset's query** (raw q, or a guided filter's value) | goes back to the server, so the controls become a form with **Apply** and **Reset** |
+
+A query parameter is substituted as a **q literal**, not as text — that is what
+**Written into q as** on the parameter's card decides, and the card shows you
+the answer as you pick it:
+
+| written as | `AAPL` reaches the query as |
+|---|---|
+| `symbol` | `` `AAPL `` |
+| `string` | `"AAPL"` (quotes escaped) |
+| `number` / `date` | `100.5` / `2026.07.30` |
+| `boolean` | `1b` / `0b` |
+| `expression` | as typed — q the reader writes |
+
+```
+select from target where date={{param:d}}, sym in ({{param:sym}}), qty>{{param:min_qty}}
+```
+
+#### Rules — what a valid value looks like
+
+Each parameter carries its own rules, and **the query does not run until every
+value passes**. The reader is told which value and why, next to the control,
+rather than being shown an empty dashboard.
+
+- **Required** — a blank blocks the run.
+- **Must match** — a regular expression, with **Say instead** for the sentence
+  the reader should actually get ("Use an uppercase ticker, e.g. AAPL"). Your
+  words are used in preference to the machinery's.
+- **Minimum / Maximum / Whole numbers only** — for numbers.
+- **Not before / Not after** — for dates, written absolutely (`2026-01-01`) or
+  relative to the day they are read (`today`, `today-90d`, `today+1d`), so
+  "nothing older than 90 days" is written once rather than retyped every
+  morning.
+- **Weekdays only** — for dates. A Saturday has no partition in most HDBs, so
+  asking for one returns nothing and explains nothing; this says *"2026-08-01
+  is a Saturday — pick a weekday"* instead.
+
+Two checks are not yours to switch off, because they are about whether the
+value can honestly be written into q at all: a `symbol` may only contain
+letters, digits, `.`, `_` and `:`, and a `number`/`date` must actually be one.
+`` `AAPL; delete from t `` parses as a symbol *and* a delete, and q would run
+both. The one exception is the `expression` type, which exists to send q the
+reader wrote — the editor says so in as many words, and a **Must match** rule
+is how you narrow it again.
+
+Rules are checked while you build, too: a default that fails its own rules, a
+minimum above its maximum, or a pattern that will not compile are all reported
+before the dashboard can be saved.
+
 ### The component library
 
 A transform worth working out once — deriving `market` from a `sym` suffix, say
@@ -750,6 +816,8 @@ kdbmonitor/
     schema.py              # table/column introspection
     qfmt.py                # q literal formatting
     qhighlight.py          # reading q well enough to colour it
+    parameters.py          # a reader's values: into transforms, and into q
+    paramrules.py          # what a form value must satisfy before a query runs
     chain.py               # build step qSQL, {{step.col}} substitution, run/preview
     conditions.py          # trigger-condition evaluation
     rearm.py               # re-arm decision (transition / cooldown / every_tick)

@@ -119,21 +119,41 @@ class Row:
     height_in: float = 2.5       # printed height; screen height derives from it
 
 
-PARAMETER_KINDS = ("choice", "column", "number", "date", "toggle")
+PARAMETER_KINDS = ("choice", "column", "text", "number", "date", "toggle")
+
+# How a value is written into a query. The kinds above are about the *control*
+# a reader is given; these are about the q it becomes, and they are separate on
+# purpose: one text box feeds ``sym in ({{param:s}})`` or ``note like
+# {{param:s}}`` depending only on this.
+Q_TYPES = ("symbol", "string", "number", "date", "time", "boolean", "expression")
+
+# What a kind is written as when its author has not said. A control that offers
+# a date can only mean a date; a free text box on a kdb desk means a symbol far
+# more often than not, and the editor shows what it will become either way.
+DEFAULT_Q_TYPE = {"date": "date", "number": "number", "toggle": "boolean"}
 
 
 @dataclass
 class Parameter:
     """A value the person reading a dashboard chooses.
 
-    The dashboard owns the definition and the default; the choice itself belongs
-    to whoever is looking, so it lives in session state rather than here — two
-    people reading the same report are entitled to different instruments.
+    The dashboard owns the definition, the default and the rules; the choice
+    itself belongs to whoever is looking, so it lives in session state rather
+    than here — two people reading the same report are entitled to different
+    instruments.
 
-    Referenced as ``{{param:name}}`` inside a transform's params or a widget's
-    spec, which is the same substitution idiom as ``{{stepN.column}}`` and
-    ``{{date_from}}`` rather than a fourth thing to learn. Because it reaches a
-    transform and not a query, changing one re-shapes a frame already in hand.
+    Referenced as ``{{param:name}}`` inside a transform's params, a widget's
+    spec, **or a dataset's query** — the same substitution idiom as
+    ``{{stepN.column}}`` and ``{{date_from}}`` rather than a fourth thing to
+    learn. Where it appears decides what changing it costs: a parameter in a
+    query goes back to the server, one in a transform re-shapes a frame already
+    in hand, and :func:`kdbmonitor.core.parameters.query_params` is what tells
+    them apart.
+
+    The rules are the author's, and they are checked before any query is sent.
+    A rule is not a formatting preference: a dashboard that would query for a
+    date nobody meant, or for a symbol with a semicolon in it, should say so to
+    the person filling the form rather than to kdb.
     """
     name: str                    # referenced as {{param:name}}
     label: str = ""              # shown on the control; falls back to name
@@ -142,6 +162,18 @@ class Parameter:
     dataset: str = ""            # column only: whose values to offer
     column: str = ""             # column only: which column
     default: str = ""
+    # How it is written into a query; "" takes DEFAULT_Q_TYPE, or symbol.
+    q_type: str = ""
+    help: str = ""               # shown under the control, the author's words
+
+    # --- the author's rules, all optional and all checked before a query ---
+    required: bool = False       # blank blocks the run
+    pattern: str = ""            # a regular expression the text must match
+    pattern_message: str = ""    # what to say when it does not
+    minimum: str = ""            # number: a bound. date: a date, or today-30d
+    maximum: str = ""
+    integer: bool = False        # number: whole numbers only
+    weekdays_only: bool = False  # date: Mon-Fri (an HDB has no Sunday)
 
 
 @dataclass
@@ -318,7 +350,17 @@ def parameter_from_dict(d: dict) -> Parameter:
         kind=d.get("kind", "choice"),
         choices=[str(c) for c in choices] if isinstance(choices, list) else [],
         dataset=d.get("dataset", ""), column=d.get("column", ""),
-        default=str(d.get("default", "")))
+        default=str(d.get("default", "")),
+        q_type=d.get("q_type", ""), help=d.get("help", ""),
+        # A parameter stored before rules existed has none, which is what it
+        # had: every rule is off, so nothing that ran yesterday is blocked
+        # today for failing a check its author never wrote.
+        required=bool(d.get("required", False)),
+        pattern=d.get("pattern", ""),
+        pattern_message=d.get("pattern_message", ""),
+        minimum=str(d.get("minimum", "")), maximum=str(d.get("maximum", "")),
+        integer=bool(d.get("integer", False)),
+        weekdays_only=bool(d.get("weekdays_only", False)))
 
 
 def row_to_dict(r: Row) -> dict:
