@@ -143,11 +143,10 @@ Each event carries:
 | `alert_id` | which alert produced it |
 | `severity` | `red` · `amber` · `grey` (see §6) |
 | `subject` | the thing it is about — for a coverage desk, the sym |
-| `scope_kind` | `fault` · `cohort` · `none` — how the card must be worded (§5.4.1) |
-| `scope_value` | which instance, which market — what a stack breaks down *by* |
-| `variant` | the error or state; part of the stack's identity — limit *up* vs *down* |
-| `dedupe_key` | `alert_id` + `subject`, the identity used to coalesce |
-| `group_id` | the burst it belongs to, if any (§5.4) |
+| `row_key` | identifies this row between runs (§5.4.0) — usually the order id |
+| `breakdown` | what the stack counts on its second line — instance, market |
+| `variant` | a state that must match to share a stack — limit *up* vs *down* |
+| `group_id` | the stack it belongs to, if the result was long enough (§5.4) |
 | `headline` | the one line the trader reads, already rendered |
 | `detail` | up to three short lines, shown only on hover or in the panel |
 | `created_at` | when it happened |
@@ -210,116 +209,116 @@ disappear.
 
 ### 5.4 Grouping
 
-This is the single most important mechanism in the design, and it has three
-modes because the desk's day has three shapes (§7).
+**An alert is a query, and its result decides everything here.** One row is one
+order. Several rows mean several orders are triggering the same alert, and that
+is what a burst *is* — not a rate, not something arriving over time, but a
+result set that came back long. The query knows it the moment it returns.
 
-**Single.** One event, one card. The quiet case.
+That single fact removes most of what a burst design would otherwise need.
+There is no detector, no sliding window, no threshold measured in events per
+minute, and no leading edge where the first few slip through as individual
+cards before the tool notices. The row count is known at once, so the decision
+is made at once.
 
-**Coalesced** — same alert, same subject. Events sharing a `dedupe_key` do not
-stack. The existing card stays where it is, its count badge increments, and its
-age resets:
+So there are two shapes, chosen by counting rows:
+
+**Few rows — a card each.** One, two, three orders is the ordinary working day
+and should look ordinary. Each row is a card, named by its subject.
 
 ```
-▌ RIL.IB     7 orders stuck NEW      4m   ×7
+▌ RIL.IB     limit up · 3 orders        4m
 ```
 
-The card does not move, flash, or re-sound. A card that jumps every time its
-condition re-fires is a card the eye has to re-find, which is the opposite of
-what a fixed position is for.
+**Many rows — one stack.** Above the alert's threshold the whole result becomes
+a single stack: the error, the count of orders, the count of names, and a
+breakdown. Twenty rows is one thing that has happened, not twenty, and the
+trader wants *"this error, forty orders, twenty-five names"* with the option to
+open it rather than twenty lines to read.
 
-**Rolled up** — *one stack per error.* Everything reporting the same error goes
-in the same stack: different names, or the same name with several orders, it
-makes no difference. Forty orders showing one symptom is one thing that has
-happened, not forty.
+```
+▌ market data stale · 40 orders · 25 names   2m   ▾
+    INST-03 22 · INST-07 18
+```
 
-Two or three of something is fine as individual cards and is how the ordinary
-day should look. Twenty is not, and at twenty the trader does not want twenty
-lines — they want *"this error, forty orders, twenty-five names"* and the
-ability to open it if they care which.
+Rows are grouped by the error, which is to say by the alert, because that is
+what they have in common — different names, or one name with several orders, it
+makes no difference to how it should read.
 
-The error is what groups them, not the name. Coalescing by name does nothing
-here, because every name is different; that is what makes the open dangerous
-and rolling up is the mechanism that answers it.
+### 5.4.0 Across ticks
 
-### 5.4.1 Blast radius: faults and cohorts
+The alert re-runs on its schedule and returns a result each time, so the
+display is of the *current* result rather than a history of arrivals. A row
+that is still there is the same problem continuing; a row that has gone has
+cleared (§5.5).
 
-Each alert declares a **scope column** beside its subject column — the column
-whose value the affected orders have in common. But there are two quite
-different reasons orders can have something in common, and treating them alike
-is the mistake this section exists to prevent.
+That needs rows to be identifiable between runs, so an alert names a **key
+column** — the order id, usually. With it, an order stuck for four minutes
+shows an age of four minutes instead of appearing new every tick, and it does
+not re-sound. Without it the tool cannot tell continuation from recurrence, so
+the key column is required rather than optional on any alert that raises cards.
 
-**A fault.** The named thing is broken, and it is the cause. An algo instance
-loses market data; every order it carries is affected, across however many
-markets that instance happens to serve. The name on the card *is* the problem.
+A result crossing the threshold in either direction changes the shape: three
+rows become twenty and the cards become a stack; twenty fall back to three and
+the stack becomes cards again. Both are honest reports of what the query now
+returns.
 
-**A cohort.** The named thing is where it is happening, not what is wrong.
-Twenty-five Indian names hit limit up inside a minute. India is not broken.
-There is nothing to fix. The market is simply what the affected names have in
-common, and the cause is out in the market — volatility, news, a circuit
-breaker regime.
+### 5.4.1 What a stack breaks down by
 
-| | fault | cohort |
-|---|---|---|
-| example | market data stale on INST-03 | limit up and down across Indian names |
-| the name on the card is | the cause | the context |
-| how much of the scope | usually all of it | **always a subset** — particular names in particular states |
-| what the desk does | escalate, somebody must fix it | trade around it, tell the client |
-| spreading further means | it is getting worse | on a volatile day, nothing |
+**The alert already carries its own scope, because the person who wrote it
+chose one.** *Market data missing across all instances* and *limit up and down
+in India* are two alerts, not one alert with a scope the tool has to work out.
+Every event from the second is Indian by construction, and nothing needs to
+deduce that.
 
-The stack is keyed by the error. The scope is what the stack **breaks down by**
-on its second line, so nothing is lost by having one card instead of several:
+Earlier drafts of this section had the tool classify each alert's scope —
+whether the thing it named was a fault or a context, how far it reached, what
+that implied. All of it was inventing structure the admin already supplies when
+they write the alert. It is gone, and the design is smaller for it (§5.6).
+
+What remains is one optional display setting per alert: a **breakdown column**,
+naming what the stack should count on its second line. Purely presentational —
+if the answer is *which instances*, the stack says which instances.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│▌ market data stale · 40 orders · 25 names   2m   ▾  ▪│  fault
+│▌ market data stale · 40 orders · 25 names   2m   ▾  ▪│
 │     INST-03 22 · INST-07 18                          │
 ├──────────────────────────────────────────────────────┤
-│▌ limit up · 31 orders · 23 names            2m   ▾  ▪│  cohort
-│     .IB 15 names · .T 8 names                        │
+│▌ limit up · 31 orders · 23 names            2m   ▾  ▪│
+│     RIL.IB · INFY.IB · TCS.IB · +20 more             │
 ├──────────────────────────────────────────────────────┤
-│▌ RIL.IB    limit up · 3 orders              1m      ▪│  single
+│▌ RIL.IB    limit up · 3 orders              1m      ▪│
 └──────────────────────────────────────────────────────┘
 ```
 
-Four rules follow, and they are the careful part of this document.
+Two rules remain, and both are about not saying more than is known.
 
-**One stack per error, and the breakdown goes inside it.** An earlier draft of
-this design split a cohort into one card per market, so that Indian names at
-limit up and Japanese names at limit up never appeared as one thing. The
-intent was right — they are unrelated, and a card claiming otherwise would
-invent a common cause — but the remedy was wrong, because it produces more
-cards during exactly the burst it is meant to survive. Showing the split on the
-second line achieves the same honesty for a fraction of the screen. The card
-says *23 names, 15 Indian and 8 Japanese*. It does not say, and must not be
-worded to suggest, that one thing caused both.
-
-**A cohort card never claims its market.** It names the condition and counts
-names: *limit up · 23 names*. Never *.IB down*, never a count phrased so as to
-imply the whole market. A cohort is by definition partial, and a card reading
-as though India had failed sends a trader to support for something support
-cannot fix.
+**The breakdown is a count, never a cause.** *INST-03 22 · INST-07 18* states
+what was seen. It must not be worded, and the stack must not be titled, so as
+to imply one thing behind both. Where the admin's alert covers several markets
+this matters most: Indian names at limit up and Japanese names at limit up are
+unrelated stories that happen to share an alert, and the breakdown line is
+exactly how one card can hold both honestly.
 
 **The state is part of the identity.** Limit up and limit down are opposite
 conditions, and *23 names at limit* leaves a trader not knowing which way the
-market went — the only thing they wanted to know. So an alert may name a
-**variant column** whose value must also match before events join a stack. The
-group key is `alert + variant`; limit up and limit down are two stacks.
+market went — the only thing they wanted to know. An alert may therefore name a
+**variant column** whose value must also match before events join a stack, so
+that the group key is `alert + variant`. Often the admin will simply have
+written two alerts instead, which does the same job; the column exists for when
+one alert genuinely covers both.
 
-**Escalation by spread applies to faults only** (§5.4.3). A fault reaching more
-orders is worse. A cohort reaching more names is what a volatile day looks
-like, and escalating on it would turn every big move into a red.
+Both the breakdown and the variant are optional. An alert with neither produces
+one stack that lists its members, which is the right answer more often than
+not.
 
-`scope: none` exists for alerts where a breakdown adds nothing, and the stack
-then simply lists its members.
+### 5.4.2 The threshold, and where the number comes from
 
-### 5.4.2 The switch, and where the number comes from
+An alert stacks when its result returns more than `stack_at` rows. Default
+four: two or three reads fine as individual cards, twenty does not. That is the
+whole rule, and it is deliberately something a person can hold in their head.
 
-An alert stacks when it produces more than `burst_at` live events for the same
-`alert + variant` inside `burst_window`, and unstacks after a full quiet
-window. Default four in sixty seconds — two or three of something reads fine
-as individual cards, twenty does not.
-
-**`burst_at` is set by hand, per alert. Nothing here tunes itself.**
+**`stack_at` is set by hand, per alert. Nothing here tunes itself.**
 
 That is a decision rather than a shortcut. How many names at limit up counts as
 a lot cannot be derived: it moves from one day to the next, it differs between
@@ -339,53 +338,96 @@ real estate, the other is about what the desk considers abnormal, and
 conflating them would make a display tweak silently change what gets reported.
 
 Stated in one sentence, which is the test of whether it can be explained to a
-trader: *when a lot of orders report the same error at once, they become one
+trader: *when the alert comes back with a lot of orders, they arrive as one
 stack instead of a lot of cards.*
 
-### 5.4.3 Escalating with the blast radius
+### 5.4.3 Escalating with the row count
 
-A **fault** alert may declare that it changes severity as it spreads — *amber
-normally, red beyond N orders.* One order behind a failing instance is worth a
-look; forty is worth interrupting somebody.
+An alert may declare that it changes severity as its result grows — *amber
+normally, red beyond N rows.* Off by default, opt-in per alert, never inferred.
 
-**Cohort alerts must not do this**, and the reason is worth stating plainly
-because the mistake would be easy and expensive. Twenty-five Indian names at
-limit up is not twenty-five times worse than one; it is what a volatile day
-looks like. An alert that escalates on cohort spread turns every large market
-move into a floor-wide red, which is precisely the day the desk least needs to
-be interrupted and the fastest way to teach them that red means nothing.
+**Whether that is right is a judgement only the admin can make**, and it is the
+one place where getting it wrong is expensive rather than merely untidy. Two
+alerts, opposite answers:
 
-Escalation is opt-in, declared per alert, never inferred, and refused outright
-on a cohort-scoped alert. Severity that moves for reasons a trader cannot
-predict would undo the point of having three fixed colours (§5.2). Declared, it
-stays predictable, and the noise report shows how often it fired.
+- *Market data missing* returning forty rows instead of one is worse. Something
+  is spreading and somebody must act. **Escalate.**
+- *Limit up in India* returning forty names instead of one is not worse. It is
+  what a volatile day looks like. An alert that reddens on it floods the floor
+  on precisely the day the desk can least afford the interruption, and teaches
+  them within a quarter that red means nothing. **Do not escalate.**
+
+The tool cannot tell these apart — both are queries returning forty rows — and
+earlier drafts of this document tried to, with a taxonomy that classified an
+alert's scope and inferred the answer. It was guessing at something the admin
+knows for certain. So it is a switch they set, its default is off, and the
+noise report (§7.2) shows how often it fired so a wrong answer is visible
+rather than merely suffered.
 
 ### 5.5 Clearing
 
-An event can be resolved as well as raised, and during a burst this matters as
+**A row that has left the result has cleared**, and an alert whose result comes
+back empty has cleared entirely. This falls straight out of §5.4.0 — comparing
+one run's keys against the last is the whole mechanism — and it is worth as
 much as the raising.
 
-When forty cards' worth of trouble collapses into one card and then the
-condition goes away, the card simply vanishing tells the desk nothing. *"Is it
+When forty orders' worth of trouble shows as one stack and then the query stops
+returning them, the stack simply vanishing tells the desk nothing. *"Is it
 over?"* is the question everybody has after an open goes badly, and a tool that
 cannot answer it sends people back to the platform windows to find out by hand.
 
-So a rolled-up or coalesced card whose condition clears shows a resolved state
-for a short while before it goes:
+So a stack whose result empties shows a resolved state for a short while before
+it goes, and a stack that partly clears just gets smaller:
 
 ```
-✓ 40 orders stuck NEW · cleared 09:31 · lasted 4m
+✓ market data stale · cleared 09:31 · lasted 4m
 ```
 
-KdbMonitor already tracks this. `RearmPolicy(mode="transition")` fires on the
-false-to-true edge, which means the true-to-false edge is known too and is
-currently discarded. Clear events are that edge, given somewhere to go.
+KdbMonitor already thinks this way. `RearmPolicy(mode="transition")` fires on
+the false-to-true edge, which means the true-to-false edge is known and is
+currently discarded; `alert_runs.result_hash` already exists to tell one
+result from the next. Clearing is that edge, given somewhere to go.
 
-A cleared red is also acknowledged automatically — there is nothing left to
-act on, and making somebody dismiss a problem that has already gone is the kind
-of small tax that gets a tool resented.
+A cleared red is acknowledged automatically. There is nothing left to act on,
+and making somebody dismiss a problem that has already gone is the kind of
+small tax that gets a tool resented.
 
 ---
+
+### 5.6 What the admin sets, and what the tool must never guess
+
+The person writing the alert in KdbMonitor knows things the tool cannot derive:
+what the query means, whether spreading further is worse, how many is a lot on
+that market. **This design puts those decisions in their hands and keeps them
+there.** Nothing here infers, learns, or tunes itself, and no later version
+should start without a deliberate choice to do so.
+
+Per alert:
+
+| Setting | | Default |
+|---|---|---|
+| **severity** | red · amber · grey (§5.2) | amber |
+| **headline** | template over the result columns, ≤60 chars, live preview | — |
+| **subject column** | what the eye reads first — usually the sym | — |
+| **key column** | identifies a row between runs (§5.4.0) | — |
+| **stack threshold** | rows above which it becomes one stack (§5.4.2) | 4 |
+| **breakdown column** | what the stack counts on its second line | none |
+| **variant column** | a state that must match to share a stack (§5.4.1) | none |
+| **time to live** | when an event stops being worth showing (§5.3) | 5 min |
+| **escalates with spread** | and at what row count (§5.4.3) | off |
+| **subscriptions** | recipients and desks (§8) | — |
+
+Only three have no default, and two of those are columns the query already has.
+**That is the point:** an admin adding an ordinary alert should be able to name
+a subject, a key and a headline and be done. If the common case needs ten
+decisions, forty alerts becomes a configuration project nobody finishes, and
+the settings that matter get filled in carelessly along with the ones that do
+not.
+
+Worth building for the same reason: **presets**. Most of a desk's alerts fall
+into a few shapes, and *"like the stuck-order one"* should copy those settings
+rather than re-derive them. The dashboards side of the app already has a
+copy-a-widget-config affordance; this is the same idea one level up.
 
 ## 6. What the trader sees
 
@@ -453,8 +495,9 @@ does not re-sort.** Not newest-first: during a burst, newest-first makes the
 whole stack churn every few seconds and the trader can never finish reading a
 line. A card that has sat unacknowledged for four minutes stays at the top,
 which is also where the most neglected thing belongs. New arrivals appear
-below, and coalescing never moves anything. The result is that during the worst
-few minutes of the day the thing the eye is aiming at holds still.
+below, and a row that persists from one run to the next never moves. The result
+is that during the worst few minutes of the day the thing the eye is aiming at
+holds still.
 
 Clicking a card copies its subject to the clipboard, ready to paste into a
 platform window. Cheap to build, and it removes a retype from every single
@@ -498,32 +541,22 @@ not missing an alert — it is the tool making itself ignorable before the alert
 arrives. Hence the near-silent strip (§6.1). A tool that is visually loud with
 nothing to say has spent its credibility before the open.
 
-**One or two problems.** The ordinary working state. A name has a problem, the
-trader gets that name, per-subject cards, coalescing on repeats. This is what
-the design would be if it were the only phase, and it is where §5.4's
-*coalesced* mode lives.
+**One or two problems.** The ordinary working state: an alert's query comes
+back with a row or two, and each is a card named by its subject. This is what
+the design would be if it were the only phase, and most of the day it is.
 
-**A burst.** The open, the close, or something breaking: many orders showing
-symptoms at once. Everything below exists for this phase, because it is the one
-where a naive design actively harms the desk — forty cards arriving in ten
-seconds is worse than no tool at all, since the trader now has to triage the
-alerts as well as the orders.
+**A burst.** The open, the close, or something breaking: the same query comes
+back with forty rows. Everything below exists for this phase, because it is the
+one where a naive design actively harms the desk — forty cards at once is worse
+than no tool at all, since the trader now has to triage the alerts as well as
+the orders.
 
-Bursts are not all the same size or shape, and the difference is the alert's
-nature rather than the time of day.
-
-Most are **cohorts** — a set of names in one market sharing a state, such as
-Indian names hitting limit up together. Nothing is broken and nothing needs
-fixing; the desk needs to know because it changes how they work the orders and
-what they tell the client. Several markets can be in unrelated cohorts at the
-same time, and they stay separate stories (§5.4.1).
-
-The dangerous one is a **fault** — a market data problem on an algo instance
-takes out every order that instance carries, and those orders span several
-markets, so this burst crosses the boundary the desk normally thinks in.
-
-Some alerts barely burst at all. §5.4.1 is how the design tells these apart;
-this section is what it does about them.
+Bursts differ in what they mean, and the difference is not something the tool
+can see. *Market data missing* returning forty rows is one thing spreading and
+somebody must act; *limit up in India* returning forty names is what a volatile
+day looks like and nobody can fix it. Both are queries returning forty rows.
+Which is which is the admin's to declare (§5.4.3), and the rest of this section
+is what the design does regardless.
 
 ### 7.1 Surviving the burst
 
@@ -539,18 +572,12 @@ card, with the same scope on it, so when they turn to each other they are
 describing the same thing rather than three separate mysteries. With
 coverage-based routing (§8.1) this falls out on its own.
 
-**The leading edge is the weak spot.** A threshold of four lets the first three
-through as individual cards. That is a tolerable cost at 11:30 and a bad one at
-the open, where those three are noise and everybody already knows a burst is
-coming. So an alert can carry a **second, lower `burst_at` for declared
-windows**: **`Schedule` and `Window` already exist in the codebase** — same
-shape, same timezone handling — so it can say *expect bursts 09:15–09:30 and
-15:20–15:30, stack at two* and be pre-armed rather than always one burst
-behind.
-
-Both numbers are set by hand (§5.4.2). The windows are a second manual setting,
-not a detector: the threshold outside them still applies, so an outage at 11:30
-stacks the same way, just three cards later.
+**There is no leading edge to worry about.** A design that detected bursts from
+a rate would let the first few through as individual cards before it noticed,
+and would need pre-arming around the open to compensate. Because the burst is
+the row count of a single result (§5.4), the twenty-fifth row is known at the
+same instant as the first and the stack forms whole. Nothing slips through, and
+no schedule needs to anticipate anything.
 
 **Sound collapses to onset.** One tone when a burst begins, then silence until
 it ends, regardless of how many events arrive. The existing rule — one sound
@@ -735,35 +762,35 @@ subscriptions     (id, alert_id, recipient_id, desk_id, min_severity,
 agents            (id, login, hostname, version, screen,
                    first_seen, last_seen)
 snoozes           (recipient_id, alert_id, until, set_at)
-events            (id, alert_id, group_id, dedupe_key, severity, subject,
-                   scope_kind, scope_value, variant,
-                   headline, detail_json, count, created_at, expires_at,
-                   cleared_at)
-event_groups      (id, alert_id, variant, scope_kind, mode,
-                   opened_at, closed_at, subject_count, event_count,
-                   spread_json, peak_severity)       -- mode = 'single' |
-                                                     -- 'coalesced' | 'rolled'
-                                                     -- UNIQUE (alert_id,
-                                                     -- variant) while open
+events            (id, alert_id, group_id, run_id, row_key, severity, subject,
+                   breakdown, variant,
+                   headline, detail_json, first_seen, last_seen, expires_at,
+                   cleared_at)                       -- UNIQUE (alert_id,
+                                                     -- row_key) while live
+event_groups      (id, alert_id, variant, stacked,
+                   opened_at, closed_at, row_count, subject_count,
+                   spread_json, peak_severity)
 deliveries        (event_id, recipient_id, agent_id,
                    delivered_at, acked_at, ack_login)
 ```
 
-`event_groups` is what makes a burst a first-class thing rather than a display
-trick. It gives the roll-up card an identity that survives a reconnect, gives
-the clear (§5.5) something to attach to, and gives the noise report a way to
-say *"the open produced three bursts lasting a total of nine minutes"* instead
-of only counting events. The uniqueness on `(alert_id, variant)` is what makes
-one stack per error, and what keeps limit up and limit down from collapsing
-into one meaningless *"23 names at limit"*.
+`row_key` and `first_seen` are what make a run comparable to the one before it.
+An order still in the result keeps its row, its age and its acknowledgement; an
+order that has left it is cleared (§5.5). Without them every tick would look
+like a fresh problem, and a stuck order would re-sound every fifteen seconds
+for as long as it stayed stuck.
 
-`spread_json` holds the breakdown by scope value — which instances, which
-markets, and how many of each — which is what the card's second line prints and
-what lets one card carry what would otherwise have been several.
+`event_groups` makes a stack a first-class thing rather than a display trick.
+It survives an agent reconnect, gives clearing something to attach to, and lets
+the noise report say *"the open produced three stacks lasting nine minutes"*
+rather than only counting rows. `spread_json` holds the breakdown — which
+instances or markets and how many of each — which is what the card's second
+line prints, and what lets one card carry honestly what would otherwise have
+been several.
 
-Per-alert settings — `scope_column`, `burst_subjects`, `burst_window`, the
-escalation threshold, the declared windows, the rate limit — live inside the
-existing `alert_json` blob, following the app's established habit of
+The per-alert settings of §5.6 — the subject, key, breakdown and variant
+columns, `stack_at`, the TTL, the escalation switch and the rate limit — live
+inside the existing `alert_json` blob, following the app's established habit of
 serialising an alert whole rather than normalising its every field into
 columns.
 
@@ -794,15 +821,15 @@ The section a spec is judged by.
 | SQLite locked | Writes retry, then back off | WAL mode; contention logged |
 | An alert misfires floor-wide | Kill switch, one click | Whoever sees it (§7) |
 | Trader mutes something quietly | Visible on the Agents page | Snoozes are recorded and shown (§7) |
-| Burst detector fires when it should not | A handful of related alerts show as one card that expands | The card says how many names; the noise report counts bursts |
-| Scope column missing or null on an event | Falls back to ungrouped — a card of its own | Logged; the alert's editor warns at design time |
-| Two instances fail at once | Two cards, one per instance | Groups are unique per scope value, not per alert |
-| An alert is given the wrong scope | Cards group by the wrong thing, but nothing is lost | Visible immediately on the first burst; a settings change, not a rebuild |
-| A cohort alert is marked as a fault | It escalates on a volatile day and floods the floor with red | The kill switch, then the noise report; this is the misconfiguration to watch for |
-| Two markets in unrelated cohorts | One stack, split on its second line — never worded as one cause | The breakdown is data, not a judgement |
-| Limit up and limit down at once | Two stacks, one per direction | The variant column |
-| `burst_at` set too high | Cards arrive individually during a burst | Visible on the day; a settings change, and the noise report counts it |
-| `burst_at` set too low | Two ordinary events become a stack | Harmless, and the stack still expands |
+| No key column set on an alert | Every tick looks new; ages reset and sound repeats | Refused at design time — the editor will not save a card-raising alert without one |
+| Key column is not unique in the result | Rows collide and one hides another | Detected on the first run and reported; the editor previews duplicates |
+| Breakdown column null on some rows | Those rows count under *unknown* on the second line | Visible on the card itself |
+| Escalation switched on for the wrong alert | It reddens on a volatile day and floods the floor | The kill switch, then the noise report; **this is the misconfiguration to watch for** (§5.4.3) |
+| Several markets in one result | One stack, split on its second line — never worded as one cause | The breakdown is a count, not a judgement |
+| Limit up and limit down in one result | Two stacks, one per direction | The variant column |
+| `stack_at` set too high | Twenty cards instead of one stack | Obvious on the day; a settings change, and the noise report counts it |
+| `stack_at` set too low | Three ordinary rows become a stack | Harmless, and the stack still expands |
+| The query returns thousands of rows | One stack, breakdown truncated to what fits | `RESULT_MAX_ROWS` already caps this at 500 upstream |
 | Burst detector fails to fire | Up to the rate limit in cards, then rolled anyway | The rate limit is the floor under the detector |
 | Agent reconnects mid-burst | Receives the group, not its hundreds of member events | `event_groups` survives the reconnect |
 | A burst never clears | Red persists unacknowledged, correctly | It stays on the strip; that is the point |
@@ -854,25 +881,22 @@ alerts arrive. It is whether they are still being read on day five.
 5. **Is there a source for coverage** (§8.1) that can be read or exported? If
    yes, sync it. If no, coverage is typed in and the burst protection is
    coarser.
-6. **What names the instance and the market in the result?** The whole of
-   §5.4.1 rests on there being a column for each. If the algo tables carry an
-   instance identifier and a market or exchange code, this is free; if the
-   market has to be derived from the sym suffix, that derivation needs a home
-   and should live in `core/` beside the existing transforms rather than being
-   written into every alert's query by hand.
-7. **What are the real burst windows?** The open and the close were mentioned;
-   whether they are the only ones, and their exact times per market, decides
-   what gets pre-armed. Note that a firm covering several markets has several
-   opens, so this is a list per market rather than one pair of times.
-8. **Which alerts escalate with spread** (§5.4.3), and at what count? Faults
-   only, and worth deciding per alert with the desk rather than choosing a
-   global default.
-9. **Which alerts are faults and which are cohorts?** (§5.4.1) This has to be
-   set per alert by somebody who knows what the alert means, and it is the
-   setting most likely to be got wrong — a cohort mislabelled as a fault floods
-   the floor with red on the busiest day of the quarter. Going through the
-   existing alert list and marking each one is a short exercise and worth doing
-   before any of this is built.
+6. **Does every alert's result carry something that identifies a row between
+   runs?** (§5.4.0) An order id in most cases. This is the one genuinely
+   blocking dependency left: without it a stuck order looks new every fifteen
+   seconds. Worth checking against the existing alert list, since an alert
+   whose query does not select a key needs its query amended rather than its
+   settings.
+7. **Which alerts escalate with the row count** (§5.4.3), and at what number?
+   Off by default; worth going through the existing alerts with the desk rather
+   than choosing a global answer. This is the setting most likely to be got
+   wrong and the most expensive when it is.
+8. ~~What are the real burst windows?~~ **No longer needed.** A rate detector
+   would have had to be pre-armed around the open; a row count does not
+   (§7.1).
+9. ~~Which alerts are faults and which are cohorts?~~ **Dropped.** The
+   taxonomy was inferring what the admin already decides by writing the alert
+   (§5.4.1). What survives of it is one switch, item 7 above.
 10. ~~How many names at limit up is normal?~~ **Settled: set by hand.** It
     cannot be derived — it moves day to day and differs by market — so a person
     who knows the alert picks the number and the noise report tells them
@@ -887,33 +911,29 @@ Following the project's existing rule — logic in `core/`, unit-tested; `ui/`
 thin and not unit-tested.
 
 **Unit-tested in `core/`:** subscription resolution (recipients, desks, the
-overlap between them, `min_severity`, coverage-based routing), dedupe key
-derivation and coalescing, rate limiting, TTL and expiry, snooze windows,
-headline rendering and the 60-character cap, and the daemon's evaluation tick —
-which becomes testable for the first time by virtue of leaving the browser.
+overlap between them, `min_severity`, coverage-based routing), rate limiting,
+TTL and expiry, snooze windows, headline rendering and the 60-character cap,
+and the daemon's evaluation tick — which becomes testable for the first time by
+virtue of leaving the browser.
 
-**The burst logic deserves its own test file**, because it is the part with
-real state and the part that fails in the way that matters. It is also easy to
-test properly: feed a timed sequence of events to a pure function and assert
-the grouping. Worth covering explicitly — entering rolled-up mode at the
-threshold and not one event before it; a trader's covered name staying out of
-the roll-up; the group surviving a reconnect; leaving rolled-up mode only after
-a full quiet window rather than flapping on the first gap; a clear arriving for
-a group that was never opened; and a burst that starts inside a declared window
-with the lowered threshold.
+**The grouping deserves its own test file**, and it is unusually easy to test
+well: a result set in, a set of cards out, no clock involved.
 
-The scope logic (§5.4.1) needs its own cases on top, and these are the ones
-that protect against telling the trader a false story: several orders on one
-name joining the same stack as one order each on many names, since the error is
-what groups them; two instances in one stack still showing as two on the
-breakdown line; **two markets in unrelated cohorts appearing as one stack with
-a split second line and never as a single claimed cause**; limit up and limit
-down staying separate through the variant; a cohort headline never rendering a
-form of words that implies the whole market; escalation refused on a
-cohort-scoped alert even when configured; an event whose scope or variant
-column is null falling back to ungrouped rather than raising; the threshold
-stacking at exactly `burst_at` and not one event earlier; and the lower
-in-window threshold applying only inside its window.
+Because the burst is now a row count rather than a rate, most of this is a pure
+function of one result set and trivially testable: feed it a result, assert the
+cards. Worth covering explicitly — stacking at exactly `stack_at` rows and not
+one row earlier; several orders on one name joining the same stack as one order
+each on many names; two instances in one stack still showing as two on the
+breakdown line; limit up and limit down staying separate through the variant;
+and a breakdown value that is null counting as *unknown* rather than raising.
+
+The run-to-run logic (§5.4.0) is the part with real state and deserves the most
+care: a row present in two consecutive results keeping its age, its position
+and its acknowledgement; a row that disappears clearing; an empty result
+clearing the whole stack; a result crossing the threshold in each direction
+reshaping cards into a stack and back; a duplicate key detected rather than
+silently collapsing two orders into one; and a red that clears acknowledging
+itself.
 
 **Integration:** relay tested against a scripted fake agent — connect, receive,
 acknowledge, drop the connection, reconnect, receive the backlog, confirm
@@ -942,14 +962,14 @@ Each step should leave something that works.
    No real alerts yet — this proves deployment and the network path, which are
    the parts that can fail for reasons no amount of code will fix.
 2. **Routing.** Recipients, desks, subscriptions, coverage.
-3. **The alert.** Severity and headline template with live preview in the
-   builder, then the strip, cards, sound, acknowledgement, coalescing, TTL.
-   This is the *quiet* and *one or two problems* phases — a working tool for
-   an ordinary day.
-4. **The burst.** Stacking by error, `event_groups`, clears, the pre-armed
-   windows, coverage protection, sound at onset. Thresholds are typed in by a
-   person, informed by replaying real `alert_runs` history rather than guessed
-   — and never computed (§5.4.2).
+3. **The alert.** Severity, subject and key columns, headline template with
+   live preview in the builder, then the strip, cards, run-to-run continuity
+   (§5.4.0), sound, acknowledgement, clearing, TTL. This is the *quiet* and
+   *one or two problems* phases — a working tool for an ordinary day.
+4. **The burst.** Stacking on the row count, `event_groups`, the breakdown and
+   variant columns, coverage protection, sound at onset. Thresholds are typed
+   in by a person, informed by replaying real `alert_runs` history rather than
+   guessed — and never computed (§5.4.2).
 5. **Volume control.** Rate limits, kill switch, snooze, the noise report.
 6. **Trust.** Connection dot, acknowledgement tracking, the three warnings,
    history panel.
