@@ -7,6 +7,7 @@ venv/
 *.sqlite3
 .streamlit/secrets.toml
 .env
+*.HEIC
 
 # reference photos, not part of the app
 pics/
