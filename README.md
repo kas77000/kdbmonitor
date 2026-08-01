@@ -11,7 +11,9 @@ Built with [Streamlit](https://streamlit.io/) and [PyKX](https://code.kx.com/pyk
 - **Connect** to one or more KDB servers (just host + port).
 - **Build alerts** as a chain of query steps. Each step runs a query; a later step can reuse an earlier step's result (see [The alert builder](#the-alert-builder)). The final step's result is checked against a **trigger condition**.
 - **Clone** an existing alert as a starting point when you need a near-duplicate with a small query change.
-- **Monitor** alerts live. Once monitoring is on it **keeps running on every tab and auto-resumes after a restart** (the on/off state is saved), so alerts keep arming and triggering all day without babysitting the Monitor tab. Each alert runs on its own interval. When one triggers you get an in-app banner, an optional sound, a **browser notification that shows even when the window is minimized**, and optionally an email or a Teams/Slack message.
+- **Monitor** alerts live. Once monitoring is on it **keeps running on every tab and auto-resumes after a restart** (the on/off state is saved), so alerts keep arming and triggering all day without babysitting the Monitor tab. Each alert runs on its own interval.
+- **Be told your own way**: every alert picks any combination of an in-app message, a sound, a **browser notification that shows even when the window is minimized**, a notification that **brings the window back to the front** when you click it (with a flashing tab title until you do), a **pop-up showing the rows that fired it**, an email, and a Teams/Slack message.
+- **Only when it matters**: give an alert **active hours** — 16:30, or 17:45–18:00, Mon–Fri, in whatever timezone you think in — and it isn't evaluated at all outside them, so a check that only means something in a window stops crying wolf for the rest of the day.
 - **Track the day** with durable per-day counters (triggered / armed / errors / notifications) that are derived from the persisted run log, so **they don't reset when you restart the app**.
 - **Never miss a trigger**: an alert that has fired keeps a red **NEW** badge until you open it with **View**.
 - **Investigate** results: preview an alert's output while building it, and open a full **Result page** for a triggered alert to view, export (Excel/CSV) or copy the data.
@@ -168,28 +170,43 @@ A plain-English summary (*"Triggers when at least one row has bid > 100"*) is sh
 
 ### 5. Notify (chosen per alert)
 
-Tick which channels fire for this alert:
+Pick as many deliveries as you want from **How this alert reaches you** — they all happen, and a one-line summary underneath says exactly what the alert will do:
 
-- **In-app banner** — a red banner on the Monitor.
+- **In-app message** — a toast on whatever page you're on, plus the red banner on the Monitor.
 - **Sound** — a short beep on trigger.
 - **Browser notification** — an OS-level notification that appears even when the tab is minimized. Requires clicking **Enable alert notifications** once on the Monitor and allowing the browser prompt (see [Notifications](#notifications)).
-- **Email recipients** — comma-separated addresses. Needs SMTP configured in Admin.
-- **Teams / Slack webhook URLs** — comma-separated incoming-webhook URLs.
+- **Bring the window to the front** — the notification stays on screen until you click it, and clicking it raises the browser window; meanwhile the tab title flashes until you look. See [Bringing the window forward](#bringing-the-window-forward) for what a browser will and won't allow.
+- **Pop-up with the result** — a modal in the app window with the rows that fired the alert, and a button through to the full Result page.
+- **Email** — comma-separated addresses. Needs SMTP configured in Admin.
+- **Teams / Slack webhook** — comma-separated incoming-webhook URLs.
+
+The email and webhook boxes appear only once you pick those deliveries, and addresses are dropped if you unpick them — the summary line is the whole truth about who hears.
 
 **Re-arm** controls how often it re-notifies while it stays triggered:
 
 - **transition** — notify once when it goes from not-triggered to triggered (default).
 - **cooldown** — re-notify at most every N seconds.
 - **every_tick** — notify on every check while triggered.
+- **on_change** — trigger only when the result data differs from the previous triggered snapshot.
 
-### 6. Keep result on trigger (retention)
+### 6. Active hours (optional)
+
+Some checks only mean something at certain times — a 16:30 mark, the last fifteen minutes before a cut-off — and produce false positives for the rest of the day. Turn on **Only run during set hours** and the alert is **not evaluated at all** outside its windows: no query, no trigger, no notification. It shows as **Off-hours** on the Monitor, with the time until it next wakes.
+
+- **Timezone** — your own by default. An IANA id (`Europe/London`), a Windows name (`GMT Standard Time`), an abbreviation (`IST`) or an offset (`UTC+05:30`) all work. Daylight saving is computed on the day, not assumed.
+- **Days** — leave empty for every day, or pick the weekdays it runs.
+- **Windows** — one or more `From`/`To` pairs. `17:45` → `18:00` is the obvious case; **At a moment** turns a `From` time into a one-minute window, which is how you say "alert me at 16:30". An end earlier than the start crosses midnight (`22:00` → `02:00` is one window), and a crossing window belongs to the day it *starts* on.
+
+When a window closes, the alert is parked rather than left as it was — so a trigger still standing at 18:00 doesn't count as the "previous" state at tomorrow's open, and a `transition` re-arm fires properly the next day.
+
+### 7. Keep result on trigger (retention)
 
 Controls what the Monitor's **Result** view keeps for this alert. Data is only ever captured on a **triggered** check.
 
 - **Latest** — refresh to the newest rows on every triggered check.
 - **Snapshot** — freeze the rows from the moment it triggered (until the alert clears and fires again, or you Clear it).
 
-### 7. Check result (preview) and Save
+### 8. Check result (preview) and Save
 
 - **Run now** executes the whole chain immediately against live data (nothing is saved, no notification sent). You see each step's resolved query and rows, and whether it *would* trigger. Use this to validate an alert before saving.
 - **Save alert** stores it. Existing alerts are listed under **Your alerts** where you can toggle, edit, **clone**, or delete them.
@@ -207,7 +224,8 @@ On the **Monitor** view:
 - **Monitoring** toggle — checks (and notifications) run **only while this is on**. Turning it off, or just interacting with the page, never fires alerts. Once on, monitoring **keeps running while you're on any other tab** (Builder / Admin / Reports), and the on/off choice is **saved to the database**, so it **automatically resumes the next time you open the app**.
 - **Check granularity** — how often the loop wakes (5s–15m). Each alert still only runs when its own interval has elapsed. Set the granularity at or below your fastest alert's interval.
 - **Today** — a durable per-day summary (Triggered / Armed / Errors / Notifications, with the number of distinct alerts behind each). These come from the persisted run log, so they **carry across restarts** — restarting the app part-way through the day does not reset the day's tally to zero.
-- **Now** — a live KPI row (Alerts / Armed / Triggered / Errors) reflecting the current state of each alert this instant, a banner per currently-triggered alert, and one row per alert with a status badge, row count, and next-check countdown.
+- **Now** — a live KPI row (Alerts / Armed / Triggered / Errors, plus **Off-hours** once something is parked) reflecting the current state of each alert this instant, a banner per currently-triggered alert, and one row per alert with a status badge, row count, and next-check countdown.
+- **Off-hours** — an alert with [active hours](#6-active-hours-optional) outside its window shows this instead of a countdown, together with the window it keeps and how long until it opens. It is enabled and healthy, just deliberately not running — unlike **Disabled**, which is your switch.
 - **NEW badge** — when an alert triggers, a red **NEW** flag stays next to it as a reminder until you open it with **View**. It's persisted, so the reminder survives a restart and only clears when you actually look.
 - **View** on an alert opens the **Result** page (full table + exports + copy). See below.
 
@@ -231,7 +249,7 @@ Reached via **View** on a Monitor row (available once an alert has fired). Openi
 To get alerts even when the browser is minimized:
 
 1. On the **Monitor**, click **🔔 Enable alert notifications** and allow the browser prompt (one time).
-2. Make sure the alert has **In-app banner** (and optionally **Sound**) selected in its notify settings.
+2. Make sure the alert has **Browser notification** (and optionally **Sound**) selected in its notify settings.
 3. Turn **Monitoring** on.
 
 Requirements and gotchas:
@@ -240,6 +258,20 @@ Requirements and gotchas:
 - If nothing appears, check the tab's site-notification permission in the browser (it may be stuck on "default" or "blocked").
 - **Email** needs SMTP host / port / from-address set in **Admin → Email (SMTP)**.
 - **Webhooks** just need the incoming-webhook URL from Teams or Slack.
+
+### Bringing the window forward
+
+**No browser lets a page raise its own window on its own.** That permission was removed years ago because it was abused, and there is no flag or setting that gives it back. **Bring the window to the front** therefore does the strongest thing a page is actually allowed to do:
+
+- the notification is posted with `requireInteraction`, so it **stays on screen until you click it** instead of fading after a few seconds — and on Windows, posting one also flashes the taskbar button;
+- **clicking the notification focuses the browser window**, because that click is your own gesture and a browser honours `focus()` from inside it. One click and you're back in the app, whatever you were doing;
+- the **tab title flashes** (`● AAPL bid breakout`) until you look at the window, so a window that is merely behind another one still gets noticed. It stops as soon as the window is focused, however you got there.
+
+Pair it with **Browser notification** — on its own it is only the flashing title. For a genuinely unmissable alert, combine **Bring the window to the front** with **Pop-up with the result**: the click that raises the window lands you on the rows that fired it.
+
+### The result pop-up
+
+**Pop-up with the result** opens a modal in the app window as soon as the alert fires, wherever you are in the app: the alert's name, the time, the rows it returned (first 25), and **Open the full result** through to the Result page. It opens **once per trigger** — closing it is final, so a monitoring loop that ticks every few seconds cannot reopen a modal you just dismissed. A later trigger of the same alert opens it again.
 
 ---
 
@@ -487,17 +519,44 @@ The **Library** section lists everything saved, with what each one contains, and
 renames or deletes them. Deleting affects nothing already built — those are
 copies too.
 
+### Tabs
+
+The strip along the top holds **the dashboards you have opened**, not every one
+you have saved — so a desk with fifteen dashboards gets the two or three it is
+working with, and the strip stays one row.
+
+- **Open several at once** — tick as many as you like in the gallery and press
+  **Open selected (N)**. Each gets a tab and you land on the first. A card's own
+  **Open** button opens just that one; a card that already has a tab says so.
+- **Tabs (N)** beside the strip is the tab list: close any tab (including ones
+  scrolled out of sight), **Close others**, **Close all**, or open more without
+  going back to the gallery.
+- Closing the tab you are looking at moves to its left-hand neighbour, as a
+  browser does; closing the last one puts you back in the gallery. **All
+  dashboards** goes back to the gallery *keeping* your tabs — it is the new-tab
+  page, not closing the window.
+- **Closing a tab drops what it was holding**: the frames, the built PDF, the
+  rendered pages and any file uploaded to it. That is the point of closing it.
+
+Which tabs are open lives in the URL beside the active one
+(`?dash=3&tabs=1,3,7`), so a refresh, a bookmark or a link sent to a colleague
+brings back the same set. An id in the URL that no longer exists is dropped
+rather than argued with.
+
+The strip is `st.pills` restyled, not `st.tabs`, deliberately: `st.tabs`
+executes every tab's body on each rerun, which under a refresh timer would fire
+every open dashboard's queries at KDB continuously. Exactly one dashboard is
+live at a time. The browser-tab look — one scrollable row, squared-off tops,
+names clipped rather than tabs stretched — is scoped CSS hung off the widget's
+own key (`st-key-dash_tabs`); a browser that doesn't support it gets the same
+strip, wrapping.
+
 ### Refresh
 
 Each dashboard has its own interval (off, 5s … 15m) and runs inside a Streamlit
 fragment while its page is open. Navigate away or switch tabs and it stops — a
 dashboard you are not looking at costs nothing. Nothing runs in the background,
 and the alert engine is untouched.
-
-The tab strip uses pills rather than `st.tabs` deliberately: `st.tabs` executes
-every tab's body on each rerun, which under a refresh timer would fire every
-dashboard's queries at KDB continuously. The open dashboard is in the URL
-(`?dash=<id>`), so it is bookmarkable and survives a browser refresh.
 
 ### Dashboards from a file
 
@@ -666,7 +725,8 @@ kdbmonitor/
     chain.py               # build step qSQL, {{step.col}} substitution, run/preview
     conditions.py          # trigger-condition evaluation
     rearm.py               # re-arm decision (transition / cooldown / every_tick)
-    notifiers.py           # in-app / email / webhook dispatch
+    schedule.py            # an alert's active hours: is_active / next_open
+    notifiers.py           # in-app / email / webhook dispatch, browser payload
     evaluate.py            # evaluate one alert end-to-end
     portability.py         # export / import bundles
     exporting.py           # Excel / CSV / copy helpers
@@ -684,6 +744,8 @@ kdbmonitor/
     admin.py  builder.py  monitor.py  result.py  reports.py  common.py
     dashboards.py          # gallery, tab strip, live view, PDF export
     dashboard_editor.py    # dataset + layout editors, save-time validation
+    tables.py              # a dashboard table on screen: formats, times, search
+    popup.py               # the modal a fired alert opens, with its rows in it
     engine.py              # the monitoring loop (runs in the app shell, every tab)
 ```
 
