@@ -15,7 +15,8 @@ import streamlit as st
 from kdbmonitor.core.dashboard_models import (
     Component, Dashboard, Dataset, PARAMETER_KINDS, Parameter, Row, Transform,
     Widget, parameter_from_dict, parameter_to_dict, transform_from_dict,
-    transform_to_dict, widget_from_dict, widget_to_dict,
+    row_from_dict, row_to_dict, transform_to_dict, widget_from_dict,
+    widget_to_dict,
 )
 from kdbmonitor.core.dashpdf import (
     ORIENTATION_LABELS, ORIENTATIONS, choose_page, plan_rows,
@@ -1516,11 +1517,11 @@ def _pick(container, label: str, columns: list[str], current: str, key: str) -> 
 
 
 def _pick_many(container, label: str, columns: list[str], current, key: str,
-               **kwargs) -> list[str]:
+               help_text: str = COLUMN_HELP, **kwargs) -> list[str]:
     """The same, for a picker that takes several columns."""
     return container.multiselect(label, with_stored(columns, current),
                                  default=list(current or []), key=key,
-                                 accept_new_options=True, help=COLUMN_HELP,
+                                 accept_new_options=True, help=help_text,
                                  **kwargs)
 
 
@@ -1661,10 +1662,19 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                            if red else [])
 
     elif w.type == "table":
-        s["columns"] = _pick_many(st, "Columns (empty = all)", columns,
-                                  s.get("columns", []), f"{key}_cols")
+        # Every column, listed, so the job is taking one out rather than
+        # remembering what there was to put in — and so the header and format
+        # rows below appear straight away instead of after somebody has gone
+        # looking for them. A table built before this stored nothing at all and
+        # meant "all", which read the same on the page and quite differently
+        # here.
+        stored = s.get("columns") or list(columns)
+        s["columns"] = _pick_many(st, "Columns", columns, stored, f"{key}_cols",
+                                  help_text="Every column the dataset produces, "
+                                            "in the order they print. Remove "
+                                            "the ones this table does not need.")
 
-        shown = s["columns"] or columns
+        shown = s["columns"]
         if shown:
             st.caption("Header text and format, per column, top to bottom in "
                        "the order they print. Leave the header blank to keep "
@@ -1815,7 +1825,8 @@ def _render_layout(store, draft: Dashboard) -> None:
                         f"starts here  ──────]")
 
         with st.container(border=True):
-            head = st.columns([3, 1.6, 0.6, 0.6, 0.6], vertical_alignment="bottom")
+            head = st.columns([3, 1.6, 0.6, 0.6, 0.6, 0.6],
+                              vertical_alignment="bottom")
             page_badge = (f" :blue-badge[page {placed.page}]" if placed else "")
             head[0].markdown(f"**Row {r_i + 1}**{page_badge} · "
                              f"{len(row.widgets)} widget(s)")
@@ -1832,7 +1843,13 @@ def _render_layout(store, draft: Dashboard) -> None:
                 draft.rows[r_i + 1], draft.rows[r_i] = draft.rows[r_i], draft.rows[r_i + 1]
                 _forget(_ROW_KEYS)
                 st.rerun()
-            if head[4].button("", icon=":material/delete:", key=f"r{r_i}_x"):
+            if head[4].button("", icon=":material/content_copy:",
+                              key=f"r{r_i}_c",
+                              help="Copy this row, widgets and all, in below."):
+                draft.rows.insert(r_i + 1, row_from_dict(row_to_dict(row)))
+                _forget(_ROW_KEYS)
+                st.rerun()
+            if head[5].button("", icon=":material/delete:", key=f"r{r_i}_x"):
                 draft.rows.pop(r_i)
                 _forget(_ROW_KEYS)
                 st.rerun()
@@ -1840,7 +1857,7 @@ def _render_layout(store, draft: Dashboard) -> None:
             for w_i, w in enumerate(list(row.widgets)):
                 key = f"r{r_i}w{w_i}"
                 with st.container(border=True):
-                    c = st.columns([1.6, 1.8, 2.2, 1.0, 0.6, 0.6, 0.6],
+                    c = st.columns([1.5, 1.7, 2.0, 0.9, 0.6, 0.6, 0.6, 0.6],
                                    vertical_alignment="bottom")
                     w.type = c[0].selectbox("Type", WIDGET_TYPES,
                                             index=WIDGET_TYPES.index(w.type),
@@ -1859,9 +1876,22 @@ def _render_layout(store, draft: Dashboard) -> None:
                             row.widgets[w_i], row.widgets[w_i - 1]
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
-                    _save_to_library(c[5], store, "widget", widget_to_dict(w),
+                    if c[5].button("", icon=":material/content_copy:",
+                                   key=f"{key}_dup", disabled=len(row.widgets) >= 4,
+                                   help="Copy this widget in beside itself. Two "
+                                        "tables laid out the same way over "
+                                        "different datasets are then one change "
+                                        "apart, not built twice."):
+                        # Through the dict and back, so the copy shares no spec,
+                        # no reference list and no band list with the original —
+                        # editing one would otherwise edit both.
+                        row.widgets.insert(w_i + 1,
+                                           widget_from_dict(widget_to_dict(w)))
+                        _forget(rf"r{r_i}w\d+")
+                        st.rerun()
+                    _save_to_library(c[6], store, "widget", widget_to_dict(w),
                                      key, suggested=w.title)
-                    if c[6].button("", icon=":material/close:", key=f"{key}_del"):
+                    if c[7].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()

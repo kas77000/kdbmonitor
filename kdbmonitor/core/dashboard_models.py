@@ -321,11 +321,24 @@ def parameter_from_dict(d: dict) -> Parameter:
         default=str(d.get("default", "")))
 
 
-def _row_from_dict(d: dict) -> Row:
+def row_to_dict(r: Row) -> dict:
+    return asdict(r)
+
+
+def row_from_dict(d: dict) -> Row:
+    """A row, rebuilt from its stored form.
+
+    Public alongside ``widget_from_dict`` because the editor copies a row
+    through it: through the dict and back is how a copy ends up sharing no
+    spec, no reference list and no band list with the row it came from.
+    """
     return Row(
-        widgets=[widget_from_dict(w) for w in d.get("widgets", [])],
+        widgets=[widget_from_dict(w) for w in _dict_list(d.get("widgets"))],
         height_in=d.get("height_in", 2.5),
     )
+
+
+_row_from_dict = row_from_dict            # the name the loader already used
 
 
 def dashboard_from_dict(d: dict) -> Dashboard:

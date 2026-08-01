@@ -156,11 +156,8 @@ def render_widget(pm, height_px: int, key: str, waiting: bool = False) -> None:
         st.markdown(pm.text)
         return
     if pm.kind == "table":
-        if pm.title:
-            st.markdown(f"**{pm.title}**")
-        st.dataframe({c: [r[i] for r in pm.rows] for i, c in enumerate(pm.columns)},
-                     use_container_width=True, hide_index=True,
-                     height=table_height(len(pm.rows), height_px))
+        from kdbmonitor.ui import tables
+        tables.render(pm, table_height(len(pm.rows), height_px), key)
         return
     st.plotly_chart(figure(pm), use_container_width=True, key=key)
 

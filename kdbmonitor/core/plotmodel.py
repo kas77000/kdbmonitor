@@ -145,6 +145,13 @@ class PlotModel:
     # part holds, so a short last part draws its rows the same height as the
     # rest instead of stretching to fill the slot. 0 = not part of anything.
     row_capacity: int = 0
+    # The same rows still typed, under their display headers, for the screen.
+    # `rows` above is formatted text and is what the page prints; sorting that
+    # sorts text, so a number column ordered by clicking its header came out
+    # wrong in a way that looked right. None where a table was sliced for
+    # printing, which is a page's worth and never sorted.
+    frame: Optional[pd.DataFrame] = None
+    column_formats: list[str] = field(default_factory=list)
 
     # charts
     series: list[Series] = field(default_factory=list)
@@ -291,8 +298,17 @@ def _table(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
             except TypeError:
                 continue
 
+    # The same table twice over: `rows` already formatted, which is what the
+    # printed page needs, and `frame` still typed, which is what the screen
+    # needs. Sorting the formatted one sorts text — 1,284.55 lands beside
+    # 1,2 and 9:15 lands before 10:00 — so a column of numbers sorted by
+    # clicking its header came out in an order that looked deliberate and was
+    # not. The screen sorts the values and formats them on the way out.
+    frame = df[columns].copy()
+    frame.columns = headers
     return PlotModel(kind="table", title=title, columns=headers,
-                     rows=rows, cell_colors=cell_colors)
+                     rows=rows, cell_colors=cell_colors, frame=frame,
+                     column_formats=[formats.get(c, "") for c in columns])
 
 
 def _y_label(spec: dict) -> str:
