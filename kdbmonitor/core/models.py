@@ -41,12 +41,70 @@ class RearmPolicy:
     cooldown_secs: int = 0
 
 
+# How a fired alert reaches the person watching. Each one is independent and
+# they add up: an alert can beep, raise the window, open the rows and mail the
+# desk, or do exactly one of those. The labels are what the Builder shows.
+DELIVERY_KINDS: tuple[str, ...] = ("in_app", "sound", "browser", "focus", "popup")
+
+DELIVERY_LABELS: dict[str, str] = {
+    "in_app": "In-app message",
+    "sound": "Sound",
+    "browser": "Browser notification",
+    "focus": "Bring the window to the front",
+    "popup": "Pop-up with the result",
+    "email": "Email",
+    "webhook": "Teams / Slack webhook",
+}
+
+
 @dataclass
 class Channels:
     in_app: bool = True
     sound: bool = True
+    # A desktop notification from the browser: it arrives on top of whatever
+    # the user is doing, including while the tab is in the background. Older
+    # saved alerts have no such field and used to get one whenever `in_app`
+    # was on, which is why channels_from_dict falls back to it rather than to
+    # this default.
+    browser: bool = True
+    # Pull the browser window forward. A page cannot raise itself unprompted —
+    # every browser refuses that — so this is the strongest legal combination:
+    # a notification that stays on screen until clicked (clicking it focuses
+    # the tab), a flashing tab title, and the taskbar attention that comes with
+    # both. See ui/engine.py.
+    focus: bool = False
+    # A modal in the app window showing the rows that fired it, so the result
+    # is in front of the user rather than one navigation away.
+    popup: bool = False
     email_to: list[str] = field(default_factory=list)
     webhook_urls: list[str] = field(default_factory=list)
+
+
+# --- when an alert is allowed to fire -------------------------------------- #
+@dataclass
+class Window:
+    """A time of day range, in the schedule's own timezone.
+
+    ``end`` is exclusive, and an end earlier than the start crosses midnight
+    (22:00-02:00 is one window, not a mistake).
+    """
+    start: str = "09:00"         # HH:MM
+    end: str = "17:00"           # HH:MM
+
+
+@dataclass
+class Schedule:
+    """The hours an alert is live.
+
+    A check that only means something inside a window — a 16:30 mark, the last
+    fifteen minutes before a cutoff — reports false positives for the rest of
+    the day if it keeps running. Outside its windows an alert is not evaluated
+    at all: no query, no trigger, no notification.
+    """
+    mode: str = "always"                             # always | windows
+    windows: list[Window] = field(default_factory=list)
+    days: list[int] = field(default_factory=list)    # 0=Mon..6=Sun; [] = every day
+    tz: str = "local"                                # any spelling core.zones takes
 
 
 @dataclass
@@ -61,6 +119,7 @@ class Alert:
     rearm: RearmPolicy
     result_retention: str = "latest"   # latest | snapshot (Monitor Result view)
     group: str = ""                    # optional grouping label ("" = Ungrouped)
+    schedule: Schedule = field(default_factory=Schedule)
 
 
 # The three kinds of KDB server this app talks to.
@@ -100,6 +159,37 @@ class Connection:
     standalone: bool = False
 
 
+def channels_from_dict(d: dict) -> Channels:
+    """Channels from stored JSON, including alerts saved before this grew.
+
+    An alert written before browser notifications were their own channel gets
+    one exactly where it got one then — alongside the in-app message — so
+    upgrading the app doesn't start (or stop) notifying anybody.
+    """
+    d = dict(d or {})
+    return Channels(
+        in_app=bool(d.get("in_app", True)),
+        sound=bool(d.get("sound", True)),
+        browser=bool(d.get("browser", d.get("in_app", True))),
+        focus=bool(d.get("focus", False)),
+        popup=bool(d.get("popup", False)),
+        email_to=list(d.get("email_to") or []),
+        webhook_urls=list(d.get("webhook_urls") or []),
+    )
+
+
+def schedule_from_dict(d: Optional[dict]) -> Schedule:
+    """Schedule from stored JSON; anything older simply runs around the clock."""
+    d = dict(d or {})
+    return Schedule(
+        mode=d.get("mode", "always"),
+        windows=[Window(start=w.get("start", "09:00"), end=w.get("end", "17:00"))
+                 for w in (d.get("windows") or [])],
+        days=[int(x) for x in (d.get("days") or [])],
+        tz=d.get("tz", "local") or "local",
+    )
+
+
 def alert_to_dict(alert: Alert) -> dict:
     return asdict(alert)
 
@@ -119,10 +209,11 @@ def alert_from_dict(d: dict) -> Alert:
             for s in d["steps"]
         ],
         trigger=TriggerCondition(**d["trigger"]),
-        channels=Channels(**d["channels"]),
+        channels=channels_from_dict(d["channels"]),
         rearm=RearmPolicy(**d["rearm"]),
         result_retention=d.get("result_retention", "latest"),
         group=d.get("group", ""),
+        schedule=schedule_from_dict(d.get("schedule")),
     )
 
 

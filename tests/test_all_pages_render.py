@@ -10,7 +10,8 @@ from streamlit.testing.v1 import AppTest
 
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset, Row, Transform, Widget
 from kdbmonitor.core.models import (
-    Alert, Channels, Connection, Filter, RearmPolicy, Step, TriggerCondition,
+    Alert, Channels, Connection, Filter, RearmPolicy, Schedule, Step,
+    TriggerCondition, Window,
 )
 from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.storage import Storage
@@ -26,7 +27,16 @@ def _alert() -> Alert:
                                     value_type="symbol")],
                     raw_qsql=None, output_name="step1")],
         trigger=TriggerCondition(type="has_rows"),
-        channels=Channels(), rearm=RearmPolicy(), group="Desk")
+        # Every delivery and a set of active hours, because those are the
+        # states that put extra widgets and extra statuses on the pages.
+        channels=Channels(in_app=True, sound=True, browser=True, focus=True,
+                          popup=True, email_to=["desk@x.com"],
+                          webhook_urls=["http://hook"]),
+        rearm=RearmPolicy(), group="Desk",
+        schedule=Schedule(mode="windows",
+                          windows=[Window("16:30", "16:31"),
+                                   Window("17:45", "18:00")],
+                          days=[0, 1, 2, 3, 4], tz="Europe/London"))
 
 
 def _dashboard() -> Dashboard:
@@ -136,6 +146,21 @@ def test_the_builder_renders_while_editing_an_alert(db):
     at = AppTest.from_string(_script(db, "builder", extra),
                              default_timeout=90).run()
     assert not at.exception, [str(e.value) for e in at.exception]
+
+
+def test_editing_an_alert_loads_the_hours_and_deliveries_it_was_saved_with(db):
+    """A round trip through the Builder must not quietly drop a window or a
+    delivery — the alert would go on running, just not when or how it said."""
+    extra = ('from kdbmonitor.ui import builder as _b\n'
+             '_b._load_edit(store.list_alerts()[0])')
+    at = AppTest.from_string(_script(db, "builder", extra),
+                             default_timeout=90).run()
+    assert at.session_state["b_sched_on"] is True
+    assert at.session_state["b_sched_n"] == 2
+    assert at.session_state["b_sched_s_1"] == "17:45"
+    assert at.session_state["b_sched_tz"] == "Europe/London"
+    assert set(at.session_state["b_delivery"]) == {
+        "in_app", "sound", "browser", "focus", "popup", "email", "webhook"}
 
 
 # --- button widths ----------------------------------------------------------

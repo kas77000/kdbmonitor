@@ -5,7 +5,32 @@ share one source of truth for how an alert is described to a human.
 """
 from __future__ import annotations
 
-from kdbmonitor.core.models import Step, TriggerCondition
+from kdbmonitor.core.models import Channels, Step, TriggerCondition
+
+# Short forms of the delivery names, for a one-line summary of an alert. The
+# full labels live in models.DELIVERY_LABELS, which is what the Builder shows.
+_DELIVERY_SHORT: tuple[tuple[str, str], ...] = (
+    ("in_app", "in-app"), ("sound", "sound"), ("browser", "notification"),
+    ("focus", "window to front"), ("popup", "result pop-up"),
+)
+
+
+def channels_summary(channels: Channels) -> str:
+    """'in-app · sound · result pop-up · 2 emails' — how a fired alert lands.
+
+    'nothing' is a real answer: an alert with every delivery off still records
+    its runs and still shows as triggered on the Monitor, it just doesn't come
+    looking for you.
+    """
+    parts = [label for attr, label in _DELIVERY_SHORT
+             if getattr(channels, attr, False)]
+    if channels.email_to:
+        n = len(channels.email_to)
+        parts.append(f"{n} email{'' if n == 1 else 's'}")
+    if channels.webhook_urls:
+        n = len(channels.webhook_urls)
+        parts.append(f"{n} webhook{'' if n == 1 else 's'}")
+    return " · ".join(parts) if parts else "nothing"
 
 
 def condition_summary(trigger: TriggerCondition) -> str:

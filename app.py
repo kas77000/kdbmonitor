@@ -6,7 +6,7 @@ import streamlit as st
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.ui import (
-    admin, builder, dashboards, monitor, result, reports, engine,
+    admin, builder, dashboards, monitor, popup, result, reports, engine,
 )
 
 st.set_page_config(page_title="KdbMonitor", page_icon=":material/radar:", layout="wide")
@@ -94,5 +94,17 @@ result_pg = st.Page(result_page, title="Result", url_path="result",
 # expose pages so other views can navigate programmatically (Monitor -> Result)
 st.session_state["_nav_pages"] = {"monitor": monitor_pg, "result": result_pg}
 
-st.navigation([monitor_pg, builder_pg, dashboards_pg, reports_pg, admin_pg,
-               result_pg]).run()
+nav = st.navigation([monitor_pg, builder_pg, dashboards_pg, reports_pg, admin_pg,
+                     result_pg])
+
+# "Open the full result" works from wherever it was clicked — the pop-up can be
+# on any page, so the jump can't be the Monitor's business alone.
+if st.session_state.pop("_open_result", False):
+    st.switch_page(result_pg)
+
+# The alert pop-up is drawn here rather than inside the monitoring fragment: a
+# fragment rerun redraws only its own elements, and a dialog it owned would be
+# torn down on the next tick, seconds after opening.
+popup.render_pending(store)
+
+nav.run()

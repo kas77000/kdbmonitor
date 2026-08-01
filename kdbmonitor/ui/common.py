@@ -10,7 +10,10 @@ from typing import Optional
 
 # Re-exported from core so the UI keeps a single import site; the definitions
 # live in core.summaries because the report builder needs them too.
-from kdbmonitor.core.summaries import condition_summary, step_summary  # noqa: F401
+from kdbmonitor.core.summaries import (  # noqa: F401
+    channels_summary, condition_summary, step_summary,
+)
+from kdbmonitor.core.schedule import schedule_summary  # noqa: F401
 
 # status key -> (label, streamlit badge color, material icon)
 STATUS_META: dict[str, tuple[str, str, str]] = {
@@ -19,6 +22,9 @@ STATUS_META: dict[str, tuple[str, str, str]] = {
     "error": ("Error", "orange", ":material/error:"),
     "disabled": ("Disabled", "gray", ":material/pause_circle:"),
     "pending": ("Pending", "gray", ":material/schedule:"),
+    # Enabled, healthy, and deliberately not running: the clock is outside the
+    # alert's active hours. Distinct from Disabled, which is the user's switch.
+    "off_hours": ("Off-hours", "gray", ":material/bedtime:"),
 }
 
 # Common poll-interval presets: label -> seconds

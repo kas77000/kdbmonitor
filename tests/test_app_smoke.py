@@ -25,6 +25,16 @@ def test_app_file_runs_without_exception():
     assert not at.exception
 
 
+def test_the_shell_can_jump_to_the_result_from_anywhere():
+    """The alert pop-up can open on any page, so 'open the full result' cannot
+    be the Monitor's business alone — the shell does the jump."""
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["_open_result"] = True
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert "_open_result" not in at.session_state    # consumed by the jump
+
+
 def _demo_store():
     store = Storage(":memory:")
     store.init_db()

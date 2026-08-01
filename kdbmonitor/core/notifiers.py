@@ -33,6 +33,26 @@ def post_webhook(url: str, message: str) -> None:
     requests.post(url, json={"text": message}, timeout=10)
 
 
+def delivery_payload(name: str, channels: Channels, message: str,
+                     key: str) -> Optional[dict]:
+    """What the browser should do about one fired alert, or None for nothing.
+
+    Kept here, away from Streamlit, because which deliveries an alert asked
+    for is a property of the alert rather than of the page that happens to be
+    open. ``ui/engine.py`` hands the result to the notification component.
+    """
+    if not (channels.browser or channels.sound or channels.focus):
+        return None
+    return {
+        "key": key,
+        "title": name,
+        "body": message,
+        "notify": bool(channels.browser),
+        "sound": bool(channels.sound),
+        "focus": bool(channels.focus),
+    }
+
+
 def dispatch(channels: Channels, message: str, in_app_sink: InAppSink,
              email_fn: Optional[Callable[[list[str], str], None]] = None,
              webhook_fn: Optional[Callable[[str, str], None]] = None) -> None:

@@ -6,21 +6,31 @@ from datetime import datetime
 import streamlit as st
 
 from kdbmonitor.core.models import (
-    Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels,
+    Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels, Schedule,
+    Window, DELIVERY_LABELS,
 )
 from kdbmonitor.core.chain import build_step_qsql, preview_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.portability import (
     export_bundle_json, import_bundle_json, conflicting_alert_names,
 )
+from kdbmonitor.core.schedule import (
+    DAY_NAMES, parse_hhmm, validate as validate_schedule,
+)
 from kdbmonitor.ui.common import (
     form_area,
-    STATUS_META, INTERVAL_PRESETS, condition_summary, humanize_secs, make_client_for,
-    group_label, group_alerts, pluralize,
+    STATUS_META, INTERVAL_PRESETS, channels_summary, condition_summary,
+    humanize_secs, make_client_for, group_label, group_alerts, pluralize,
+    schedule_summary,
 )
 
 _NO_GROUP = "(no group)"
 _NEW_GROUP = "➕ New group…"
+
+# Order the deliveries are offered in: the quiet ones first, then the two that
+# come and find you, then the ones that leave the machine.
+_DELIVERY_OPTIONS = ["in_app", "sound", "browser", "focus", "popup",
+                     "email", "webhook"]
 
 _OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 _CMP_OPS = ["=", "<>", "<", "<=", ">", ">="]
@@ -100,10 +110,23 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_srv_0": servers[0], "b_mode_0": "Guided", "b_raw_0": "",
         "b_ctype": "has_rows", "b_ccol": "", "b_cop": ">", "b_cvtype": "number",
         "b_cval": "", "b_cagg": "max", "b_cn": 1,
-        "b_inapp": True, "b_sound": True, "b_email": "", "b_hooks": "",
+        "b_delivery": ["in_app", "sound", "browser"], "b_email": "", "b_hooks": "",
         "b_rmode": "transition", "b_rcd": 900, "b_retention": "latest",
         "b_groupsel": _NO_GROUP, "b_groupnew": "",
+        "b_sched_on": False, "b_sched_tz": "local", "b_sched_days": [],
+        "b_sched_n": 1, "b_sched_s_0": "", "b_sched_e_0": "",
     })
+
+
+def _delivery_of(channels: Channels) -> list[str]:
+    """The multiselect value for a saved alert's channels."""
+    picked = [k for k in ("in_app", "sound", "browser", "focus", "popup")
+              if getattr(channels, k, False)]
+    if channels.email_to:
+        picked.append("email")
+    if channels.webhook_urls:
+        picked.append("webhook")
+    return picked
 
 
 def _load_edit(alert: Alert) -> None:
@@ -116,14 +139,23 @@ def _load_edit(alert: Alert) -> None:
         "b_cop": alert.trigger.op or ">", "b_cvtype": alert.trigger.value_type,
         "b_cval": "" if alert.trigger.value is None else str(alert.trigger.value),
         "b_cagg": alert.trigger.agg or "max", "b_cn": alert.trigger.n or 1,
-        "b_inapp": alert.channels.in_app, "b_sound": alert.channels.sound,
+        "b_delivery": _delivery_of(alert.channels),
         "b_email": ", ".join(alert.channels.email_to),
         "b_hooks": ", ".join(alert.channels.webhook_urls),
         "b_rmode": alert.rearm.mode, "b_rcd": alert.rearm.cooldown_secs or 900,
         "b_retention": alert.result_retention,
         "b_groupsel": alert.group.strip() if alert.group.strip() else _NO_GROUP,
         "b_groupnew": "",
+        "b_sched_on": alert.schedule.mode == "windows",
+        "b_sched_tz": alert.schedule.tz or "local",
+        "b_sched_days": list(alert.schedule.days),
+        "b_sched_n": max(1, len(alert.schedule.windows)),
     }
+    for i, w in enumerate(alert.schedule.windows):
+        s[f"b_sched_s_{i}"] = w.start
+        s[f"b_sched_e_{i}"] = w.end
+    if not alert.schedule.windows:
+        s["b_sched_s_0"] = s["b_sched_e_0"] = ""
     for i, step in enumerate(alert.steps):
         s[f"b_srv_{i}"] = step.server
         s[f"b_tbl_{i}"] = step.table
@@ -283,13 +315,33 @@ def _trigger_block() -> TriggerCondition:
 def _notify_block() -> tuple[Channels, RearmPolicy]:
     with st.container(border=True):
         st.markdown("**:material/notifications: Notify & re-arm** — chosen per alert")
-        cc = st.columns(2)
-        in_app = cc[0].checkbox("In-app banner", key="b_inapp")
-        sound = cc[1].checkbox("Sound", key="b_sound")
-        email_raw = st.text_input("Email recipients", key="b_email",
-                                  help="Comma-separated. Needs SMTP set in Admin.")
-        hooks_raw = st.text_input("Teams / Slack webhook URLs", key="b_hooks",
-                                  help="Comma-separated incoming webhook URLs.")
+        st.caption("Pick as many as you want; they all happen. Email and webhook "
+                   "fields appear once you choose them.")
+        chosen = st.multiselect(
+            "How this alert reaches you", _DELIVERY_OPTIONS,
+            format_func=lambda k: DELIVERY_LABELS[k], key="b_delivery",
+            help="In-app message: a toast on whatever page you're on. "
+                 "Browser notification: a desktop notification, so it arrives "
+                 "with the tab in the background. "
+                 "Bring the window to the front: the notification stays on "
+                 "screen until you click it and the click raises the window, "
+                 "and the tab title flashes until you look. "
+                 "Pop-up with the result: a modal in the app window with the "
+                 "rows that fired it.")
+        picked = set(chosen)
+        if "focus" in picked and "browser" not in picked:
+            st.caption(":orange[:material/info: A browser that won't let a page "
+                       "raise its own window still lets you click a notification "
+                       "to come back — turn on **Browser notification** too, or "
+                       "this is only a flashing tab title.]")
+        email_raw = st.session_state.get("b_email", "")
+        hooks_raw = st.session_state.get("b_hooks", "")
+        if "email" in picked:
+            email_raw = st.text_input("Email recipients", key="b_email",
+                                      help="Comma-separated. Needs SMTP set in Admin.")
+        if "webhook" in picked:
+            hooks_raw = st.text_input("Teams / Slack webhook URLs", key="b_hooks",
+                                      help="Comma-separated incoming webhook URLs.")
         rc = st.columns([2, 2], vertical_alignment="bottom")
         mode = rc[0].selectbox("Re-arm",
                                ["transition", "cooldown", "every_tick", "on_change"],
@@ -304,11 +356,113 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
         if mode == "cooldown":
             cooldown = int(rc[1].number_input("Cooldown (seconds)", 1, 86400, key="b_rcd"))
         channels = Channels(
-            in_app=in_app, sound=sound,
-            email_to=[e.strip() for e in email_raw.split(",") if e.strip()],
-            webhook_urls=[h.strip() for h in hooks_raw.split(",") if h.strip()],
+            in_app="in_app" in picked, sound="sound" in picked,
+            browser="browser" in picked, focus="focus" in picked,
+            popup="popup" in picked,
+            # Addresses typed and then unpicked are dropped rather than kept
+            # invisibly: the summary below is the whole truth about who hears.
+            email_to=([e.strip() for e in email_raw.split(",") if e.strip()]
+                      if "email" in picked else []),
+            webhook_urls=([h.strip() for h in hooks_raw.split(",") if h.strip()]
+                          if "webhook" in picked else []),
         )
+        st.markdown(f":blue-badge[:material/notifications: Notifies via "
+                    f"{channels_summary(channels)}]")
         return channels, RearmPolicy(mode=mode, cooldown_secs=cooldown)
+
+
+# --------------------------------------------------------------------------- #
+# active hours
+# --------------------------------------------------------------------------- #
+def _schedule_block() -> Schedule:
+    """When the alert is allowed to run at all.
+
+    A check whose result only means something between 17:45 and 18:00 reports
+    false positives for the other 23 hours, so the answer is to stop running it
+    rather than to filter what it says.
+    """
+    with st.container(border=True):
+        st.markdown("**:material/schedule: Active hours** — when this alert runs")
+        scoped = st.toggle(
+            "Only run during set hours", key="b_sched_on",
+            help="Off: the alert runs whenever monitoring is on. On: it is "
+                 "parked outside its windows — no query, no trigger, no "
+                 "notification — and shows as Off-hours on the Monitor.")
+        if not scoped:
+            st.caption("Runs whenever monitoring is on.")
+            return Schedule(mode="always")
+
+        zone = st.text_input(
+            "Timezone", key="b_sched_tz",
+            help="Your own zone by default. An IANA id (Europe/London), the "
+                 "Windows name (GMT Standard Time), an abbreviation (IST) or "
+                 "an offset (UTC+05:30) all work. Daylight saving is applied "
+                 "on the day, not assumed.")
+        days = st.multiselect(
+            "Days", list(range(7)), format_func=lambda d: DAY_NAMES[d],
+            key="b_sched_days",
+            help="Leave empty for every day. A window that crosses midnight "
+                 "belongs to the day it starts on.")
+
+        nw = int(st.session_state.get("b_sched_n", 1))
+        windows: list[Window] = []
+        for i in range(nw):
+            wc = st.columns([2, 2, 1.6, 1], vertical_alignment="bottom")
+            start = wc[0].text_input(f"From #{i + 1}", key=f"b_sched_s_{i}",
+                                     placeholder="16:30")
+            end = wc[1].text_input(f"To #{i + 1}", key=f"b_sched_e_{i}",
+                                   placeholder="18:00")
+            # A single moment ("alert me at 16:30") is a window one poll wide;
+            # this writes it so nobody has to work that out.
+            if wc[2].button("At a moment", key=f"b_sched_mom_{i}",
+                            help="Turn 'From' into a one-minute window at that time"):
+                _moment_window(i)
+                st.rerun()
+            if nw > 1 and wc[3].button("", key=f"b_sched_rm_{i}",
+                                       icon=":material/delete:",
+                                       help="Remove window"):
+                _remove_window(i)
+                st.rerun()
+            windows.append(Window(start=start.strip(), end=end.strip()))
+        if nw < 6 and st.button("Add window", key="b_sched_add",
+                                icon=":material/add:"):
+            st.session_state["b_sched_n"] = nw + 1
+            st.rerun()
+
+        schedule = Schedule(mode="windows", windows=windows, days=sorted(days),
+                            tz=zone.strip() or "local")
+        problems = validate_schedule(schedule)
+        for p in problems:
+            st.warning(p, icon=":material/error:")
+        if not problems:
+            st.markdown(f":blue-badge[:material/schedule: Runs "
+                        f"{schedule_summary(schedule)}]")
+        return schedule
+
+
+def _moment_window(i: int) -> None:
+    """Make window ``i`` a one-minute window starting at its 'From' time."""
+    raw = (st.session_state.get(f"b_sched_s_{i}") or "").strip()
+    try:
+        t = parse_hhmm(raw)
+    except ValueError:
+        st.toast(f"'{raw or 'empty'}' isn't a time of day (HH:MM)",
+                 icon=":material/error:")
+        return
+    end_minutes = (t.hour * 60 + t.minute + 1) % (24 * 60)
+    st.session_state[f"b_sched_e_{i}"] = f"{end_minutes // 60:02d}:{end_minutes % 60:02d}"
+
+
+def _remove_window(i: int) -> None:
+    n = int(st.session_state.get("b_sched_n", 1))
+    for k in range(i, n - 1):
+        for p in ("s", "e"):
+            src = st.session_state.get(f"b_sched_{p}_{k + 1}")
+            if src is not None:
+                st.session_state[f"b_sched_{p}_{k}"] = src
+    for p in ("s", "e"):
+        st.session_state.pop(f"b_sched_{p}_{n - 1}", None)
+    st.session_state["b_sched_n"] = max(1, n - 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -381,11 +535,14 @@ def _manage_alerts(store) -> None:
                                         else STATUS_META["disabled"])
                     c[0].badge("Enabled" if a.enabled else "Disabled",
                                icon=icon, color=color)
+                    hours = ("" if a.schedule.mode != "windows"
+                             else f" · :material/schedule: {schedule_summary(a.schedule)}")
                     c[1].markdown(
                         f"**{a.name}**  \n:gray[:material/folder: {group_label(a)} · "
                         f"{pluralize(len(a.steps), 'step')} · every "
                         f"{humanize_secs(a.poll_interval_secs)} · triggers when "
-                        f"{condition_summary(a.trigger)}]")
+                        f"{condition_summary(a.trigger)}{hours}  \n"
+                        f":material/notifications: {channels_summary(a.channels)}]")
                     new_en = c[2].toggle("On", value=a.enabled, key=f"mg_en_{a.id}")
                     if new_en != a.enabled:
                         store.set_alert_enabled(a.id, new_en)
@@ -668,11 +825,12 @@ def render(store, mgr) -> None:
                 st.session_state["b_nsteps"] = nsteps + 1
                 st.rerun()
 
-        # 3 · Trigger   4 · Notify & re-arm
+        # 3 · Trigger   4 · Notify & re-arm   5 · Active hours
         trigger = _trigger_block()
         channels, rearm = _notify_block()
+        schedule = _schedule_block()
 
-        # 5 · Result capture
+        # 6 · Result capture
         with st.container(border=True):
             st.markdown("**:material/table_view: Result capture**")
             retention = st.selectbox(
@@ -694,6 +852,7 @@ def render(store, mgr) -> None:
             errors.append(f"Step {idx + 1}: raw qSQL is empty.")
         if s.mode == "form" and not s.table:
             errors.append(f"Step {idx + 1}: no table selected (introspect the server).")
+    errors += validate_schedule(schedule)
 
     st.divider()
     foot = st.columns([2, 4], vertical_alignment="center")
@@ -712,7 +871,7 @@ def render(store, mgr) -> None:
                           enabled=st.session_state.get("b_edit_enabled", True),
                           poll_interval_secs=interval, steps=steps, trigger=trigger,
                           channels=channels, rearm=rearm, result_retention=retention,
-                          group=group.strip())
+                          group=group.strip(), schedule=schedule)
             try:
                 if editing:
                     store.update_alert(alert)

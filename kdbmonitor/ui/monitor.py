@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+from kdbmonitor.core import schedule as sched
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.ui import engine
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, secs_until_due, humanize_secs,
     condition_summary, group_label, sort_group_names, pluralize,
+    schedule_summary,
 )
 
 
@@ -89,10 +91,18 @@ def render(store, mgr: ConnectionManager) -> None:
         display = []
         for a in store.list_alerts():
             latest = store.latest_run(a.id)
+            active = sched.is_active(a.schedule, now)
             if not a.enabled:
                 display.append({"a": a, "status": "disabled", "rows": None,
                                 "checked": None, "next": None})
-            elif latest is None:
+            elif not active:
+                # Enabled but outside its hours: parked, not pending and not
+                # broken. Say when it wakes up rather than when it last ran.
+                display.append({"a": a, "status": "off_hours", "rows": None,
+                                "checked": latest["ts"] if latest else None,
+                                "next": None,
+                                "opens": sched.next_open(a.schedule, now)})
+            elif latest is None or latest["status"] == "off_hours":
                 display.append({"a": a, "status": "pending", "rows": None,
                                 "checked": None, "next": 0})
             else:
@@ -107,12 +117,17 @@ def render(store, mgr: ConnectionManager) -> None:
         n_trig = sum(1 for d in display if d["status"] == "triggered")
         n_err = sum(1 for d in display if d["status"] == "error")
         n_armed = sum(1 for d in display if d["status"] == "armed")
+        n_off = sum(1 for d in display if d["status"] == "off_hours")
         st.markdown(":gray[**Now** — current state of each alert]")
-        k = st.columns(4)
+        # The Off-hours tile only appears once something is actually parked;
+        # a desk with no scheduled alerts shouldn't carry a column of zeroes.
+        k = st.columns(5 if n_off else 4)
         _kpi(k[0], "Alerts", len(display))
         _kpi(k[1], "Armed", n_armed, color="green")
         _kpi(k[2], "Triggered", n_trig, color="red")
         _kpi(k[3], "Errors", n_err, color="orange")
+        if n_off:
+            _kpi(k[4], "Off-hours", n_off, caption="outside their windows")
 
         # Active triggers surfaced first
         for d in display:
@@ -134,15 +149,25 @@ def render(store, mgr: ConnectionManager) -> None:
                 # A red "NEW" badge stays next to an alert that has fired until
                 # the user opens it with View (persisted, so it survives restarts).
                 new_flag = " :red-badge[:material/notifications_active: NEW]" if unseen else ""
+                # The window is already spelled out beside a parked alert; only
+                # a running one needs reminding that it has hours at all.
+                hours = ("" if a.schedule.mode != "windows" or d["status"] == "off_hours"
+                         else f" · :material/schedule: {schedule_summary(a.schedule)}")
                 row[1].markdown(
                     f"**{a.name}**{new_flag}  \n"
-                    f":gray[Triggers when {condition_summary(a.trigger)}]")
+                    f":gray[Triggers when {condition_summary(a.trigger)}{hours}]")
                 if d["rows"] is None:
                     row[2].markdown(":gray[—]")
                 else:
                     row[2].markdown(f"`{d['rows']}` rows")
                 if d["status"] == "disabled":
                     row[3].caption("disabled")
+                elif d["status"] == "off_hours":
+                    opens = d.get("opens")
+                    when = (f"opens in {humanize_secs(int((opens - now).total_seconds()))}"
+                            if opens else "no window ahead")
+                    row[3].caption(f":material/bedtime: {when} · runs "
+                                   f"{schedule_summary(a.schedule)}")
                 elif d["status"] == "pending":
                     row[3].caption("awaiting first check")
                 else:

@@ -184,6 +184,15 @@ def _tzinfo_for(resolved: str):
     return ZoneInfo(resolved)
 
 
+def tzinfo_for(name: str):
+    """The tzinfo behind any spelling :func:`to_iana` accepts.
+
+    Callers that work in datetimes rather than in pandas columns — an alert's
+    active hours, say — need the zone itself rather than a converted series.
+    """
+    return _tzinfo_for(to_iana(name))
+
+
 def convert(series: pd.Series, from_zone: str, to_zone: str) -> pd.Series:
     """Reinterpret a column of naive timestamps in another zone.
 

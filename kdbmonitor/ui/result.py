@@ -18,11 +18,12 @@ def _slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "result"
 
 
-def _snapshot_from_store(store, aid: int):
+def snapshot_from_store(store, aid: int):
     """Rebuild a result from the newest persisted daily snapshot, or None.
 
     The in-session result is cleared on restart; the daily snapshot in the DB
     is not, so this keeps View working (and lets it clear the NEW flag) later.
+    Shared with the alert pop-up, which shows the same rows in a modal.
     """
     for day in store.result_days(aid):
         snap = store.get_result(aid, day)
@@ -44,7 +45,7 @@ def render(store) -> None:
     last_results = st.session_state.get("last_results", {})
     stored = last_results.get(aid) if aid is not None else None
     if (stored is None or stored.get("df") is None) and aid is not None:
-        stored = _snapshot_from_store(store, aid)   # fall back to the DB snapshot
+        stored = snapshot_from_store(store, aid)    # fall back to the DB snapshot
     if stored is None or stored.get("df") is None:
         st.info("No result yet. Open one from the Monitor with the View button that "
                 "appears once an alert captures a triggered result.",
