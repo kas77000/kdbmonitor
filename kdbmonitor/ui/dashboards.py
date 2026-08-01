@@ -28,6 +28,7 @@ from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
 )
 from kdbmonitor.ui import parameters
+from kdbmonitor.ui.common import pluralize
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
 DPI = 96
@@ -327,47 +328,192 @@ def _active_id(store) -> int | None:
     return None
 
 
-def _open(dashboard_id: int) -> None:
+# --- the open tabs ---------------------------------------------------------
+#
+# Which dashboards have a tab is kept in the URL (``?tabs=1,3,7``) beside which
+# one is showing (``?dash=3``), for the same reason the active one always was:
+# the URL is the session. Reload the page, bookmark it, send it to somebody —
+# the same tabs come back. Session state would not survive the first refresh,
+# and the database would make one person's open tabs everybody's.
+
+TABS_PARAM = "tabs"
+TABS_KEY = "dash_tabs"          # the pills widget; also its CSS hook
+
+
+def parse_tabs(raw: str | None, known: list[int]) -> list[int]:
+    """The ``tabs`` parameter as ids, in order, deduped and filtered.
+
+    Anything unrecognised is dropped rather than argued with: a dashboard that
+    has since been deleted, or a hand-edited URL, should open the tabs that do
+    exist instead of an error page.
+    """
+    out: list[int] = []
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if part.isdigit() and int(part) in known and int(part) not in out:
+            out.append(int(part))
+    return out
+
+
+def _open_ids(store) -> list[int]:
+    known = [d.id for d in store.list_dashboards()]
+    ids = parse_tabs(st.query_params.get(TABS_PARAM), known)
+    active = _active_id(store)
+    if active is not None and active not in ids:
+        ids.append(active)          # opened straight from a link, or a bookmark
+    return ids
+
+
+def _write_tabs(ids: list[int]) -> None:
+    if ids:
+        st.query_params[TABS_PARAM] = ",".join(str(i) for i in ids)
+    else:
+        st.query_params.pop(TABS_PARAM, None)
+
+
+def next_active(ids: list[int], closing: int) -> int | None:
+    """Which tab to show after closing one — the neighbour to its left, as a
+    browser does, and the one to its right when there is nothing on the left."""
+    if closing not in ids:
+        return ids[0] if ids else None
+    i = ids.index(closing)
+    rest = ids[:i] + ids[i + 1:]
+    if not rest:
+        return None
+    return rest[i - 1] if i > 0 else rest[0]
+
+
+def _forget(dashboard_id: int) -> None:
+    """Drop everything a closed tab was holding.
+
+    Closing a tab means closing it: the frames, the built PDF, the rendered
+    pages, the parameter choices and any uploaded file all go. Keeping them
+    would quietly hold a whole dashboard's data — and its user's spreadsheet —
+    for a tab nobody has open.
+    """
+    for key in (frames_key(dashboard_id), choices_key(dashboard_id),
+                uploads_key(dashboard_id), f"pdf_{dashboard_id}",
+                f"pdfpages_{dashboard_id}", f"pdfpreview_on_{dashboard_id}",
+                f"pv_page_{dashboard_id}"):
+        st.session_state.pop(key, None)
+
+
+def _open(dashboard_id: int, store=None) -> None:
+    """Show a dashboard, opening a tab for it if it hasn't got one."""
+    ids = _open_ids(store) if store is not None else []
+    if dashboard_id not in ids:
+        ids.append(dashboard_id)
+    _write_tabs(ids)
     st.query_params["dash"] = str(dashboard_id)
     st.rerun()
 
 
+def _open_many(store, dashboard_ids: list[int]) -> None:
+    ids = _open_ids(store)
+    for did in dashboard_ids:
+        if did not in ids:
+            ids.append(did)
+    if not ids:
+        return
+    _write_tabs(ids)
+    # Land on the first of the ones just asked for, so the click has a visible
+    # answer even when some of them were already open.
+    st.query_params["dash"] = str(dashboard_ids[0] if dashboard_ids else ids[0])
+    st.rerun()
+
+
+def _close(store, dashboard_id: int) -> None:
+    ids = _open_ids(store)
+    following = next_active(ids, dashboard_id)
+    _forget(dashboard_id)
+    _write_tabs([i for i in ids if i != dashboard_id])
+    st.session_state.pop(TABS_KEY, None)        # the strip is about to change
+    if following is None:
+        st.query_params.pop("dash", None)       # last tab closed -> the gallery
+    elif _active_id(store) == dashboard_id:
+        st.query_params["dash"] = str(following)
+    st.rerun()
+
+
 def back_to_gallery() -> None:
-    """Leave the open dashboard and return to the list.
+    """Leave the open dashboard and return to the list, tabs intact.
 
     Clearing ``?dash`` is the only way back: Streamlit's sidebar page link keeps
     existing query params, so clicking 'Dashboards' in the nav while a dashboard
     is open lands on that same dashboard again. Hence a prominent in-page
     control rather than relying on the nav.
+
+    ``?tabs`` is deliberately left alone — this is the browser's new-tab page,
+    not closing the window.
     """
     st.query_params.pop("dash", None)
-    st.session_state.pop("dash_pills", None)
+    st.session_state.pop(TABS_KEY, None)
     st.rerun()
 
 
 # --- gallery ---------------------------------------------------------------
 
+def _selection_key(dashboard_id: int) -> str:
+    return f"gal_pick_{dashboard_id}"
+
+
+def selected_ids(saved) -> list[int]:
+    """The dashboards ticked in the gallery, in the order they are listed."""
+    return [d.id for d in saved if st.session_state.get(_selection_key(d.id))]
+
+
+def _clear_selection(saved) -> None:
+    for d in saved:
+        st.session_state.pop(_selection_key(d.id), None)
+
+
 def _render_gallery(store) -> None:
     st.subheader(":material/dashboard: Dashboards")
-    head = st.columns([6, 1.6], vertical_alignment="center")
-    head[0].caption("Saved views built from KDB queries. Open one to watch it "
-                    "live, or export the current state as a PDF.")
-    if head[1].button("New dashboard", icon=":material/add:", type="primary"):
+    saved = store.list_dashboards()
+    open_ids = _open_ids(store)
+
+    head = st.columns([4.4, 1.6, 1.6], vertical_alignment="center")
+    head[0].caption("Saved views built from KDB queries. Tick as many as you "
+                    "want and open them together — each one gets a tab, and "
+                    "only the tab you are looking at runs its queries.")
+
+    # Read from the last run's state, which is current: ticking a box reruns
+    # the page, so the count on the button is always what is ticked below.
+    picked = selected_ids(saved)
+    if head[1].button(f"Open selected ({len(picked)})" if picked
+                      else "Open selected",
+                      icon=":material/open_in_new:", disabled=not picked,
+                      use_container_width=True,
+                      help="Open every ticked dashboard in its own tab"):
+        _clear_selection(saved)
+        _open_many(store, picked)
+
+    if head[2].button("New dashboard", icon=":material/add:", type="primary",
+                      use_container_width=True):
         new_id = store.add_dashboard(Dashboard(id=None, name="New dashboard"))
         st.session_state["dash_edit_id"] = new_id
         st.session_state["dash_mode"] = "edit"
         st.session_state.pop("dash_draft", None)
         st.rerun()
 
-    saved = store.list_dashboards()
+    if open_ids:
+        st.caption(f":material/tab: {pluralize(len(open_ids), 'tab')} already "
+                   "open — Open on any of them brings its tab back to the front.")
+
     if not saved:
         st.info("No dashboards yet. Create one to get started.",
                 icon=":material/dashboard:")
     for d in saved:
         with st.container(border=True):
-            c = st.columns([2.8, 2.2, 1, 1, 1.2, 1.1, 0.8],
+            c = st.columns([0.35, 2.5, 2.2, 1, 1, 1.2, 1.1, 0.8],
                            vertical_alignment="center")
-            c[0].markdown(f"**{d.name}**"
+            c[0].checkbox("Select", key=_selection_key(d.id),
+                          label_visibility="collapsed",
+                          help=f"Tick to open '{d.name}' with the others")
+            c = c[1:]
+            open_flag = (" :green-badge[:material/tab: Open]"
+                         if d.id in open_ids else "")
+            c[0].markdown(f"**{d.name}**{open_flag}"
                           + (f"<br>:gray[{d.description}]" if d.description else ""),
                           unsafe_allow_html=True)
             envs = sorted({ds.env for ds in d.datasets if ds.env})
@@ -377,7 +523,7 @@ def _render_gallery(store) -> None:
                           unsafe_allow_html=True)
             if c[2].button("Open", key=f"open_{d.id}", icon=":material/open_in_new:",
                            use_container_width=True):
-                _open(d.id)
+                _open(d.id, store)
             if c[3].button("Edit", key=f"edit_{d.id}", icon=":material/edit:",
                            use_container_width=True):
                 st.session_state["dash_edit_id"] = d.id
@@ -402,6 +548,9 @@ def _render_gallery(store) -> None:
                 st.warning(f"Delete '{d.name}'?")
                 if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
                     store.delete_dashboard(d.id)
+                    # Its tab goes with it — parse_tabs drops an id that no
+                    # longer exists, and this drops what it was holding.
+                    _forget(d.id)
                     st.rerun()
 
     st.divider()
@@ -549,22 +698,178 @@ def _render_uploads(dashboard: Dashboard) -> dict:
     return {name: kept["df"] for name, kept in held.items()}
 
 
-def _render_view(store, mgr, dashboard: Dashboard) -> None:
-    # The way back lives here, first and on its own line, because the sidebar
-    # nav cannot get you out (it keeps ?dash).
-    nav = st.columns([1.15, 6.85], vertical_alignment="center")
+TAB_LABEL_CHARS = 22       # about as much of a name as a browser tab shows
+
+
+def tab_label(name: str, taken: set[str]) -> str:
+    """A short, unique label for one tab.
+
+    Shortened here as well as in CSS so the strip stays a strip on a browser
+    that has never heard of ``:has`` — and made unique because the strip is a
+    set of options, and two dashboards called the same thing (or shortened to
+    the same thing) would otherwise be one tab you cannot tell apart.
+    """
+    label = name.strip() or "Untitled"
+    if len(label) > TAB_LABEL_CHARS:
+        label = label[:TAB_LABEL_CHARS - 1].rstrip() + "…"
+    if label not in taken:
+        return label
+    i = 2
+    while f"{label} ({i})" in taken:
+        i += 1
+    return f"{label} ({i})"
+
+
+# The strip is st.pills wearing a different coat. Streamlit stamps a widget's
+# key onto its container as `st-key-<key>`, which is what scopes every rule
+# here to this one strip and nothing else on the page.
+#
+# The two things a row of 15 tabs needs: it must not wrap onto a second and
+# third line (nowrap + scroll, as a browser does), and no single tab may eat
+# the row (a max width, with the name clipped rather than the tab stretched).
+# `div:has(> button)` finds whatever element Streamlit is currently wrapping
+# the buttons in without naming it; the testid beside it is the belt to that
+# pair of braces. If a browser supports neither, the tabs simply wrap as they
+# do today — the strip still works, it is only less tidy.
+_TAB_CSS = f"""
+<style>
+.st-key-{TABS_KEY} {{
+  border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+  margin-bottom: 2px;
+}}
+/* The element that directly holds the buttons is the row to keep on one line,
+   whatever Streamlit is calling it this version. */
+.st-key-{TABS_KEY} div:has(> button) {{
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap !important;
+  gap: 2px;
+}}
+.st-key-{TABS_KEY} [data-testid="stButtonGroup"],
+.st-key-{TABS_KEY} div:has(> button) {{
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}}
+.st-key-{TABS_KEY} button {{
+  border-radius: 8px 8px 0 0 !important;
+  border-bottom: none !important;
+  max-width: 200px;
+  flex: 0 0 auto;
+}}
+.st-key-{TABS_KEY} button p {{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}}
+</style>
+"""
+
+
+def _render_tab_strip(store, dashboard: Dashboard, open_ids: list[int]) -> None:
+    """One row of tabs: the dashboards that are open, and nothing else.
+
+    Every saved dashboard used to get a pill, so a desk with fifteen of them
+    got a wall of pills three rows deep with no way to tell which mattered.
+    Now a dashboard appears here because somebody opened it, and leaves when
+    they close it — the tab strip is the set of things in hand, not an index of
+    everything that exists.
+    """
+    st.markdown(_TAB_CSS, unsafe_allow_html=True)
+
+    labels: dict[str, int] = {}
+    for did in open_ids:
+        d = store.get_dashboard(did)
+        if d is not None:
+            labels[tab_label(d.name, set(labels))] = did
+    active_label = next((lbl for lbl, did in labels.items()
+                         if did == dashboard.id), None)
+
+    # The widget's own value wins while it is valid — that is how a click
+    # registers. It is only overruled when it names a tab that is no longer
+    # there (one just closed, or renamed), which would otherwise leave the
+    # strip pointing at nothing.
+    if st.session_state.get(TABS_KEY) not in labels:
+        st.session_state[TABS_KEY] = active_label
+
+    # One row at the top level, not a row inside a column: the tab menu opens
+    # columns of its own, and Streamlit allows only one level of nesting.
+    nav = st.columns([1.2, 6.2, 1.6], vertical_alignment="bottom")
     # Sized to its content — a full-width button here reads as a banner, not a
     # back control.
     if nav[0].button("All dashboards", icon=":material/arrow_back:",
                      help="Back to the dashboard list"):
         back_to_gallery()
-
-    names = {d.name: d.id for d in store.list_dashboards()}
+    if not labels:
+        return
     with nav[1]:
-        picked = st.pills("Dashboards", list(names), default=dashboard.name,
-                          label_visibility="collapsed", key="dash_pills")
-    if picked and names[picked] != dashboard.id:
-        _open(names[picked])
+        picked = st.pills("Open dashboards", list(labels),
+                          label_visibility="collapsed", key=TABS_KEY)
+    with nav[2]:
+        _render_tab_menu(store, dashboard, labels)
+
+    if picked and labels[picked] != dashboard.id:
+        _open(labels[picked], store)
+
+
+def _render_tab_menu(store, dashboard: Dashboard, labels: dict[str, int]) -> None:
+    """The overflow menu beside the strip: close tabs, and open more.
+
+    A browser's tab list, and for the same reason — once the strip scrolls, the
+    tab you want to close may not be the one you can see, and closing has to be
+    possible without switching to it first.
+    """
+    with st.popover(f"Tabs ({len(labels)})", icon=":material/tab:",
+                    use_container_width=True):
+        st.caption("Close a tab, or open another. Closing one drops the data "
+                   "it was holding — including any file you uploaded to it.")
+        for label, did in labels.items():
+            row = st.columns([4, 1], vertical_alignment="center")
+            mark = ":material/radio_button_checked:" if did == dashboard.id \
+                else ":material/radio_button_unchecked:"
+            row[0].markdown(f"{mark} {label}")
+            if row[1].button("", key=f"tabclose_{did}", icon=":material/close:",
+                             help="Close this tab"):
+                _close(store, did)
+
+        others = [d for d in store.list_dashboards() if d.id not in labels.values()]
+        if others:
+            st.divider()
+            names = {d.name: d.id for d in others}
+            chosen = st.multiselect("Open another", list(names),
+                                    key="dash_tab_add",
+                                    placeholder="Choose dashboards to open")
+            if chosen and st.button("Open", key="dash_tab_add_go",
+                                    icon=":material/open_in_new:", type="primary"):
+                st.session_state.pop("dash_tab_add", None)
+                _open_many(store, [names[n] for n in chosen])
+
+        if len(labels) > 1:
+            st.divider()
+            close = st.columns(2)
+            if close[0].button("Close others", key="tabclose_others",
+                               icon=":material/close_fullscreen:",
+                               use_container_width=True):
+                for did in list(labels.values()):
+                    if did != dashboard.id:
+                        _forget(did)
+                _write_tabs([dashboard.id])
+                st.session_state.pop(TABS_KEY, None)
+                st.rerun()
+            if close[1].button("Close all", key="tabclose_all",
+                               icon=":material/close:", use_container_width=True):
+                for did in list(labels.values()):
+                    _forget(did)
+                _write_tabs([])
+                st.session_state.pop(TABS_KEY, None)
+                st.query_params.pop("dash", None)
+                st.rerun()
+
+
+def _render_view(store, mgr, dashboard: Dashboard) -> None:
+    # The way back lives in the tab row, first, because the sidebar nav cannot
+    # get you out (it keeps ?dash).
+    _render_tab_strip(store, dashboard, _open_ids(store))
 
     top = st.columns([3.5, 1.3, 1.2, 1.0], vertical_alignment="bottom")
     top[0].subheader(dashboard.name)
