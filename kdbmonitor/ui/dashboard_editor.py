@@ -42,6 +42,14 @@ from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 
+# One width for every column holding nothing but an icon button. Streamlit draws
+# the icon at a fixed size, so a wider column simply pads around it — and the
+# same delete button landing a few pixels further right in one card than in the
+# card below it is the kind of thing that reads as carelessness without a reader
+# being able to name what is wrong. Editors are looked at for hours; the grid
+# being predictable is itself an affordance.
+ICON_COL = 0.6
+
 # Readable labels for core.qfmt.VALUE_TYPES — the label doubles as a sample of
 # what the type is for, since "expression" alone does not say it is the escape
 # hatch for a value q has to work out itself.
@@ -313,6 +321,27 @@ def env_serves(pair: dict, mode: str) -> bool:
     of a dashboard offering both.
     """
     return is_marketdata_env(pair) or pair.get(mode) is not None
+
+
+def _orientation_picker(container, draft: Dashboard) -> None:
+    """The printed-page control, in one place so it can only say one thing.
+
+    Written out once per source it drifted: the file dashboard's copy had lost
+    the sentence explaining that only the data knows how wide a column is, so
+    two readers of the same setting were told different amounts about it.
+    """
+    ways = list(ORIENTATIONS)
+    draft.orientation = container.selectbox(
+        "Printed page", ways,
+        index=ways.index(draft.orientation
+                         if draft.orientation in ways else "auto"),
+        format_func=lambda o: ORIENTATION_LABELS[o],
+        help="A wide table has to fit its columns across the page, and text "
+             "given too little room collides rather than shrinks. On 'auto' "
+             "the report prints portrait until a table cannot be printed "
+             "legibly across it, and then the whole report turns. Only the "
+             "data can say how wide a column really is, so the decision is "
+             "made when the PDF is generated, not here.")
 
 
 def env_label(env: str, pair: dict) -> str:
@@ -1124,7 +1153,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         if ds.source == "file":
             from kdbmonitor.ui import fileshape
 
-            head = st.columns([3, 1.8, 0.7], vertical_alignment="bottom")
+            head = st.columns([3, 1.8, ICON_COL], vertical_alignment="bottom")
             was = ds.name
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             # The held sample is filed under the dataset's name, and the box
@@ -1142,7 +1171,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 st.rerun()
             fileshape.render(ds, key=key)
         else:
-            head = st.columns([2, 2, 1.8, 1.6, 0.7], vertical_alignment="bottom")
+            head = st.columns([2, 2, 1.8, 1.6, ICON_COL], vertical_alignment="bottom")
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             pairs = store.list_environments()
             envs = sorted(pairs)
@@ -1301,7 +1330,8 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
     """
     key = f"pm{index}"
     with st.expander(f"**{p.name or '(unnamed)'}** · {p.kind}", expanded=True):
-        head = st.columns([2, 2, 1.6, 0.7, 0.7], vertical_alignment="bottom")
+        head = st.columns([2, 2, 1.6, ICON_COL, ICON_COL],
+                          vertical_alignment="bottom")
         was = p.name
         p.name = head[0].text_input("Name", value=p.name, key=f"{key}_n")
         # Session state remembers a reader's pick by name — follow a rename the
@@ -1682,7 +1712,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
             labels = dict(s.get("labels", {}))
             formats = dict(s.get("formats", {}))
             for i, col in enumerate(shown):
-                cc = st.columns([1.6, 2.2, 2.6, 0.5, 0.5],
+                cc = st.columns([1.6, 2.2, 2.6, ICON_COL, ICON_COL],
                                 vertical_alignment="bottom")
                 cc[0].markdown(f"`{col}`")
                 # Keyed by column name, never by row number: drop a column and
@@ -1870,13 +1900,26 @@ def _render_layout(store, draft: Dashboard) -> None:
                     w.width = float(c[3].number_input("Width", 0.2, 8.0,
                                                       float(w.width), step=0.1,
                                                       key=f"{key}_w"))
+                    # Both ways, like every other reorderable thing here. With
+                    # only a left arrow, moving a widget right meant reaching
+                    # for a control on the widget beside it — so shifting the
+                    # last of four to the front was three clicks, none of them
+                    # on the thing being moved.
                     if c[4].button("", icon=":material/arrow_back:", key=f"{key}_l",
-                                   disabled=w_i == 0):
+                                   disabled=w_i == 0, help="Move left."):
                         row.widgets[w_i - 1], row.widgets[w_i] = \
                             row.widgets[w_i], row.widgets[w_i - 1]
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
-                    if c[5].button("", icon=":material/content_copy:",
+                    if c[5].button("", icon=":material/arrow_forward:",
+                                   key=f"{key}_r",
+                                   disabled=w_i == len(row.widgets) - 1,
+                                   help="Move right."):
+                        row.widgets[w_i + 1], row.widgets[w_i] = \
+                            row.widgets[w_i], row.widgets[w_i + 1]
+                        _forget(rf"r{r_i}w\d+")
+                        st.rerun()
+                    if c[6].button("", icon=":material/content_copy:",
                                    key=f"{key}_dup", disabled=len(row.widgets) >= 4,
                                    help="Copy this widget in beside itself. Two "
                                         "tables laid out the same way over "
@@ -1889,8 +1932,6 @@ def _render_layout(store, draft: Dashboard) -> None:
                                            widget_from_dict(widget_to_dict(w)))
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
-                    _save_to_library(c[6], store, "widget", widget_to_dict(w),
-                                     key, suggested=w.title)
                     if c[7].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
                         _forget(rf"r{r_i}w\d+")
@@ -1903,6 +1944,14 @@ def _render_layout(store, draft: Dashboard) -> None:
                     _widget_form(w, dataset_columns(ds, _connection_for(store, ds),
                                                     learned_columns(w.dataset)),
                                  f"{key}_spec")
+                    # Saving to the library is something done once a widget is
+                    # finished, not while it is being arranged — so it sits
+                    # under the settings rather than taking a place in the row
+                    # of controls, which had grown to eight and was squeezing
+                    # the title field it sat beside.
+                    lib = st.columns([1.8, 6.2], vertical_alignment="bottom")
+                    _save_to_library(lib[0], store, "widget", widget_to_dict(w),
+                                     key, suggested=w.title)
 
             add = st.columns([1.4, 1.6, 5], vertical_alignment="bottom")
             full = len(row.widgets) >= 4
@@ -2019,8 +2068,13 @@ def render(store, mgr) -> None:
                  "own numbers. It has no environment, no period and no refresh "
                  "interval — those describe a server, and there is none.")
 
+        # One row either way, and the printed-page control keeps its place in
+        # both. It used to sit last on a query dashboard and first on a file
+        # one, so changing the source made it jump the width of the screen —
+        # and it was written out twice, which is how the two copies of its
+        # help text had already come to say different things.
         if draft.source != "file":
-            p = st.columns([2.4, 4.2, 2.4], vertical_alignment="center")
+            p = st.columns([2.4, 4.2, 2.4], vertical_alignment="bottom")
             modes = list(PERIOD_MODES)
             draft.periods = p[0].selectbox(
                 "Periods offered", modes,
@@ -2031,35 +2085,15 @@ def render(store, mgr) -> None:
                      "historical twin. A dashboard built over one side alone says "
                      "so here, and is never offered the period it cannot answer.")
             p[1].caption(_periods_hint(draft, store))
-            ways = list(ORIENTATIONS)
-            draft.orientation = p[2].selectbox(
-                "Printed page", ways,
-                index=ways.index(draft.orientation
-                                 if draft.orientation in ways else "auto"),
-                format_func=lambda o: ORIENTATION_LABELS[o],
-                help="A wide table has to fit its columns across the page, and text "
-                     "given too little room collides rather than shrinks. On 'auto' "
-                     "the report prints portrait until a table cannot be printed "
-                     "legibly across it, and then the whole report turns. Only the "
-                     "data can say how wide a column really is, so the decision is "
-                     "made when the PDF is generated, not here.")
+            _orientation_picker(p[2], draft)
         else:
-            p = st.columns([2.4, 7.6], vertical_alignment="center")
-            ways = list(ORIENTATIONS)
-            draft.orientation = p[0].selectbox(
-                "Printed page", ways,
-                index=ways.index(draft.orientation
-                                 if draft.orientation in ways else "auto"),
-                format_func=lambda o: ORIENTATION_LABELS[o],
-                help="A wide table has to fit its columns across the page. On "
-                     "'auto' the report prints portrait until a table cannot be "
-                     "printed legibly across it, and then the whole report "
-                     "turns.")
-            p[1].caption(
+            p = st.columns([6.6, 2.4], vertical_alignment="bottom")
+            p[0].caption(
                 "This dashboard reads an uploaded file, so it has no "
                 "environment, no period and no refresh interval — its numbers "
                 "change when somebody uploads a different file, and at no "
                 "other moment.")
+            _orientation_picker(p[1], draft)
 
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.
