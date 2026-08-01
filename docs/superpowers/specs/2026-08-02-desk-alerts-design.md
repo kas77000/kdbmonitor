@@ -143,9 +143,9 @@ Each event carries:
 | `alert_id` | which alert produced it |
 | `severity` | `red` · `amber` · `grey` (see §6) |
 | `subject` | the thing it is about — for a coverage desk, the sym |
-| `scope_kind` | `fault` · `cohort` · `none` — how the scope should be read (§5.4.1) |
-| `scope_value` | which instance, which market — what a burst groups by |
-| `variant` | the state that must also match to roll together — limit *up* vs *down* |
+| `scope_kind` | `fault` · `cohort` · `none` — how the card must be worded (§5.4.1) |
+| `scope_value` | which instance, which market — what a stack breaks down *by* |
+| `variant` | the error or state; part of the stack's identity — limit *up* vs *down* |
 | `dedupe_key` | `alert_id` + `subject`, the identity used to coalesce |
 | `group_id` | the burst it belongs to, if any (§5.4) |
 | `headline` | the one line the trader reads, already rendered |
@@ -227,14 +227,19 @@ The card does not move, flash, or re-sound. A card that jumps every time its
 condition re-fires is a card the eye has to re-find, which is the opposite of
 what a fixed position is for.
 
-**Rolled up** — same alert, *many different* subjects sharing a scope. This is
-the open, the close, and any infrastructure failure. Forty orders showing one
-symptom is one thing that has happened, not forty, and the trader needs to see
-it that way.
+**Rolled up** — *one stack per error.* Everything reporting the same error goes
+in the same stack: different names, or the same name with several orders, it
+makes no difference. Forty orders showing one symptom is one thing that has
+happened, not forty.
 
-Coalescing by subject would make this *worse*, not better — every name is
-distinct, so nothing coalesces and forty cards arrive. Rolling up is the
-mechanism that actually protects the open.
+Two or three of something is fine as individual cards and is how the ordinary
+day should look. Twenty is not, and at twenty the trader does not want twenty
+lines — they want *"this error, forty orders, twenty-five names"* and the
+ability to open it if they care which.
+
+The error is what groups them, not the name. Coalescing by name does nothing
+here, because every name is different; that is what makes the open dangerous
+and rolling up is the mechanism that answers it.
 
 ### 5.4.1 Blast radius: faults and cohorts
 
@@ -261,64 +266,81 @@ breaker regime.
 | what the desk does | escalate, somebody must fix it | trade around it, tell the client |
 | spreading further means | it is getting worse | on a volatile day, nothing |
 
+The stack is keyed by the error. The scope is what the stack **breaks down by**
+on its second line, so nothing is lost by having one card instead of several:
+
 ```
 ┌──────────────────────────────────────────────────────┐
-│▌ INST-03   market data stale · 40 orders · 3 markets │  fault
-│     .IB 22 · .T 12 · .HK 6                           │
+│▌ market data stale · 40 orders · 25 names   2m   ▾  ▪│  fault
+│     INST-03 22 · INST-07 18                          │
 ├──────────────────────────────────────────────────────┤
-│▌ .IB       limit up · 25 names                       │  cohort
-│     RIL.IB · INFY.IB · TCS.IB · +22 more             │
+│▌ limit up · 31 orders · 23 names            2m   ▾  ▪│  cohort
+│     .IB 15 names · .T 8 names                        │
 ├──────────────────────────────────────────────────────┤
-│▌ RIL.IB    limit up · 3 orders                       │  single
+│▌ RIL.IB    limit up · 3 orders              1m      ▪│  single
 └──────────────────────────────────────────────────────┘
 ```
 
 Four rules follow, and they are the careful part of this document.
 
-**A cohort card never claims its scope.** It names the condition and counts
-names: *limit up · 25 names*. Never *.IB down*, never a count of orders phrased
-so as to imply the whole market. A cohort is by definition partial, and a card
-that reads as though India has failed sends a trader to support for something
-support cannot fix.
+**One stack per error, and the breakdown goes inside it.** An earlier draft of
+this design split a cohort into one card per market, so that Indian names at
+limit up and Japanese names at limit up never appeared as one thing. The
+intent was right — they are unrelated, and a card claiming otherwise would
+invent a common cause — but the remedy was wrong, because it produces more
+cards during exactly the burst it is meant to survive. Showing the split on the
+second line achieves the same honesty for a fraction of the screen. The card
+says *23 names, 15 Indian and 8 Japanese*. It does not say, and must not be
+worded to suggest, that one thing caused both.
 
-**Cohorts are never aggregated across scope values.** Indian names at limit up
-and Japanese names doing something else are two unrelated stories that happen
-to share an alert definition. Rolling them into *50 names across 2 markets*
-would invent a common cause that does not exist. Per-scope-value detection
-(§5.4.2) already produces two cards; this is the reason it must stay that way.
-A **fault** card counting its markets is the opposite case and is legitimate,
-because there one cause genuinely does reach all of them.
+**A cohort card never claims its market.** It names the condition and counts
+names: *limit up · 23 names*. Never *.IB down*, never a count phrased so as to
+imply the whole market. A cohort is by definition partial, and a card reading
+as though India had failed sends a trader to support for something support
+cannot fix.
 
 **The state is part of the identity.** Limit up and limit down are opposite
-conditions, and *25 names at limit* leaves a trader not knowing which way the
-market went — which is the only thing they wanted to know. So an alert may name
-a **variant column** whose value must also match before events roll together.
-The group key is `alert + scope value + variant`, and limit up and limit down
-become two cards.
+conditions, and *23 names at limit* leaves a trader not knowing which way the
+market went — the only thing they wanted to know. So an alert may name a
+**variant column** whose value must also match before events join a stack. The
+group key is `alert + variant`; limit up and limit down are two stacks.
 
 **Escalation by spread applies to faults only** (§5.4.3). A fault reaching more
 orders is worse. A cohort reaching more names is what a volatile day looks
 like, and escalating on it would turn every big move into a red.
 
-`scope: none` exists for alerts where rolling up would destroy the information,
-and each event then stands alone. Use it sparingly — an alert that feels
-inherently per-name still gathers into a cohort on a big day, which is exactly
-the case the desk already sees.
+`scope: none` exists for alerts where a breakdown adds nothing, and the stack
+then simply lists its members.
 
-### 5.4.2 The switch
+### 5.4.2 The switch, and where the number comes from
 
-**Detection is per scope value, not per alert.** An alert enters rolled-up mode
-for a given scope value when it produces events for more than `burst_subjects`
-distinct subjects sharing that value inside `burst_window` (defaults: four in
-sixty seconds), and leaves it after a full quiet window.
+An alert stacks when it produces more than `burst_at` live events for the same
+`alert + variant` inside `burst_window`, and unstacks after a full quiet
+window. Default four in sixty seconds — two or three of something reads fine
+as individual cards, twenty does not.
 
-Per scope value rather than per alert matters: two instances failing at once
-are two problems and get two cards. A per-alert detector would have merged them
-into one and hidden the fact that it was happening twice.
+**`burst_at` is set by hand, per alert. Nothing here tunes itself.**
+
+That is a decision rather than a shortcut. How many names at limit up counts as
+a lot cannot be derived: it moves from one day to the next, it differs between
+Mumbai and Tokyo, and a number learned from last week is wrong on the week that
+matters. Somebody who knows the alert picks a number, watches it, and changes
+it. The noise report (§7.2) is what tells them whether they were right, and
+replaying the existing `alert_runs` history is a way to inform that first guess
+— but a person makes the choice, and no version of this design should quietly
+start making it for them.
+
+**This is a display threshold, not an alerting one.** It decides when cards
+become a stack. Whether five Indian names at limit up is worth an alert at all
+is the alert's own trigger condition, which KdbMonitor already expresses
+(`row_count_gte` and the rest) and which can differ per market by being a
+different alert. Keeping those two numbers apart matters: one is about screen
+real estate, the other is about what the desk considers abnormal, and
+conflating them would make a display tweak silently change what gets reported.
 
 Stated in one sentence, which is the test of whether it can be explained to a
-trader: *if one alert starts hitting a lot of orders behind the same instance,
-market or name, it becomes one card instead of a lot of them.*
+trader: *when a lot of orders report the same error at once, they become one
+stack instead of a lot of cards.*
 
 ### 5.4.3 Escalating with the blast radius
 
@@ -505,9 +527,10 @@ this section is what it does about them.
 
 ### 7.1 Surviving the burst
 
-**Roll up by what broke, not by name** (§5.4). This is the mechanism that
-matters, and it is the inverse of what serves the quiet phase. Coalescing by
-subject does nothing at the open because every name is different.
+**One stack per error** (§5.4). This is the mechanism that matters, and it is
+the inverse of what serves the quiet phase. Coalescing by name does nothing at
+the open because every name is different — the thing they have in common is
+the error, so that is what they are gathered by.
 
 **A cross-market burst reaches people who do not share a market.** When an
 instance fails, everyone with orders on it is affected regardless of what they
@@ -516,17 +539,18 @@ card, with the same scope on it, so when they turn to each other they are
 describing the same thing rather than three separate mysteries. With
 coverage-based routing (§8.1) this falls out on its own.
 
-**The leading edge is the weak spot.** A detector that needs four subjects in
-sixty seconds lets the first three through as individual cards. That is a
-tolerable cost at 11:30 and a bad one at the open, where those three are noise
-and everybody knows a burst is coming. So the burst threshold can be lowered
-inside declared windows: **`Schedule` and `Window` already exist in the
-codebase** — same shape, same timezone handling — so an alert can say *expect
-bursts 09:15–09:30 and 15:20–15:30* and be pre-armed rather than always one
-burst behind.
+**The leading edge is the weak spot.** A threshold of four lets the first three
+through as individual cards. That is a tolerable cost at 11:30 and a bad one at
+the open, where those three are noise and everybody already knows a burst is
+coming. So an alert can carry a **second, lower `burst_at` for declared
+windows**: **`Schedule` and `Window` already exist in the codebase** — same
+shape, same timezone handling — so it can say *expect bursts 09:15–09:30 and
+15:20–15:30, stack at two* and be pre-armed rather than always one burst
+behind.
 
-Detection stays adaptive underneath. Outages do not check the clock, and a
-schedule-only design would be defenceless at 11:30.
+Both numbers are set by hand (§5.4.2). The windows are a second manual setting,
+not a detector: the threshold outside them still applies, so an outage at 11:30
+stacks the same way, just three cards later.
 
 **Sound collapses to onset.** One tone when a burst begins, then silence until
 it ends, regardless of how many events arrive. The existing rule — one sound
@@ -715,13 +739,12 @@ events            (id, alert_id, group_id, dedupe_key, severity, subject,
                    scope_kind, scope_value, variant,
                    headline, detail_json, count, created_at, expires_at,
                    cleared_at)
-event_groups      (id, alert_id, scope_kind, scope_value, variant, mode,
+event_groups      (id, alert_id, variant, scope_kind, mode,
                    opened_at, closed_at, subject_count, event_count,
                    spread_json, peak_severity)       -- mode = 'single' |
                                                      -- 'coalesced' | 'rolled'
                                                      -- UNIQUE (alert_id,
-                                                     -- scope_value, variant)
-                                                     -- while open
+                                                     -- variant) while open
 deliveries        (event_id, recipient_id, agent_id,
                    delivered_at, acked_at, ack_login)
 ```
@@ -730,13 +753,13 @@ deliveries        (event_id, recipient_id, agent_id,
 trick. It gives the roll-up card an identity that survives a reconnect, gives
 the clear (§5.5) something to attach to, and gives the noise report a way to
 say *"the open produced three bursts lasting a total of nine minutes"* instead
-of only counting events. The uniqueness on `(alert_id, scope_value, variant)`
-is what keeps two instances failing at once as two cards, and keeps limit up
-and limit down from collapsing into one meaningless *"25 names at limit"*.
+of only counting events. The uniqueness on `(alert_id, variant)` is what makes
+one stack per error, and what keeps limit up and limit down from collapsing
+into one meaningless *"23 names at limit"*.
 
-`spread_json` holds the rung below the scope — the market breakdown under an
-instance, the name breakdown under a market — which is what the card's second
-line prints and what makes it useful without expanding.
+`spread_json` holds the breakdown by scope value — which instances, which
+markets, and how many of each — which is what the card's second line prints and
+what lets one card carry what would otherwise have been several.
 
 Per-alert settings — `scope_column`, `burst_subjects`, `burst_window`, the
 escalation threshold, the declared windows, the rate limit — live inside the
@@ -776,8 +799,10 @@ The section a spec is judged by.
 | Two instances fail at once | Two cards, one per instance | Groups are unique per scope value, not per alert |
 | An alert is given the wrong scope | Cards group by the wrong thing, but nothing is lost | Visible immediately on the first burst; a settings change, not a rebuild |
 | A cohort alert is marked as a fault | It escalates on a volatile day and floods the floor with red | The kill switch, then the noise report; this is the misconfiguration to watch for |
-| Two markets in unrelated cohorts | Two cards, never merged | Enforced by the group key, not by judgement |
-| Limit up and limit down at once | Two cards, one per direction | The variant column |
+| Two markets in unrelated cohorts | One stack, split on its second line — never worded as one cause | The breakdown is data, not a judgement |
+| Limit up and limit down at once | Two stacks, one per direction | The variant column |
+| `burst_at` set too high | Cards arrive individually during a burst | Visible on the day; a settings change, and the noise report counts it |
+| `burst_at` set too low | Two ordinary events become a stack | Harmless, and the stack still expands |
 | Burst detector fails to fire | Up to the rate limit in cards, then rolled anyway | The rate limit is the floor under the detector |
 | Agent reconnects mid-burst | Receives the group, not its hundreds of member events | `event_groups` survives the reconnect |
 | A burst never clears | Red persists unacknowledged, correctly | It stays on the strip; that is the point |
@@ -848,11 +873,11 @@ alerts arrive. It is whether they are still being read on day five.
    the floor with red on the busiest day of the quarter. Going through the
    existing alert list and marking each one is a short exercise and worth doing
    before any of this is built.
-10. **How many names at limit up is normal for each market?** A cohort
-    threshold that is right for Tokyo may be wrong for Mumbai. The honest
-    answer is that somebody who knows the market sets it, and the noise report
-    (§7.2) shows whether they were right. Deliberately not automated in a first
-    version.
+10. ~~How many names at limit up is normal?~~ **Settled: set by hand.** It
+    cannot be derived — it moves day to day and differs by market — so a person
+    who knows the alert picks the number and the noise report tells them
+    whether they were right (§5.4.2). No part of this design tunes itself, and
+    none should be added later without a deliberate decision to do so.
 
 ---
 
@@ -878,15 +903,17 @@ a group that was never opened; and a burst that starts inside a declared window
 with the lowered threshold.
 
 The scope logic (§5.4.1) needs its own cases on top, and these are the ones
-that protect against telling the trader a false story: two instances failing at
-once staying two cards rather than merging; a fault spanning three markets
-counting markets and not names; **two markets in unrelated cohorts never
-merging into one card, however many names each has**; limit up and limit down
-staying separate through the variant; a cohort headline never rendering a form
-of words that implies the whole market; escalation refused on a cohort-scoped
-alert even when configured; an event whose scope or variant column is null
-falling back to ungrouped rather than raising; and escalation firing at its
-declared count and not one subject earlier.
+that protect against telling the trader a false story: several orders on one
+name joining the same stack as one order each on many names, since the error is
+what groups them; two instances in one stack still showing as two on the
+breakdown line; **two markets in unrelated cohorts appearing as one stack with
+a split second line and never as a single claimed cause**; limit up and limit
+down staying separate through the variant; a cohort headline never rendering a
+form of words that implies the whole market; escalation refused on a
+cohort-scoped alert even when configured; an event whose scope or variant
+column is null falling back to ungrouped rather than raising; the threshold
+stacking at exactly `burst_at` and not one event earlier; and the lower
+in-window threshold applying only inside its window.
 
 **Integration:** relay tested against a scripted fake agent — connect, receive,
 acknowledge, drop the connection, reconnect, receive the backlog, confirm
@@ -919,9 +946,10 @@ Each step should leave something that works.
    builder, then the strip, cards, sound, acknowledgement, coalescing, TTL.
    This is the *quiet* and *one or two problems* phases — a working tool for
    an ordinary day.
-4. **The burst.** Roll-up, `event_groups`, clears, the pre-armed windows,
-   coverage protection, sound at onset. Thresholds chosen by replaying real
-   `alert_runs` history, not picked from the air.
+4. **The burst.** Stacking by error, `event_groups`, clears, the pre-armed
+   windows, coverage protection, sound at onset. Thresholds are typed in by a
+   person, informed by replaying real `alert_runs` history rather than guessed
+   — and never computed (§5.4.2).
 5. **Volume control.** Rate limits, kill switch, snooze, the noise report.
 6. **Trust.** Connection dot, acknowledgement tracking, the three warnings,
    history panel.
