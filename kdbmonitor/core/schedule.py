@@ -53,6 +53,11 @@ def validate(schedule: Schedule) -> list[str]:
     if not schedule.windows:
         problems.append("Active windows are on but no window is set.")
     for i, w in enumerate(schedule.windows, start=1):
+        if not (w.start or "").strip() or not (w.end or "").strip():
+            # Nothing typed yet, rather than something wrong: the difference
+            # matters when the control is a picker somebody has not touched.
+            problems.append(f"Window {i}: set both a From and a To time.")
+            continue
         try:
             start = parse_hhmm(w.start)
             end = parse_hhmm(w.end)

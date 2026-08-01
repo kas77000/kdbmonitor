@@ -155,9 +155,13 @@ def test_editing_an_alert_loads_the_hours_and_deliveries_it_was_saved_with(db):
              '_b._load_edit(store.list_alerts()[0])')
     at = AppTest.from_string(_script(db, "builder", extra),
                              default_timeout=90).run()
+    from datetime import time
+
     assert at.session_state["b_sched_on"] is True
     assert at.session_state["b_sched_n"] == 2
-    assert at.session_state["b_sched_s_1"] == "17:45"
+    # The From/To controls are time pickers, so they hold times.
+    assert at.session_state["b_sched_s_1"] == time(17, 45)
+    assert at.session_state["b_sched_e_1"] == time(18, 0)
     assert at.session_state["b_sched_tz"] == "Europe/London"
     assert set(at.session_state["b_delivery"]) == {
         "in_app", "sound", "browser", "focus", "popup", "email", "webhook"}

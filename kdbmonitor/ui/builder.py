@@ -1,9 +1,11 @@
 # kdbmonitor/ui/builder.py
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 import streamlit as st
+
+from kdbmonitor.core import zones
 
 from kdbmonitor.core.models import (
     Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels, Schedule,
@@ -46,6 +48,10 @@ _COND_LABELS = {
 }
 _AGGS = ["max", "min", "avg", "sum"]
 
+# A window can start at 17:45; a picker that steps in quarter hours (Streamlit's
+# default) cannot say so, and one that steps by the minute can say anything.
+_MINUTE = timedelta(minutes=1)
+
 
 def _safe_float(s, default: float = 0.0) -> float:
     try:
@@ -54,10 +60,68 @@ def _safe_float(s, default: float = 0.0) -> float:
         return default
 
 
+# Streamlit refuses to have a widget's state assigned once that widget has been
+# created in the same run — and every control in this form is created *before*
+# the button that rearranges it, because the button sits beside what it acts
+# on. So a handler cannot write to those keys directly: "At a moment" filling
+# in the To time, or Remove shuffling the rows below it up by one, raised
+# `st.session_state.<key> cannot be modified after the widget with key <key> is
+# instantiated` and put a red traceback where the form had been.
+#
+# The values are therefore queued and written at the top of the next run, before
+# any widget exists. Deleting a key is allowed at any point, so removals still
+# happen immediately.
+_PENDING = "b_pending"
+
+
+def _queue_value(key: str, value) -> None:
+    """Set a widget's value on the next run, when it may be set."""
+    st.session_state.setdefault(_PENDING, {})[key] = value
+
+
+def _apply_pending() -> None:
+    """Write what the last run queued. Call before drawing anything."""
+    for key, value in st.session_state.pop(_PENDING, {}).items():
+        st.session_state[key] = value
+
+
 def _clear_builder() -> None:
     for k in list(st.session_state.keys()):
         if k.startswith("b_"):
             del st.session_state[k]
+
+
+def _clock(text: str):
+    """'16:30' as a time for a picker, or None where there is nothing set."""
+    try:
+        return parse_hhmm(text)
+    except ValueError:
+        return None
+
+
+def _hhmm(value) -> str:
+    """A picker's time back as the model stores it. Blank stays blank."""
+    return value.strftime("%H:%M") if isinstance(value, time) else ""
+
+
+def _iana_or_local(name: str) -> str:
+    """A stored zone as an IANA id the picker can show.
+
+    An alert saved before the picker existed may hold "local", a Windows
+    display name or an offset. Those still *run* correctly — core.zones
+    resolves all of them — but only an IANA id can be selected, so anything
+    else is resolved on the way in, and what cannot be resolved falls back to
+    this machine's own zone rather than to an empty control.
+    """
+    raw = (name or "").strip()
+    if raw and raw.lower() != "local":
+        try:
+            resolved = zones.to_iana(raw)
+        except ValueError:
+            resolved = ""
+        if resolved in zones.iana_names():
+            return resolved
+    return zones.local_iana()
 
 
 def _safe_select(container, label, options, key, **kw):
@@ -114,8 +178,9 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_delivery": ["in_app", "sound", "browser"], "b_email": "", "b_hooks": "",
         "b_rmode": "transition", "b_rcd": 900, "b_retention": "latest",
         "b_groupsel": _NO_GROUP, "b_groupnew": "",
-        "b_sched_on": False, "b_sched_tz": "local", "b_sched_days": [],
-        "b_sched_n": 1, "b_sched_s_0": "", "b_sched_e_0": "",
+        "b_sched_on": False, "b_sched_tz": zones.local_iana(),
+        "b_sched_days": [], "b_sched_n": 1,
+        "b_sched_s_0": None, "b_sched_e_0": None,
     })
 
 
@@ -148,15 +213,15 @@ def _load_edit(alert: Alert) -> None:
         "b_groupsel": alert.group.strip() if alert.group.strip() else _NO_GROUP,
         "b_groupnew": "",
         "b_sched_on": alert.schedule.mode == "windows",
-        "b_sched_tz": alert.schedule.tz or "local",
+        "b_sched_tz": _iana_or_local(alert.schedule.tz),
         "b_sched_days": list(alert.schedule.days),
         "b_sched_n": max(1, len(alert.schedule.windows)),
     }
     for i, w in enumerate(alert.schedule.windows):
-        s[f"b_sched_s_{i}"] = w.start
-        s[f"b_sched_e_{i}"] = w.end
+        s[f"b_sched_s_{i}"] = _clock(w.start)
+        s[f"b_sched_e_{i}"] = _clock(w.end)
     if not alert.schedule.windows:
-        s["b_sched_s_0"] = s["b_sched_e_0"] = ""
+        s["b_sched_s_0"] = s["b_sched_e_0"] = None
     for i, step in enumerate(alert.steps):
         s[f"b_srv_{i}"] = step.server
         s[f"b_tbl_{i}"] = step.table
@@ -394,12 +459,21 @@ def _schedule_block() -> Schedule:
             st.caption("Runs whenever monitoring is on.")
             return Schedule(mode="always")
 
-        zone = st.text_input(
-            "Timezone", key="b_sched_tz",
-            help="Your own zone by default. An IANA id (Europe/London), the "
-                 "Windows name (GMT Standard Time), an abbreviation (IST) or "
-                 "an offset (UTC+05:30) all work. Daylight saving is applied "
-                 "on the day, not assumed.")
+        # IANA ids only. The other spellings core.zones accepts are for a file
+        # that names its own zone the way the machine that wrote it does;
+        # somebody choosing one here should get the canonical names and
+        # nothing else, so what is stored means the same thing wherever it is
+        # read. Streamlit's selectbox filters as you type, which is what makes
+        # a list of ~600 usable.
+        zones_offered = zones.iana_names()
+        # Seeded here rather than only in _ensure_init, so the block stands on
+        # its own: an unseeded selectbox silently starts on the first option,
+        # which is alphabetical and has nothing to do with anybody.
+        st.session_state.setdefault("b_sched_tz", zones.local_iana())
+        zone = _safe_select(
+            st, "Timezone", zones_offered, key="b_sched_tz",
+            help="Type to search. Daylight saving is computed on the day the "
+                 "window is read, not assumed.")
         days = st.multiselect(
             "Days", list(range(7)), format_func=lambda d: DAY_NAMES[d],
             key="b_sched_days",
@@ -410,12 +484,18 @@ def _schedule_block() -> Schedule:
         windows: list[Window] = []
         for i in range(nw):
             wc = st.columns([2, 2, 1.6, 1], vertical_alignment="bottom")
-            start = wc[0].text_input(f"From #{i + 1}", key=f"b_sched_s_{i}",
-                                     placeholder="16:30")
-            end = wc[1].text_input(f"To #{i + 1}", key=f"b_sched_e_{i}",
-                                   placeholder="18:00")
-            # A single moment ("alert me at 16:30") is a window one poll wide;
-            # this writes it so nobody has to work that out.
+            # Pickers rather than text boxes: a window is a time of day, and
+            # typing one is how "16.30" and "4:30pm" got as far as validation.
+            # Seeded empty, because a picker left on the current time is a
+            # window nobody chose that looks deliberate.
+            for slot in ("s", "e"):
+                st.session_state.setdefault(f"b_sched_{slot}_{i}", None)
+            start = wc[0].time_input(f"From #{i + 1}", key=f"b_sched_s_{i}",
+                                     step=_MINUTE)
+            end = wc[1].time_input(f"To #{i + 1}", key=f"b_sched_e_{i}",
+                                   step=_MINUTE)
+            # A single moment ("alert me at 16:30") is a window one minute
+            # wide; this writes it so nobody has to work that out.
             if wc[2].button("At a moment", key=f"b_sched_mom_{i}",
                             help="Turn 'From' into a one-minute window at that time"):
                 _moment_window(i)
@@ -425,14 +505,15 @@ def _schedule_block() -> Schedule:
                                        help="Remove window"):
                 _remove_window(i)
                 st.rerun()
-            windows.append(Window(start=start.strip(), end=end.strip()))
+            windows.append(Window(start=_hhmm(start), end=_hhmm(end)))
         if nw < 6 and st.button("Add window", key="b_sched_add",
                                 icon=":material/add:"):
             st.session_state["b_sched_n"] = nw + 1
             st.rerun()
 
+        # The picker only offers IANA ids, so what is stored is always one.
         schedule = Schedule(mode="windows", windows=windows, days=sorted(days),
-                            tz=zone.strip() or "local")
+                            tz=zone or zones.local_iana())
         problems = validate_schedule(schedule)
         for p in problems:
             st.warning(p, icon=":material/error:")
@@ -443,16 +524,20 @@ def _schedule_block() -> Schedule:
 
 
 def _moment_window(i: int) -> None:
-    """Make window ``i`` a one-minute window starting at its 'From' time."""
-    raw = (st.session_state.get(f"b_sched_s_{i}") or "").strip()
-    try:
-        t = parse_hhmm(raw)
-    except ValueError:
-        st.toast(f"'{raw or 'empty'}' isn't a time of day (HH:MM)",
-                 icon=":material/error:")
+    """Make window ``i`` a one-minute window starting at its 'From' time.
+
+    Queued rather than written: the To picker already exists by the time this
+    button can be pressed, and Streamlit will not have an instantiated
+    widget's value assigned — which is what used to replace the whole form
+    with a red traceback.
+    """
+    start = st.session_state.get(f"b_sched_s_{i}")
+    if not isinstance(start, time):
+        st.toast("Set the 'From' time first — 'At a moment' works from it.",
+                 icon=":material/info:")
         return
-    end_minutes = (t.hour * 60 + t.minute + 1) % (24 * 60)
-    st.session_state[f"b_sched_e_{i}"] = f"{end_minutes // 60:02d}:{end_minutes % 60:02d}"
+    minutes = (start.hour * 60 + start.minute + 1) % (24 * 60)
+    _queue_value(f"b_sched_e_{i}", time(minutes // 60, minutes % 60))
 
 
 def _remove_window(i: int) -> None:
@@ -461,7 +546,7 @@ def _remove_window(i: int) -> None:
         for p in ("s", "e"):
             src = st.session_state.get(f"b_sched_{p}_{k + 1}")
             if src is not None:
-                st.session_state[f"b_sched_{p}_{k}"] = src
+                _queue_value(f"b_sched_{p}_{k}", src)
     for p in ("s", "e"):
         st.session_state.pop(f"b_sched_{p}_{n - 1}", None)
     st.session_state["b_sched_n"] = max(1, n - 1)
@@ -485,7 +570,7 @@ def _remove_filter(i: int, j: int) -> None:
         for p in ("fnot", "fcol", "fop", "fval", "ftype"):
             src, dst = f"b_{p}_{i}_{k + 1}", f"b_{p}_{i}_{k}"
             if src in st.session_state:
-                st.session_state[dst] = st.session_state[src]
+                _queue_value(dst, st.session_state[src])
     for p in ("fnot", "fcol", "fop", "fval", "ftype"):
         st.session_state.pop(f"b_{p}_{i}_{nf - 1}", None)
     st.session_state[f"b_nf_{i}"] = max(0, nf - 1)
@@ -494,12 +579,13 @@ def _remove_filter(i: int, j: int) -> None:
 def _copy_step_state(src: int, dst: int) -> None:
     for p in ("srv", "tbl", "mode", "raw", "nf"):
         if f"b_{p}_{src}" in st.session_state:
-            st.session_state[f"b_{p}_{dst}"] = st.session_state[f"b_{p}_{src}"]
+            _queue_value(f"b_{p}_{dst}", st.session_state[f"b_{p}_{src}"])
     nf = int(st.session_state.get(f"b_nf_{src}", 0))
     for j in range(nf):
         for p in ("fnot", "fcol", "fop", "fval", "ftype"):
             if f"b_{p}_{src}_{j}" in st.session_state:
-                st.session_state[f"b_{p}_{dst}_{j}"] = st.session_state[f"b_{p}_{src}_{j}"]
+                _queue_value(f"b_{p}_{dst}_{j}",
+                             st.session_state[f"b_{p}_{src}_{j}"])
     # drop any surplus filter keys the previous occupant of `dst` left behind
     j = nf
     while any(f"b_{p}_{dst}_{j}" in st.session_state for p in ("fnot", "fcol", "fop", "fval", "ftype")):
@@ -770,6 +856,9 @@ def _preview_panel(store, mgr, steps: list[Step], trigger: TriggerCondition) -> 
 
 
 def render(store, mgr) -> None:
+    # First, before a single widget exists: what the last run's buttons asked
+    # to change can only be written now. See _queue_value.
+    _apply_pending()
     st.subheader(":material/build: Alert builder")
     _manage_alerts(store)
     _manage_groups(store)

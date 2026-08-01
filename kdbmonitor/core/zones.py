@@ -184,6 +184,33 @@ def _tzinfo_for(resolved: str):
     return ZoneInfo(resolved)
 
 
+def iana_names() -> list[str]:
+    """Every IANA zone id, sorted — the list a picker offers.
+
+    The other spellings :func:`to_iana` accepts exist because a *file* names
+    its zone the way the machine that wrote it does. Somebody choosing a zone
+    is not in that position: they should be offered the canonical names and
+    nothing else, so that what is stored is unambiguous wherever it is read.
+    """
+    return sorted(available_timezones())
+
+
+def local_iana() -> str:
+    """The machine's own zone as an IANA id, or UTC if it cannot be named.
+
+    :func:`local_zone` answers in whatever spelling the machine uses — a
+    Windows display name, or a bare offset where even that is unavailable. A
+    bare offset is not a zone (it has no rulebook, so it cannot know its own
+    daylight saving), so rather than offer one as if it were, this falls back
+    to UTC and lets the person choose.
+    """
+    try:
+        resolved = to_iana(local_zone())
+    except ValueError:
+        return "UTC"
+    return resolved if resolved in available_timezones() else "UTC"
+
+
 def tzinfo_for(name: str):
     """The tzinfo behind any spelling :func:`to_iana` accepts.
 

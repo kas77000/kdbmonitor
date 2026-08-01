@@ -220,9 +220,9 @@ The email and webhook boxes appear only once you pick those deliveries, and addr
 
 Some checks only mean something at certain times — a 16:30 mark, the last fifteen minutes before a cut-off — and produce false positives for the rest of the day. Turn on **Only run during set hours** and the alert is **not evaluated at all** outside its windows: no query, no trigger, no notification. It shows as **Off-hours** on the Monitor, with the time until it next wakes.
 
-- **Timezone** — your own by default. An IANA id (`Europe/London`), a Windows name (`GMT Standard Time`), an abbreviation (`IST`) or an offset (`UTC+05:30`) all work. Daylight saving is computed on the day, not assumed.
+- **Timezone** — a searchable list of **IANA ids** (`Europe/London`, `Asia/Kolkata`), starting on your own machine's zone. Type to filter. Only IANA ids are offered, so a stored schedule means the same thing wherever it is read; daylight saving is computed on the day, not assumed. (An alert saved before this could hold a Windows name or an offset — it still runs, and opening it in the Builder resolves it to the equivalent IANA id.)
 - **Days** — leave empty for every day, or pick the weekdays it runs.
-- **Windows** — one or more `From`/`To` pairs. `17:45` → `18:00` is the obvious case; **At a moment** turns a `From` time into a one-minute window, which is how you say "alert me at 16:30". An end earlier than the start crosses midnight (`22:00` → `02:00` is one window), and a crossing window belongs to the day it *starts* on.
+- **Windows** — one or more `From`/`To` **time pickers**, stepping by the minute so `17:45` can be said. **At a moment** turns a `From` time into a one-minute window, which is how you say "alert me at 16:30". An end earlier than the start crosses midnight (`22:00` → `02:00` is one window), and a crossing window belongs to the day it *starts* on.
 
 When a window closes, the alert is parked rather than left as it was — so a trigger still standing at 18:00 doesn't count as the "previous" state at tomorrow's open, and a `transition` re-arm fires properly the next day.
 
