@@ -103,8 +103,8 @@ Every step produces a table (a result). Steps run in order. Each step has:
     - **Op** — one of `=  <>  <  <=  >  >=  in  like`.
     - **Value(s)** — the right-hand side. For `in`, comma-separate values (`AAPL,MSFT`). For `like`, use q patterns such as `A*` or `*USD*`.
     - **Type** — how the value is written into q: **symbol** (`` `AAPL ``), **number** (`101.5`), or **string** (`"buy"`). (`like` is always a string pattern.)
-  - **Raw** lets you type qSQL directly, for anything the form can't express. This is also the only mode that can **reuse an earlier step's result** (next section).
-- **Query preview** — under each step you see the q query that will run. In Raw mode, references appear unresolved (they are filled in at run time).
+  - **Raw** lets you type qSQL directly, for anything the form can't express. This is also the only mode that can **reuse an earlier step's result** (next section). The box is a [q editor](#writing-q): line numbers, Tab to indent, and a coloured copy of the query underneath.
+- **Query preview** — under each step you see the q query that will run, syntax-coloured and numbered. In Raw mode, references appear unresolved (they are filled in at run time).
 
 Use **Add step** to chain more steps; each step has a **Remove** control.
 
@@ -124,6 +124,33 @@ Use **Add step** to chain more steps; each step has a **Remove** control.
 - References work **across servers**, so step 1 can read the orders server and step 2 can look those symbols up on the market server.
 
 In Raw mode, use the **Insert reference** dropdown to drop a `{{stepN.col}}` token in, then change `col` to the column you want.
+
+### Writing q
+
+Everywhere q is typed — a Raw builder step, a dashboard's raw dataset — the box
+has **line numbers down the side**, **Tab indents** by two spaces instead of
+jumping to the next control, **Enter keeps the indent** of the line above, and
+a monospace face. Everywhere q is *shown* — the query preview, a dataset's
+resolved query, a preview step — it is **numbered and syntax-coloured**.
+
+The colouring is q's, not SQL's, which is the whole reason it is written here
+rather than borrowed:
+
+| | |
+|---|---|
+| `/ comment` | only at the start of a line or after a space. `sum/` is the *over* adverb and `px%qty` is division — neither greys out the rest of the line |
+| a line that is only `/` | opens a comment block, closed by a line that is only `\` |
+| `` `AAPL ``, `` `:localhost:5000 `` | symbols and handles, coloured as themselves |
+| `"a string"` | including `` ` `` and `/` inside it, which are not a symbol and not a comment |
+| `select … by … from … where` | plus q's built-in verbs; a table or column name deliberately stays body text |
+| `.z.D`, `.Q.dd` | namespaces q reserves for itself. `.mydesk.helper` is just a name |
+| `2026.07.30D09:30:00`, `1b`, `0N`, `0x1f` | read as one literal each |
+| `{{step1.sym}}`, `{{param:venue}}`, `{{conn:PROD}}` | this app's placeholders, not q at all — given the accent colour so they stand out from the query they sit in |
+
+The box itself is an ordinary Streamlit text area holding the real value; the
+line numbers and key handling are added to it. If that script cannot run —
+an old browser, a locked-down frame — you get a plain text box that still
+works, rather than a missing field.
 
 #### Worked example (with the demo servers)
 
@@ -722,6 +749,7 @@ kdbmonitor/
     mock.py                # in-memory mock KDB (the demo servers)
     schema.py              # table/column introspection
     qfmt.py                # q literal formatting
+    qhighlight.py          # reading q well enough to colour it
     chain.py               # build step qSQL, {{step.col}} substitution, run/preview
     conditions.py          # trigger-condition evaluation
     rearm.py               # re-arm decision (transition / cooldown / every_tick)
@@ -744,6 +772,7 @@ kdbmonitor/
     admin.py  builder.py  monitor.py  result.py  reports.py  common.py
     dashboards.py          # gallery, tab strip, live view, PDF export
     dashboard_editor.py    # dataset + layout editors, save-time validation
+    qeditor.py             # the q box (numbers, Tab) and coloured q output
     tables.py              # a dashboard table on screen: formats, times, search
     popup.py               # the modal a fired alert opens, with its rows in it
     engine.py              # the monitoring loop (runs in the app shell, every tab)

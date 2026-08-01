@@ -162,5 +162,11 @@ def test_a_group_by_offers_its_own_output_downstream(db):
 
 
 def test_the_query_that_was_sent_is_shown(db):
+    """Shown as highlighted q now, so it is markdown rather than a code block —
+    the words of the query are still all there, one span at a time."""
     at = _preview(db(_pipeline()))
-    assert any(RAW_Q in el.value for el in at.code)
+    from kdbmonitor.core.qhighlight import tokenize
+
+    printed = " ".join(str(el.value) for el in at.markdown)
+    assert all(token.text in printed
+               for line in tokenize(RAW_Q) for token in line if token.text.strip())

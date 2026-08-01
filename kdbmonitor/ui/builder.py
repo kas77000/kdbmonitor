@@ -17,6 +17,7 @@ from kdbmonitor.core.portability import (
 from kdbmonitor.core.schedule import (
     DAY_NAMES, parse_hhmm, validate as validate_schedule,
 )
+from kdbmonitor.ui import qeditor
 from kdbmonitor.ui.common import (
     form_area,
     STATUS_META, INTERVAL_PRESETS, channels_summary, condition_summary,
@@ -255,16 +256,17 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
                 st.rerun()
         else:
             _raw_ref_helper(i)
-            raw_qsql = st.text_area(
-                "Raw qSQL", key=f"b_raw_{i}", height=90,
-                help="Use {{stepN.col}} to inject distinct values from an earlier step.",
+            raw_qsql = qeditor.q_area(
+                "Raw qSQL", key=f"b_raw_{i}", height=120,
+                help="Use {{stepN.col}} to inject distinct values from an earlier "
+                     "step. Tab indents, and the line numbers are down the side.",
             )
 
         step = Step(server=server, table=table if tables else "", mode=
                     "raw" if mode == "Raw" else "form", filters=filters,
                     raw_qsql=raw_qsql, output_name=f"step{i + 1}")
         st.caption("Query preview")
-        st.code(build_step_qsql(step) or "(empty)", language="sql")
+        qeditor.q_block(build_step_qsql(step))
         return step
 
 
@@ -749,7 +751,7 @@ def _render_preview() -> None:
             title += f" · {s['rows']} row(s)"
         with st.expander(title, expanded=s["error"] is not None):
             if s["qsql"]:
-                st.code(s["qsql"], language="sql")
+                qeditor.q_block(s["qsql"])
             if s["error"]:
                 st.error(s["error"], icon=":material/error:")
             elif s["df"] is not None:

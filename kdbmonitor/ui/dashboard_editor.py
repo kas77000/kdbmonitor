@@ -39,6 +39,7 @@ from kdbmonitor.core.transform import (
     AGG_FUNCS, TRANSFORM_KINDS, Step, check_expression,
 )
 from kdbmonitor.ui import parameters as ui_parameters
+from kdbmonitor.ui import qeditor
 from kdbmonitor.ui import tables
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
@@ -1272,8 +1273,9 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             else:
                 _insert_reference(_ref_tokens(draft, index, store),
                                   f"{key}_q", key)
-                ds.raw_qsql = st.text_area("q", value=ds.raw_qsql or "", height=160,
-                                           help=RAW_HELP, key=f"{key}_q")
+                ds.raw_qsql = qeditor.q_area("q", value=ds.raw_qsql or "",
+                                             height=180, help=RAW_HELP,
+                                             key=f"{key}_q")
                 others = [e for e in sorted(store.list_environments()) if e != ds.env]
                 ds.extra_connections = st.multiselect(
                     "Also connect (for hopen)", others,
@@ -1537,7 +1539,7 @@ def _render_dataset_results(traces) -> None:
         with st.container(border=True):
             st.markdown(f"### {name}")
             with st.expander("Query sent", expanded=not trace.steps):
-                st.code(trace.qsql or "(no query)", language="python")
+                qeditor.q_block(trace.qsql, empty="(no query)")
 
             if trace.error:
                 st.error(trace.error, icon=":material/error:")
