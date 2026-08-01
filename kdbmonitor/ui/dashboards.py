@@ -266,6 +266,45 @@ def force_refresh(dashboard_id: int) -> None:
     st.rerun()
 
 
+def choices_key(dashboard_id) -> str:
+    return f"dash_choices_{dashboard_id}"
+
+
+def remember_choices(dashboard_id, results: dict) -> None:
+    """Keep what each parameter offered, so its control outlives a run.
+
+    The controls are drawn before the datasets run, from what a run reported —
+    and changing a parameter drops the run, which is the whole point of doing
+    it without going back to the server. With nowhere to remember them,
+    choosing an instrument emptied the list it had just been chosen from and
+    the control came back disabled: a dead end, where the only way out of a
+    choice is a choice that can no longer be made.
+    """
+    known = dict(st.session_state.get(choices_key(dashboard_id)) or {})
+    for res in (results or {}).values():
+        for name, options in (getattr(res, "choices", None) or {}).items():
+            if options:                     # a failed run has nothing to teach
+                known[name] = options
+    st.session_state[choices_key(dashboard_id)] = known
+
+
+def _parameter_choices(dashboard: Dashboard, uploads: dict) -> dict:
+    """What each of this dashboard's parameters can offer, right now.
+
+    Straight from the frames in hand where there are any, so a file dashboard
+    fills its pickers the moment the file lands rather than a rerun later, and
+    from what the last run reported otherwise.
+    """
+    from kdbmonitor.core import parameters as core_parameters
+
+    choices = dict(st.session_state.get(choices_key(dashboard.id)) or {})
+    for p in dashboard.parameters:
+        found = core_parameters.choices_for(p, uploads or {})
+        if found:
+            choices[p.name] = found
+    return choices
+
+
 def drop_derived(dashboard_id) -> None:
     """Re-run the transforms, keeping whatever was fetched.
 
@@ -564,21 +603,19 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         _render_period(store, dashboard,
                        st.session_state.get(frames_key(dashboard.id)))
 
-    payload = st.session_state.get(frames_key(dashboard.id))
-    choices: dict = {}
-    if payload:
-        for res in payload["results"].values():
-            choices.update(getattr(res, "choices", None) or {})
-    parameters.render(dashboard, choices,
-                      on_change=lambda: drop_derived(dashboard.id))
-
+    # The file comes first and the controls that narrow it come after, which is
+    # both the order somebody works in and the order the data needs: a picker
+    # over a column cannot offer anything until there is a column to read.
     uploads = _render_uploads(dashboard)
+    parameters.render(dashboard, _parameter_choices(dashboard, uploads),
+                      on_change=lambda: drop_derived(dashboard.id))
 
     @st.fragment(run_every=None if dashboard.source == "file"
                  else (dashboard.refresh_secs or None))
     def _live() -> None:
         data = refresh(store, mgr, dashboard, uploads,
                        chosen=parameters.chosen_values(dashboard))
+        remember_choices(dashboard.id, data["results"])
         render_rows(dashboard, data["results"])
 
     _live()

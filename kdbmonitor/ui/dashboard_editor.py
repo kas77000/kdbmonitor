@@ -35,12 +35,30 @@ from kdbmonitor.core.timectx import (
     PERIOD_LABELS, PERIOD_MODES, PRESET_LABELS, PRESETS, coerce_spec,
     has_date_constraint, resolve,
 )
-from kdbmonitor.core.transform import AGG_FUNCS, Step, check_expression
+from kdbmonitor.core.transform import (
+    AGG_FUNCS, TRANSFORM_KINDS, Step, check_expression,
+)
 from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
+
+
+def option_index(options, value, fallback: int = 0) -> int:
+    """Where ``value`` sits among ``options``, or a sensible place to start.
+
+    Every one of these reads a value out of a stored dashboard, and a stored
+    dashboard can hold something this version of the editor does not offer: a
+    kind added since it was saved, a bundle written by a newer build, a field
+    edited by hand. ``list.index`` answers that by raising, and a raise here
+    does not spoil one control — it takes down the whole editor page, so the
+    dashboard cannot even be opened to correct the thing that is wrong with it.
+    """
+    try:
+        return list(options).index(value)
+    except (ValueError, TypeError):
+        return fallback if 0 <= fallback < len(list(options)) else 0
 
 # One width for every column holding nothing but an icon button. Streamlit draws
 # the icon at a fixed size, so a wider column simply pads around it — and the
@@ -61,7 +79,6 @@ VALUE_TYPE_LABELS = {
     "time": "time (09:30:00)",
     "expression": "q expression (.z.D-1)",
 }
-TRANSFORM_KINDS = ["derive", "filter", "groupby", "sort", "limit", "rename"]
 
 # A dataset's own Period control — same three stored values as ds.time_mode
 # always has, worded so the choice says what it does rather than naming the
@@ -938,7 +955,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
                                       key=f"{key}_dc")
         kinds = ["arithmetic", "suffix_map"]
         p["kind"] = c[1].selectbox("How", kinds,
-                                   index=kinds.index(p.get("kind", "arithmetic")),
+                                   index=option_index(kinds, p.get("kind", "arithmetic")),
                                    key=f"{key}_dk")
         if p["kind"] == "arithmetic":
             p["expr"] = c[2].text_input("Expression", value=p.get("expr", ""),
@@ -989,7 +1006,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
             a["column"] = _pick(c[0], "Column", columns, a["column"],
                                 f"{key}_gc_{i}")
             a["func"] = c[1].selectbox("Func", AGG_FUNCS,
-                                       index=AGG_FUNCS.index(a["func"]),
+                                       index=option_index(AGG_FUNCS, a.get("func")),
                                        key=f"{key}_gf_{i}")
             a["as"] = c[2].text_input("As", value=a["as"], key=f"{key}_ga_{i}")
             if c[3].button("", icon=":material/close:", key=f"{key}_gx_{i}"):
@@ -1275,7 +1292,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 c = st.columns([2, 4.4, 0.6, 0.6, 0.6, 0.6],
                                vertical_alignment="bottom")
                 t.kind = c[0].selectbox("Kind", TRANSFORM_KINDS,
-                                        index=TRANSFORM_KINDS.index(t.kind),
+                                        index=option_index(TRANSFORM_KINDS, t.kind),
                                         key=f"{key}_tk_{i}")
                 if c[2].button("", icon=":material/arrow_upward:",
                                key=f"{key}_tu_{i}", disabled=i == 0):
@@ -1586,7 +1603,8 @@ def _format_picker(container, label: str, current: str, key: str,
     options = list(VALUE_FORMATS) + [CUSTOM_FORMAT]
     current_label = format_label_for(current)
     chosen = container.selectbox(
-        label, options, index=options.index(current_label), key=f"{key}_pick",
+        label, options, index=option_index(options, current_label),
+        key=f"{key}_pick",
         label_visibility="visible" if show_label else "collapsed",
         help=("Pick how the value should read — each option is a sample of what "
               "prints. Date formats apply to date, timestamp and q time "
@@ -1678,7 +1696,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         c = st.columns([2, 1.4, 1.2, 1.2], vertical_alignment="bottom")
         s["column"] = _pick(c[0], "Column", columns, s.get("column", ""), f"{key}_c")
         s["agg"] = c[1].selectbox("Aggregate", AGG_FUNCS,
-                                  index=AGG_FUNCS.index(s.get("agg", "sum")),
+                                  index=option_index(AGG_FUNCS, s.get("agg", "sum")),
                                   key=f"{key}_a")
         s["fmt"] = _format_picker(c[2], "Number format", s.get("fmt", ",.0f"),
                                   f"{key}_f")
@@ -1804,7 +1822,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         s["value"] = _pick(c[2], "Value", columns, s.get("value", ""), f"{key}_v")
         aggs = ["sum", "mean", "count"]
         s["agg"] = c[3].selectbox("Aggregate", aggs,
-                                  index=aggs.index(s.get("agg", "sum")),
+                                  index=option_index(aggs, s.get("agg", "sum")),
                                   key=f"{key}_a")
 
     elif w.type == "pie":
@@ -1890,7 +1908,7 @@ def _render_layout(store, draft: Dashboard) -> None:
                     c = st.columns([1.5, 1.7, 2.0, 0.9, 0.6, 0.6, 0.6, 0.6],
                                    vertical_alignment="bottom")
                     w.type = c[0].selectbox("Type", WIDGET_TYPES,
-                                            index=WIDGET_TYPES.index(w.type),
+                                            index=option_index(WIDGET_TYPES, w.type),
                                             key=f"{key}_t")
                     w.dataset = c[1].selectbox("Dataset", names,
                                                index=names.index(w.dataset)

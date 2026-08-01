@@ -320,6 +320,13 @@ _KINDS: dict[str, Callable[[pd.DataFrame, dict], pd.DataFrame]] = {
     "timezone": _timezone,
 }
 
+# What a transform may be, for anything that has to offer the choice. Taken
+# from the catalogue rather than written out again: the editor kept its own
+# copy, a transform was added here and not there, and the editor then met a
+# stored dashboard using a kind its list had never heard of and took the whole
+# page down rather than the one control.
+TRANSFORM_KINDS = tuple(_KINDS)
+
 
 def apply_transforms(df: pd.DataFrame, transforms) -> pd.DataFrame:
     """Apply transforms in order, returning a new frame. Never mutates ``df``."""
