@@ -18,27 +18,119 @@ import re
 import pandas as pd
 import streamlit as st
 
+from kdbmonitor.core.plotmodel import format_time_of_day
+
 # ",.0f" and friends: an optional thousands comma, then optional decimals.
 _NUMERIC = re.compile(r"^(,)?\.?(\d+)?f$")
+
+# Streamlit prints a column of durations in its own words — "15 hours" for
+# 15:00:00 — because a timedelta is a length of time and it has no way to know
+# this one is a clock reading. A q `time`, `minute`, `second` or `timespan`
+# column arrives from pykx as exactly that, so every time-of-day column on
+# every dashboard read as a duration until it was anchored to a date here.
+_ANCHOR = pd.Timestamp("1970-01-01")
+_DAY = pd.Timedelta(days=1)
+_ZERO = pd.Timedelta(0)
+
+# What a clock column prints when the widget names no format of its own.
+_DEFAULT_TIME_FORMAT = "HH:mm:ss"
+
+# strftime -> the momentJS tokens Streamlit's column config speaks. Only the
+# directives that mean something in both are here; anything else leaves the
+# column to Streamlit's default rather than printing a half-translated pattern.
+_MOMENT_TOKENS: dict[str, str] = {
+    "Y": "YYYY", "y": "YY", "m": "MM", "d": "DD", "H": "HH", "I": "hh",
+    "M": "mm", "S": "ss", "f": "SSS", "p": "A", "b": "MMM", "B": "MMMM",
+    "a": "ddd", "A": "dddd", "j": "DDDD", "%": "[%]",
+}
 
 
 def search_key(widget_key: str) -> str:
     return f"tbl_q_{widget_key}"
 
 
-def column_config(headers: list[str], formats: list[str],
-                  frame: pd.DataFrame) -> dict:
-    """How Streamlit should print each column, from the format it was given.
+def moment_format(spec: str) -> str:
+    """A strftime pattern as a momentJS one, or '' if it can't be expressed.
+
+    ``'%Y-%m-%d %H:%M'`` -> ``'YYYY-MM-DD HH:mm'``. Literal letters are wrapped
+    in brackets, moment's own escape, because an unescaped 'h' in "9h30" is a
+    twelve-hour clock to moment and would print the hour twice.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(spec or ""):
+        char = spec[i]
+        if char == "%" and i + 1 < len(spec):
+            token = _MOMENT_TOKENS.get(spec[i + 1])
+            if token is None:
+                return ""
+            out.append(token)
+            i += 2
+            continue
+        out.append(f"[{char}]" if char.isalpha() else char)
+        i += 1
+    return "".join(out)
+
+
+def _as_clock(column: pd.Series):
+    """A duration column as a datetime holding the same clock time, or None.
+
+    None where a clock can't hold it: a negative duration, or one past 24
+    hours, would come out as a wrapped time of day — 25:00:00 shown as
+    01:00:00 is not a formatting nicety, it is the wrong answer.
+    """
+    finite = column.dropna()
+    if not finite.empty and ((finite < _ZERO).any() or (finite >= _DAY).any()):
+        return None
+    return _ANCHOR + column
+
+
+def prepare(headers: list[str], formats: list[str], frame: pd.DataFrame
+            ) -> tuple[pd.DataFrame, dict]:
+    """The frame Streamlit should draw, and the config to draw it with.
 
     Only the specs with a real counterpart are translated. A column whose
     format cannot be expressed is left alone rather than approximated, because
     a number shown plainly is honest and one shown in the wrong units is not.
+
+    The frame comes back changed in one case only — a duration column becomes
+    the clock time it stands for — because that column has no honest default
+    to fall back to.
     """
     config: dict = {}
+    out = frame
     for header, spec in zip(headers, list(formats) + [""] * len(headers)):
-        if not spec or header not in frame.columns:
+        if header not in frame.columns:
             continue
-        if not pd.api.types.is_numeric_dtype(frame[header]):
+        column = frame[header]
+
+        if pd.api.types.is_timedelta64_dtype(column):
+            # Handled with or without a format: the default is wrong here, so
+            # there is nothing to leave the column to.
+            clock = _as_clock(column)
+            if clock is not None:
+                if out is frame:
+                    out = frame.copy()
+                out[header] = clock
+                config[header] = st.column_config.DatetimeColumn(
+                    format=moment_format(spec) or _DEFAULT_TIME_FORMAT)
+            else:
+                # Longer than a day, so it is a duration after all. Printed as
+                # text — which sorts as text; the values it covers are the ones
+                # a clock column would have had to lie about anyway.
+                if out is frame:
+                    out = frame.copy()
+                out[header] = column.map(
+                    lambda v: "" if pd.isna(v) else format_time_of_day(v))
+            continue
+
+        if pd.api.types.is_datetime64_any_dtype(column):
+            moment = moment_format(spec) if spec else ""
+            if moment:
+                config[header] = st.column_config.DatetimeColumn(format=moment)
+            continue
+
+        if not spec or not pd.api.types.is_numeric_dtype(column):
             continue
         if spec.endswith("%"):
             config[header] = st.column_config.NumberColumn(format="percent")
@@ -52,7 +144,13 @@ def column_config(headers: list[str], formats: list[str],
         else:
             config[header] = st.column_config.NumberColumn(
                 format=f"%.{decimals or 0}f")
-    return config
+    return out, config
+
+
+def column_config(headers: list[str], formats: list[str],
+                  frame: pd.DataFrame) -> dict:
+    """Just the config half of :func:`prepare`."""
+    return prepare(headers, formats, frame)[1]
 
 
 def matching(frame: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -89,6 +187,10 @@ def render(pm, height_px: int, key: str) -> None:
             use_container_width=True, hide_index=True, height=height_px)
         return
 
+    # Prepared before the search so a reader hunting for "14:30" is matched
+    # against the value as it prints, not against the duration underneath it.
+    frame, config = prepare(list(pm.columns), pm.column_formats, frame)
+
     # Worth a box once there is enough to hunt through. Below that the search
     # would cost more room on the page than the scrolling it saves.
     if len(frame) > 8:
@@ -102,6 +204,4 @@ def render(pm, height_px: int, key: str) -> None:
         shown = frame
 
     st.dataframe(shown, use_container_width=True, hide_index=True,
-                 height=height_px,
-                 column_config=column_config(list(pm.columns),
-                                             pm.column_formats, shown))
+                 height=height_px, column_config=config)

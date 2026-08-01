@@ -39,6 +39,7 @@ from kdbmonitor.core.transform import (
     AGG_FUNCS, TRANSFORM_KINDS, Step, check_expression,
 )
 from kdbmonitor.ui import parameters as ui_parameters
+from kdbmonitor.ui import tables
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -1487,7 +1488,11 @@ def _render_step(step: Step) -> None:
         return
     st.caption(_step_caption(step))
     if step.rows:
-        st.dataframe(step.df.head(PREVIEW_ROWS), use_container_width=True,
+        # Through the table preparer, so a q time column previews as 14:30:00
+        # rather than as Streamlit's reading of a bare duration, "15 hours".
+        head = step.df.head(PREVIEW_ROWS)
+        head, config = tables.prepare(list(head.columns), [], head)
+        st.dataframe(head, use_container_width=True, column_config=config,
                      height=min(240, 60 + 35 * min(step.rows, 5)))
     else:
         st.caption(":orange[No rows at this step.]")
