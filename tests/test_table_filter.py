@@ -4,12 +4,15 @@ The search box beside these answers a different question — see
 test_table_search.py. These are the spreadsheet ones: a named column, a
 condition on it, and several of them at once.
 """
+from datetime import date
+
 import pandas as pd
 import pytest
 
 from kdbmonitor.core.tablefilter import (
-    ColumnFilter, MAX_PICKABLE, active_count, apply, bounds_of, kind_of,
-    options_for, summary)
+    ColumnFilter, MAX_PICKABLE, active_count, apply, blank, bounds_of,
+    control_kind, filters_from, is_set, kind_of, options_for, options_with,
+    summary)
 
 
 @pytest.fixture
@@ -292,3 +295,89 @@ def test_filtering_leaves_the_table_itself_alone():
         "Time": pd.to_datetime(["1970-01-01 09:15", "1970-01-01 09:30"])})
     filterable(frame, [""])
     assert pd.api.types.is_datetime64_any_dtype(frame["Time"])
+
+
+# --- what a filter has to survive ------------------------------------------
+#
+# The frame under a table is replaced every time a dashboard refreshes. These
+# are the pieces that let a condition outlive the snapshot it was set against.
+
+def test_a_ticked_value_stays_on_the_list_when_the_data_loses_it():
+    """No BUYs on the book this second does not mean the reader stopped asking
+    for BUYs — and a list that no longer offers it is a list that unticks it."""
+    column = pd.Series(["SELL", "SELL", "SELL"])
+    assert options_with(column, ["BUY"]) == ["SELL", "BUY"]
+
+
+def test_a_value_the_data_still_has_is_not_offered_twice():
+    column = pd.Series(["BUY", "SELL", "BUY"])
+    assert options_with(column, ["BUY"]) == ["BUY", "SELL"]
+
+
+def test_nothing_ticked_leaves_the_list_as_the_column_presents_it():
+    column = pd.Series(["BUY", "SELL"])
+    assert options_with(column, []) == options_for(column)
+
+
+def test_a_column_narrowed_by_a_tick_list_keeps_its_tick_list():
+    """Even once a refresh brings back more distinct values than a list is
+    meant to show: the control that set a filter must be able to clear it."""
+    column = pd.Series([f"id{i}" for i in range(MAX_PICKABLE + 5)])
+    assert kind_of(column) == "contains"
+    assert control_kind(column, {**blank(), "in": ["id1"]}) == "pick"
+
+
+def test_a_column_narrowed_by_a_typed_box_keeps_the_box():
+    column = pd.Series(["BUY", "SELL"])
+    assert kind_of(column) == "pick"
+    assert control_kind(column, {**blank(), "txt": "BU"}) == "contains"
+
+
+def test_an_unfiltered_column_gets_whatever_its_values_ask_for():
+    column = pd.Series(["BUY", "SELL"])
+    assert control_kind(column, blank()) == "pick"
+    assert control_kind(column, None) == "pick"
+
+
+def test_a_number_column_is_a_range_whatever_is_remembered():
+    """The pick/box pair swap places as a column's spread changes. A range does
+    not, so nothing about it is worth holding still."""
+    column = pd.Series([1, 2, 3])
+    assert control_kind(column, {**blank(), "in": [1]}) == "range"
+
+
+def test_what_was_typed_becomes_what_it_meant():
+    filters = filters_from({"side": {"in": ["BUY"], "txt": "", "lo": None,
+                                     "hi": None},
+                            "qty": {"in": [], "txt": "", "lo": 50, "hi": 100}})
+    assert filters["side"].values == ["BUY"] and filters["side"].active
+    assert filters["qty"].minimum == 50 and filters["qty"].maximum == 100
+
+
+def test_a_day_named_as_a_ceiling_means_all_of_it():
+    """"Up to the 3rd" that hides the 3rd is a trap."""
+    filters = filters_from({"when": {"in": [], "txt": "",
+                                     "lo": date(2026, 8, 1),
+                                     "hi": date(2026, 8, 3)}})
+    assert filters["when"].minimum == pd.Timestamp("2026-08-01 00:00:00")
+    assert filters["when"].maximum == pd.Timestamp("2026-08-03 23:59:59.999999999")
+
+
+def test_a_day_is_remembered_as_a_day_so_it_can_go_back_in_the_box():
+    """The store holds what was typed, not what it was read as — a ceiling
+    already turned into the last instant of a day cannot be put back into a
+    date picker."""
+    raw = {"when": {"in": [], "txt": "", "lo": None, "hi": date(2026, 8, 3)}}
+    filters_from(raw)
+    assert raw["when"]["hi"] == date(2026, 8, 3)
+
+
+def test_empty_controls_mean_nothing_is_filtered():
+    assert not is_set(blank()) and not is_set(None)
+    assert not active_count(filters_from({"side": blank()}))
+
+
+def test_a_single_typed_thing_counts_as_filtered():
+    assert is_set({**blank(), "txt": " BU "})
+    assert is_set({**blank(), "lo": 0})
+    assert not is_set({**blank(), "txt": "   "})

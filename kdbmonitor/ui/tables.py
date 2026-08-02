@@ -13,8 +13,8 @@ formatted one that cannot be sorted.
 """
 from __future__ import annotations
 
+import hashlib
 import re
-from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -33,7 +33,6 @@ _NUMERIC = re.compile(r"^(,)?\.?(\d+)?f$")
 _ANCHOR = pd.Timestamp("1970-01-01")
 _DAY = pd.Timedelta(days=1)
 _ZERO = pd.Timedelta(0)
-_ONE_TICK = pd.Timedelta(nanoseconds=1)
 
 # What a clock column prints when the widget names no format of its own.
 _DEFAULT_TIME_FORMAT = "HH:mm:ss"
@@ -52,10 +51,52 @@ def search_key(widget_key: str) -> str:
     return f"tbl_q_{widget_key}"
 
 
-def filter_key(widget_key: str, index: int, part: str) -> str:
-    """A filter control's key, named by the column's position rather than its
-    name — a header can hold spaces, dots and anything else a query returned."""
-    return f"tbl_f{part}{index}_{widget_key}"
+def state_key(widget_key: str) -> str:
+    """Where this table's filters are kept between runs.
+
+    Streamlit's own widget state cannot be that place. It owns it: a widget
+    that is not drawn on a run has its value deleted, and a tick-list quietly
+    drops a tick for a value its current options no longer offer. Both happen
+    on an ordinary refresh — a snapshot with too few rows to be worth filtering
+    takes the controls off the page for one run and every filter with them, and
+    a snapshot without a BUY in it unticks BUY. So what somebody typed is kept
+    here, where nothing but this table's own Clear button removes it, and the
+    controls are drawn from it rather than being it.
+    """
+    return f"tbl_state_{widget_key}"
+
+
+def filter_key(widget_key: str, column: str, part: str) -> str:
+    """A filter control's key, named for its column rather than its position.
+
+    Hashed because a header can hold spaces, dots and anything else a query
+    returned. Named for the column and not, as it once was, for where the
+    column sits: a refresh is free to bring its columns back in another order
+    or to bring back a column that a parameter had taken away, and a positional
+    key would hand one column's condition to whichever column landed in its
+    place.
+    """
+    token = hashlib.md5(str(column).encode("utf-8")).hexdigest()[:10]
+    return f"tbl_f{part}_{token}_{widget_key}"
+
+
+def _stored(widget_key: str) -> dict:
+    """This table's remembered controls: what was typed, not what it meant."""
+    return st.session_state.setdefault(
+        state_key(widget_key), {"vals": {}, "query": ""})
+
+
+def forget(key_prefix: str) -> None:
+    """Drop every table filter belonging to widgets under ``key_prefix``.
+
+    For a closed dashboard tab. The remembered filters outlive the widgets on
+    purpose, which means that unlike Streamlit's own state they do not go when
+    the table does — so closing a tab has to say so.
+    """
+    dead = [k for k in list(st.session_state)
+            if k.startswith("tbl_") and f"_{key_prefix}_" in k]
+    for k in dead:
+        st.session_state.pop(k, None)
 
 
 def moment_format(spec: str) -> str:
@@ -211,70 +252,91 @@ def _strftime_for(spec: str) -> str:
     return spec if spec and "%" in spec else "%H:%M:%S"
 
 
-def _range_control(column: pd.Series, index: int, key: str) -> None:
-    """Two boxes, a floor and a ceiling — Excel's "greater than / less than"."""
+def _range_control(column: pd.Series, name: str, key: str, raw: dict) -> None:
+    """Two boxes, a floor and a ceiling — Excel's "greater than / less than".
+
+    ``raw`` seeds them. Streamlit ignores a seed for a control it is already
+    holding a value for, which is exactly right: it matters only on the run
+    after a refresh took the control off the page, where it is what puts the
+    filter back.
+    """
     low, high = tf.bounds_of(column)
     dates = pd.api.types.is_datetime64_any_dtype(column)
     left, right = st.columns(2)
     if dates:
         with left:
-            st.date_input("From", value=None, key=filter_key(key, index, "lo"))
+            st.date_input("From", value=raw.get("lo"),
+                          key=filter_key(key, name, "lo"))
         with right:
-            st.date_input("To", value=None, key=filter_key(key, index, "hi"))
+            st.date_input("To", value=raw.get("hi"),
+                          key=filter_key(key, name, "hi"))
         return
     step = 1 if pd.api.types.is_integer_dtype(column) else None
     with left:
-        st.number_input("At least", value=None, step=step,
-                        placeholder=f"{low}", key=filter_key(key, index, "lo"),
+        st.number_input("At least", value=raw.get("lo"), step=step,
+                        placeholder=f"{low}", key=filter_key(key, name, "lo"),
                         label_visibility="collapsed")
     with right:
-        st.number_input("At most", value=None, step=step,
-                        placeholder=f"{high}", key=filter_key(key, index, "hi"),
+        st.number_input("At most", value=raw.get("hi"), step=step,
+                        placeholder=f"{high}", key=filter_key(key, name, "hi"),
                         label_visibility="collapsed")
 
 
-def _controls(frame: pd.DataFrame, key: str) -> None:
-    """One control per column, chosen by what the column holds."""
-    for index, name in enumerate(frame.columns):
+def _controls(frame: pd.DataFrame, key: str, stored: dict) -> None:
+    """One control per column, chosen by what the column holds and seeded by
+    what was last typed into it."""
+    for name in frame.columns:
         column = frame[name]
-        kind = tf.kind_of(column)
+        raw = stored["vals"].get(name) or tf.blank()
+        kind = tf.control_kind(column, raw)
         st.caption(f"**{name}**")
         if kind == "pick":
             st.multiselect(
-                name, tf.options_for(column), key=filter_key(key, index, "in"),
+                name, tf.options_with(column, raw.get("in")),
+                default=list(raw.get("in") or []),
+                key=filter_key(key, name, "in"),
                 placeholder="all", label_visibility="collapsed")
         elif kind == "contains":
             st.text_input(
-                name, key=filter_key(key, index, "txt"),
+                name, value=raw.get("txt") or "",
+                key=filter_key(key, name, "txt"),
                 placeholder="contains…", label_visibility="collapsed")
         else:
-            _range_control(column, index, key)
+            _range_control(column, name, key, raw)
 
 
-def _read_filters(frame: pd.DataFrame, key: str) -> dict:
-    """What the controls currently say, as conditions the core can apply."""
-    out: dict[str, tf.ColumnFilter] = {}
-    for index, name in enumerate(frame.columns):
-        low = st.session_state.get(filter_key(key, index, "lo"))
-        high = st.session_state.get(filter_key(key, index, "hi"))
-        if isinstance(low, date):
-            low = pd.Timestamp(low)
-        if isinstance(high, date):
-            # A day named as a ceiling means all of it, not midnight at its
-            # start — "up to the 3rd" that hides the 3rd is a trap.
-            high = pd.Timestamp(high) + pd.Timedelta(days=1) - _ONE_TICK
-        out[name] = tf.ColumnFilter(
-            values=list(st.session_state.get(filter_key(key, index, "in")) or []),
-            contains=st.session_state.get(filter_key(key, index, "txt")) or "",
-            minimum=low, maximum=high)
-    return out
+def _remember(frame: pd.DataFrame, key: str, stored: dict) -> None:
+    """Copy what the controls now say back into the durable store.
+
+    Called before they are drawn again, not after: a widget's new value arrives
+    with the rerun it caused, so reading it first is what lets the count on the
+    Filters button be this run's rather than the one before it.
+
+    A part is copied only where Streamlit still has that control, so a column
+    whose control changed shape — a tick-list that became a contains box, a
+    number column that came back as text — keeps the condition somebody set
+    rather than having it wiped by the absence of the box that set it. The way
+    out of one of those is Clear all, which empties both.
+    """
+    if search_key(key) in st.session_state:
+        stored["query"] = st.session_state[search_key(key)] or ""
+    for name in frame.columns:
+        raw = dict(stored["vals"].get(name) or tf.blank())
+        for part in tf.PARTS:
+            widget = filter_key(key, name, part)
+            if widget not in st.session_state:
+                continue
+            value = st.session_state[widget]
+            raw[part] = list(value or []) if part == "in" else value
+        stored["vals"][name] = raw
 
 
 def _clear(frame: pd.DataFrame, key: str) -> None:
-    for index in range(len(frame.columns)):
-        for part in ("in", "txt", "lo", "hi"):
-            st.session_state.pop(filter_key(key, index, part), None)
+    for name in frame.columns:
+        for part in tf.PARTS:
+            st.session_state.pop(filter_key(key, name, part), None)
     st.session_state.pop(search_key(key), None)
+    st.session_state.pop(state_key(key), None)
 
 
 def render(pm, height_px: int, key: str) -> None:
@@ -298,39 +360,60 @@ def render(pm, height_px: int, key: str) -> None:
     # underneath it, and the tick-lists offer the same words.
     frame, config = prepare(list(pm.columns), pm.column_formats, frame)
 
+    stored = _stored(key)
+
     # Worth the room once there is enough to hunt through. Below that the
-    # controls would cost more of the page than the scrolling they save.
-    if len(frame) <= 8:
+    # controls would cost more of the page than the scrolling they save —
+    # unless something is already narrowed, and then they have to stay whatever
+    # the row count is. A refresh that briefly returns four rows must not take
+    # away the only control that can undo the filter which is hiding the rest.
+    narrowed = tf.active_count(tf.filters_from(stored["vals"])) or stored["query"]
+    if len(frame) <= 8 and not narrowed:
         st.dataframe(frame, use_container_width=True, hide_index=True,
                      height=height_px, column_config=config)
         return
 
     against = filterable(frame, list(pm.column_formats or []))
 
+    _remember(against, key, stored)
+    filters = tf.filters_from(stored["vals"])
+    live = tf.active_count(filters)
+
     box, opener = st.columns([4, 1], vertical_alignment="bottom")
     with opener:
-        # Rendered first so the count on the button is this run's, not the
-        # one before it.
-        with st.popover("Filters", use_container_width=True):
-            _controls(against, key)
-            filters = _read_filters(against, key)
-            if tf.active_count(filters):
+        # The count rides on the button, so a table that is being narrowed says
+        # so before anybody opens anything. A popover is a closed door, and a
+        # closed door cannot report what is behind it.
+        with st.popover(f"Filters ({live})" if live else "Filters",
+                        use_container_width=True):
+            _controls(against, key, stored)
+            if live:
                 st.button("Clear all", key=f"tbl_clear_{key}",
                           use_container_width=True,
                           on_click=_clear, args=(against, key))
     with box:
         query = st.text_input(
-            "Search", key=search_key(key),
+            "Search", value=stored["query"], key=search_key(key),
             placeholder="search every column…", label_visibility="collapsed")
 
     kept = tf.apply(against, filters)
     shown = matching(frame.loc[kept.index], query)
 
-    live = tf.active_count(filters)
     if live or (query and len(shown) != len(frame)):
         told = tf.summary(against, filters)
-        st.caption(f":gray[{len(shown):,} of {len(frame):,} rows"
-                   + (f" · {told}" if told else "") + "]")
+        # The undo sits beside the line that reports the narrowing, because
+        # that line is where somebody notices rows are missing. Reaching it
+        # through the popover meant opening the filters to stop filtering, and
+        # then clearing them one column at a time if you did not spot the
+        # button at the bottom.
+        note, undo = st.columns([5, 1], vertical_alignment="center")
+        note.caption(f":gray[{len(shown):,} of {len(frame):,} rows"
+                     + (f" · {told}" if told else "") + "]")
+        undo.button("Clear all", key=f"tbl_clearall_{key}", type="tertiary",
+                    icon=":material/filter_alt_off:", use_container_width=True,
+                    help="Put every row back — clears every column filter and "
+                         "the search box",
+                    on_click=_clear, args=(against, key))
 
     st.dataframe(shown, use_container_width=True, hide_index=True,
                  height=height_px, column_config=config)

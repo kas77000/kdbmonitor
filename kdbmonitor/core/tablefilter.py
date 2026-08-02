@@ -13,6 +13,7 @@ which rows survive is decided here, where it can be tested.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any, Optional
 
 import pandas as pd
@@ -22,6 +23,16 @@ import pandas as pd
 # instead. A spreadsheet does the same thing from the other direction: its list
 # grows a search box once it is too long to scan.
 MAX_PICKABLE = 200
+
+# The four things a column's controls can hold, before they mean anything. A
+# filter is remembered in these terms — as typed, not as interpreted — because
+# they are what has to be put back into the controls on the far side of a
+# refresh, and a ceiling that has already been read as "the whole of the 3rd"
+# cannot be put back into a date box.
+PARTS = ("in", "txt", "lo", "hi")
+
+_ONE_DAY = pd.Timedelta(days=1)
+_ONE_TICK = pd.Timedelta(nanoseconds=1)
 
 
 @dataclass
@@ -56,6 +67,98 @@ def kind_of(column: pd.Series) -> str:
 def options_for(column: pd.Series) -> list:
     """What a tick-list should offer, in the order the column presents them."""
     return list(dict.fromkeys(column.dropna().tolist()))
+
+
+def options_with(column: pd.Series, ticked) -> list:
+    """The tick-list, plus anything already ticked that this data does not hold.
+
+    A refresh brings a new snapshot, and a value somebody is filtering on may
+    not be in it — no BUYs on the book this second. Offering only what the
+    snapshot holds would drop that tick, and the reader would be looking at an
+    unfiltered table without being told it had been unfiltered. So a ticked
+    value stays on the list whether or not the data still has it: the honest
+    answer to "show me the BUYs" when there are none is an empty table, not
+    every row on the book.
+    """
+    options = options_for(column)
+    known = {_hashable(v) for v in options}
+    return options + [v for v in (ticked or []) if _hashable(v) not in known]
+
+
+def _hashable(value: Any) -> Any:
+    """A value that can go in a set, for values that cannot."""
+    try:
+        hash(value)
+    except TypeError:
+        return repr(value)
+    return value
+
+
+def blank() -> dict:
+    """A column with nothing typed into any of its controls."""
+    return {"in": [], "txt": "", "lo": None, "hi": None}
+
+
+def is_set(raw: dict | None) -> bool:
+    """Whether a column's controls hold anything at all."""
+    raw = raw or {}
+    return bool(raw.get("in") or (raw.get("txt") or "").strip()
+                or raw.get("lo") is not None or raw.get("hi") is not None)
+
+
+def control_kind(column: pd.Series, raw: dict | None = None) -> str:
+    """Which control this column gets, holding still while it holds a filter.
+
+    Normally whatever :func:`kind_of` reads off the values. But a column
+    narrowed by a tick-list keeps its tick-list even once the data has more
+    distinct values than one is meant to show, and one narrowed by a contains
+    box keeps the box: the control that set a filter must be the control that
+    can clear it, or a refresh leaves somebody with a narrowed table and no way
+    to widen it again.
+    """
+    kind = kind_of(column)
+    if kind not in ("pick", "contains") or not raw:
+        return kind
+    if raw.get("in"):
+        return "pick"
+    if (raw.get("txt") or "").strip():
+        return "contains"
+    return kind
+
+
+def _bound(value: Any, ceiling: bool = False) -> Any:
+    """A control's floor or ceiling as something a column can be compared to.
+
+    A day named as a ceiling means all of it, not midnight at its start — "up
+    to the 3rd" that hides the 3rd is a trap.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return pd.Timestamp(value)
+    if isinstance(value, date):
+        stamp = pd.Timestamp(value)
+        return stamp + _ONE_DAY - _ONE_TICK if ceiling else stamp
+    return value
+
+
+def filters_from(raw: dict[str, dict]) -> dict[str, ColumnFilter]:
+    """What the remembered control values mean, column by column.
+
+    The conversion lives here rather than beside the controls so that what is
+    remembered stays the plain thing somebody typed: a date box holds a day,
+    and only on the way to a comparison does a day become the last instant of
+    it.
+    """
+    out: dict[str, ColumnFilter] = {}
+    for name, held in (raw or {}).items():
+        held = held or {}
+        out[name] = ColumnFilter(
+            values=list(held.get("in") or []),
+            contains=held.get("txt") or "",
+            minimum=_bound(held.get("lo")),
+            maximum=_bound(held.get("hi"), ceiling=True))
+    return out
 
 
 def bounds_of(column: pd.Series) -> tuple[Any, Any]:

@@ -163,6 +163,17 @@ def render_widget(pm, height_px: int, key: str, waiting: bool = False) -> None:
     st.plotly_chart(figure(pm), use_container_width=True, key=key)
 
 
+def view_prefix(dashboard_id) -> str:
+    """The widget-key namespace for one dashboard's live view.
+
+    Per dashboard, not one shared "v", because a table's filters now outlive
+    the table — see :func:`kdbmonitor.ui.tables.state_key`. Two dashboards with
+    a table in the same slot would otherwise share the same key and, with it,
+    each other's filters.
+    """
+    return f"v{dashboard_id}"
+
+
 def render_rows(dashboard: Dashboard, results: dict, key_prefix: str = "v") -> None:
     if not dashboard.rows:
         st.info("This dashboard has no widgets yet — open Edit to add some.",
@@ -400,15 +411,18 @@ def _forget(dashboard_id: int) -> None:
     """Drop everything a closed tab was holding.
 
     Closing a tab means closing it: the frames, the built PDF, the rendered
-    pages, the parameter choices and any uploaded file all go. Keeping them
-    would quietly hold a whole dashboard's data — and its user's spreadsheet —
-    for a tab nobody has open.
+    pages, the parameter choices, any uploaded file and the filters left on its
+    tables all go. Keeping them would quietly hold a whole dashboard's data —
+    and its user's spreadsheet — for a tab nobody has open.
     """
+    from kdbmonitor.ui import tables
+
     for key in (frames_key(dashboard_id), choices_key(dashboard_id),
                 uploads_key(dashboard_id), f"pdf_{dashboard_id}",
                 f"pdfpages_{dashboard_id}", f"pdfpreview_on_{dashboard_id}",
                 f"pv_page_{dashboard_id}"):
         st.session_state.pop(key, None)
+    tables.forget(view_prefix(dashboard_id))
 
 
 def _open(dashboard_id: int, store=None) -> None:
@@ -943,7 +957,7 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         data = refresh(store, mgr, dashboard, uploads,
                        chosen=parameters.chosen_values(dashboard))
         remember_choices(dashboard.id, data["results"])
-        render_rows(dashboard, data["results"])
+        render_rows(dashboard, data["results"], view_prefix(dashboard.id))
 
     _live()
     _render_export(dashboard)
