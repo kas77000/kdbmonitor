@@ -99,9 +99,18 @@ class Dataset:
     # they describe a server, and there is no server. transforms and max_rows
     # are NOT ignored — they apply to an uploaded frame identically, which is
     # why a file dataset needs no shaping vocabulary of its own.
-    source: str = "kdb"          # kdb | file
+    source: str = "kdb"          # kdb | file | derived
     shape: Optional[FileShape] = None       # file only
     file_label: str = ""         # the prompt on the upload box
+    # --- derived datasets -----------------------------------------------
+    # A derived dataset has no source of its own: it starts from another
+    # dataset's finished frame and puts it through its own transforms, which is
+    # how 'orders' becomes 'orders_by_basket' without the group-by having to
+    # live inside 'orders' and change what every widget on it shows. Every
+    # field above describes where rows come from and none of them applies; the
+    # answer is `base`. Everything downstream — transforms, max_rows, widgets,
+    # parameters — treats it as an ordinary dataset, which is the point.
+    base: str = ""               # derived only: the dataset it starts from
 
 
 @dataclass
@@ -330,6 +339,7 @@ def _dataset_from_dict(d: dict) -> Dataset:
         source=d.get("source", "kdb"),
         shape=_shape_from_dict(d.get("shape")),
         file_label=d.get("file_label", ""),
+        base=d.get("base", ""),
     )
 
 

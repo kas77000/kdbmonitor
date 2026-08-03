@@ -81,6 +81,21 @@ _BLOCK_CSS = f"""
 """
 
 
+def js_literal(value) -> str:
+    r"""``value`` as a JavaScript literal safe to sit inside a ``<script>``.
+
+    JSON is a subset of JavaScript, so ``json.dumps`` is nearly the whole
+    answer — except that it leaves ``/`` alone, and the HTML parser ends a
+    script at the first ``</script`` it sees whether or not that text is inside
+    a string. A query holding one, in a comment or a string literal, would close
+    the script early and spill its own tail into the page as markup.
+
+    ``<\/`` is the same character to JavaScript and not a closing tag to the
+    HTML parser, which is what makes the two readings agree.
+    """
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def to_html(text: str, *, empty: str = "(empty)") -> str:
     """``text`` as line-numbered, coloured q."""
     lines = tokenize(text or "")
@@ -106,9 +121,116 @@ def to_html(text: str, *, empty: str = "(empty)") -> str:
     return f'{_BLOCK_CSS}<div class="kdbq">{"".join(rows)}</div>'
 
 
-def q_block(text: str, *, empty: str = "(empty)") -> None:
-    """Show a query, coloured and numbered. Replaces st.code for q."""
+# The copy button. A component of its own rather than an ``st.button``, because
+# Streamlit has no clipboard and could not have one: writing to it needs the
+# browser's own record of a user gesture, and a Streamlit button spends that
+# gesture on a round trip to Python. By the time the script reruns, the click
+# that would have been allowed to write is over.
+#
+# Two ways to write, in order. ``navigator.clipboard`` is the real API and needs
+# a secure context (https, or localhost) — which the app usually is, and
+# sometimes is not, since these dashboards get served over plain http on a desk
+# network. ``execCommand('copy')`` is the old way: deprecated, no permissions,
+# and works in every browser this is likely to meet. Neither is assumed; the
+# button says which one happened, and says so plainly when neither did, because
+# "nothing appeared to happen" is the one outcome worth ruling out for a control
+# whose whole result is invisible.
+_COPY_HTML = """
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  button {
+    font-family: var(--font, ui-sans-serif, system-ui, sans-serif);
+    font-size: 13px; line-height: 1;
+    color: #dfe7ef; background: #0e141b;
+    border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer; width: 100%;
+  }
+  button:hover { border-color: rgba(128, 128, 128, 0.7); }
+  button:disabled { cursor: default; color: #8b98a5; }
+</style>
+<button id="c">__LABEL_TEXT__</button>
+<script>
+(function(){
+  var TEXT = __TEXT__, LABEL = __LABEL__;
+  var btn = document.getElementById('c');
+
+  function say(message){
+    btn.textContent = message;
+    btn.disabled = true;
+    setTimeout(function(){ btn.textContent = LABEL; btn.disabled = false; }, 1600);
+  }
+
+  function legacy(){
+    // Off-screen rather than hidden: a field that is display:none or
+    // visibility:hidden cannot be selected, and an unselected field copies
+    // nothing at all.
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = TEXT;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:absolute;left:-9999px;top:0;';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      say(ok ? 'Copied' : 'Cannot copy here');
+    } catch(e) { say('Cannot copy here'); }
+  }
+
+  btn.addEventListener('click', function(){
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(TEXT).then(
+          function(){ say('Copied'); }, legacy);
+        return;
+      }
+    } catch(e) {}
+    legacy();
+  });
+})();
+</script>
+"""
+
+COPY_HEIGHT = 38            # the button plus the room its border needs
+
+
+def copy_button(text: str, *, label: str = "Copy the query") -> None:
+    """A button that puts ``text`` on the reader's clipboard.
+
+    For text that is shown but not editable — a query the app built, which is
+    exactly the thing somebody wants in their own q session the moment it comes
+    back with an error. Selecting it by hand is not the same: the block it is
+    shown in carries line numbers, and dragging across them takes the numbers
+    with the query.
+
+    ``text`` travels as a JSON literal, so a query full of quotes, backslashes
+    and newlines arrives as itself rather than as something that closes the
+    script early. The label goes in twice and differently — as a JSON literal
+    for the script, and HTML-escaped for the button's own face, where a JSON
+    literal would print its quotes.
+    """
+    components.html(
+        _COPY_HTML.replace("__TEXT__", js_literal(text or ""))
+                  .replace("__LABEL_TEXT__", html.escape(label))
+                  .replace("__LABEL__", js_literal(label)),
+        height=COPY_HEIGHT)
+
+
+def q_block(text: str, *, empty: str = "(empty)", copy: bool = False) -> None:
+    """Show a query, coloured and numbered. Replaces st.code for q.
+
+    ``copy`` adds a button that puts the query on the clipboard. Offered rather
+    than always on, since it costs a row of height, and left off where the query
+    is already sitting in an editable box beside it.
+    """
     st.markdown(to_html(text, empty=empty), unsafe_allow_html=True)
+    if copy and (text or "").strip():
+        # Under the block, not over it: the query is what was asked for and the
+        # button is what you can do about it, and a control above the thing it
+        # acts on reads as a heading for it.
+        _, right = st.columns([3, 1])
+        with right:
+            copy_button(text)
 
 
 # --- the input --------------------------------------------------------------
@@ -236,9 +358,13 @@ _EDITOR_JS = """
 
 
 def _editor_script(key: str, indent: int) -> str:
+    # Through js_literal like everything else that goes into a script, even
+    # though a widget key is the app's own word and could not carry a closing
+    # tag. Two ways of writing a literal into a page is one more than there
+    # should be, and the safe one costs nothing.
     return (_EDITOR_JS
-            .replace("__KEY__", json.dumps(key))
-            .replace("__INDENT__", json.dumps(" " * indent))
+            .replace("__KEY__", js_literal(key))
+            .replace("__INDENT__", js_literal(" " * indent))
             .replace("__GUTTER__", _GUTTER))
 
 

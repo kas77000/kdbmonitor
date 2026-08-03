@@ -141,20 +141,47 @@ def _column_chars(columns: list[str], rows: list[list[str]]) -> list[tuple[int, 
             for i, c in enumerate(columns)]
 
 
-def _column_widths(columns: list[str], rows: list[list[str]]) -> list[float]:
+# What a named width is worth, in characters. Absolute rather than a multiple
+# of what the text earns, because that is what the name promises and what the
+# screen already does with the same three words: 'small' means a narrow column,
+# not "half of however wide this one was going to be anyway". A column set this
+# way no longer argues its case from its content — which is the whole point,
+# since the content is what was making it too wide.
+WIDTH_CHARS: dict[str, int] = {"small": 8, "medium": 18, "large": 36}
+
+
+def _column_budget(columns: list[str], rows: list[list[str]],
+                   widths: list[str] | None = None) -> list[int]:
+    """Characters of width each column is asking for, before it is scaled."""
+    given = list(widths or [])
+    out = []
+    for i, (head, body) in enumerate(_column_chars(columns, rows)):
+        named = WIDTH_CHARS.get(given[i] if i < len(given) else "")
+        out.append(COLUMN_PAD + (named if named is not None
+                                 else max(head, body)))
+    return out
+
+
+def _column_widths(columns: list[str], rows: list[list[str]],
+                   widths: list[str] | None = None) -> list[float]:
     """Share of the width per column, proportional to the longest text in it.
 
     Equal columns make a nine-column table overlap: 'RELIANCE.IN' spills into
     the next cell while 'Side' leaves half its box empty.
+
+    ``widths`` overrides that column by column, for the table where the longest
+    text is not the best guide to what a column is worth — a note, a comment, a
+    reason field. A named width is a fixed character budget (see
+    :data:`WIDTH_CHARS`), so such a column stops claiming room in proportion to
+    its own verbosity.
     """
-    widest = [COLUMN_PAD + max(head, body)
-              for head, body in _column_chars(columns, rows)]
-    total = sum(widest) or 1
-    return [w / total for w in widest]
+    budget = _column_budget(columns, rows, widths)
+    total = sum(budget) or 1
+    return [w / total for w in budget]
 
 
 def table_fit_font(columns: list[str], rows: list[list[str]],
-                   width_in: float) -> float:
+                   width_in: float, widths: list[str] | None = None) -> float:
     """The largest type size at which every column's text fits the width it gets.
 
     Width is handed out in proportion to a column's longest text, so the binding
@@ -163,15 +190,23 @@ def table_fit_font(columns: list[str], rows: list[list[str]],
     because it is bold, and a short header over long values can still overrun
     the share those values earned it.
 
+    A column given a width of its own has no say here. Its text no longer earns
+    its share, so letting it bind would mean one narrowed note column dragging
+    the type size of the whole table down — the opposite of what narrowing it
+    was for. Such a column is cut to its box instead; see :func:`_clipped`.
+
     Pure, and needs no figure: this is what decides whether a dashboard can be
     printed portrait at all, and that has to be answerable before a page exists.
     """
     if width_in <= 0 or not columns:
         return TABLE_FONT
+    given = list(widths or [])
     fits = [share * width_in * 72 / need
-            for share, (head, body) in zip(_column_widths(columns, rows),
-                                           _column_chars(columns, rows))
-            if (need := max(head * TABLE_HEAD_EM, body * TABLE_CHAR_EM)) > 0]
+            for i, (share, (head, body)) in enumerate(
+                zip(_column_widths(columns, rows, widths),
+                    _column_chars(columns, rows)))
+            if (given[i] if i < len(given) else "") not in WIDTH_CHARS
+            and (need := max(head * TABLE_HEAD_EM, body * TABLE_CHAR_EM)) > 0]
     return min(fits) if fits else TABLE_FONT
 
 
@@ -195,26 +230,40 @@ def _clip(text: str, limit: int) -> str:
     return text[:keep] + ELLIPSIS if keep >= 1 else text[:max(limit, 1)]
 
 
-def _trimmed(columns: list[str], rows: list[list[str]], shares: list[float],
-             width_in: float) -> tuple[list[str], list[list[str]]]:
-    """Text cut to what each column can hold at the smallest legible size.
+def _clipped(columns: list[str], rows: list[list[str]], shares: list[float],
+             width_in: float, font_size: float,
+             only: "set[int] | None" = None) -> tuple[list[str],
+                                                      list[list[str]]]:
+    """Text cut to what each column can hold at ``font_size``.
 
-    The last resort, reached only once the paper and the type size have both
-    been spent — a table so wide that even a turned page at 7pt cannot hold it.
+    Two callers, one rule. Either the paper and the type size have both been
+    spent — a table so wide that even a turned page at 7pt cannot hold it, and
+    every column has to give — or the author has narrowed particular columns
+    themselves, in which case ``only`` names those and the rest are left at the
+    width their text earned.
+
     A value cut short carries an ellipsis and so admits it was cut; a value left
     whole just collides with the next column and admits nothing.
 
-    Trimming against the shares the *untrimmed* text earned, rather than
+    Cutting against the shares the *untrimmed* text earned, rather than
     recomputing them after, keeps the guarantee: shorter text in the same box
     still fits.
     """
     def limit(share: float, em: float) -> int:
-        return max(int(share * width_in * 72 / (TABLE_MIN_FONT * em)), 1)
+        return max(int(share * width_in * 72 / (font_size * em)), 1)
 
     heads = [limit(s, TABLE_HEAD_EM) for s in shares]
     cells = [limit(s, TABLE_CHAR_EM) for s in shares]
-    return ([_clip(str(c), heads[i]) for i, c in enumerate(columns) if i < len(heads)],
-            [[_clip(str(v), cells[i]) for i, v in enumerate(r) if i < len(cells)]
+
+    def cut(text, i: int, budget: list[int]) -> str:
+        # A column nobody narrowed keeps its text whole; it already fits, and
+        # trimming it would cost characters the width was never short of.
+        if only is not None and i not in only:
+            return str(text)
+        return _clip(str(text), budget[i])
+
+    return ([cut(c, i, heads) for i, c in enumerate(columns) if i < len(heads)],
+            [[cut(v, i, cells) for i, v in enumerate(r) if i < len(cells)]
              for r in rows])
 
 
@@ -252,13 +301,21 @@ def _table(ax, pm: PlotModel) -> None:
     # legible size will not span the columns, cut the text rather than let it
     # collide.
     width_in = _axes_width_in(ax)
-    columns, shares = pm.columns, _column_widths(pm.columns, rows)
-    fit = table_fit_font(pm.columns, rows, width_in)
+    given = list(pm.column_widths)
+    columns, shares = pm.columns, _column_widths(pm.columns, rows, given)
+    fit = table_fit_font(pm.columns, rows, width_in, given)
+    # The columns the author narrowed themselves. They took no part in choosing
+    # the type size, so they are the ones cut to their boxes once it is settled.
+    sized = {i for i, w in enumerate(given) if w in WIDTH_CHARS}
     if width_in > 0 and fit < TABLE_MIN_FONT:
-        columns, rows = _trimmed(pm.columns, rows, shares, width_in)
+        columns, rows = _clipped(pm.columns, rows, shares, width_in,
+                                 TABLE_MIN_FONT)
         font_size = TABLE_MIN_FONT
     elif width_in > 0:
         font_size = max(min(font_size, fit), TABLE_MIN_FONT)
+        if sized:
+            columns, rows = _clipped(pm.columns, rows, shares, width_in,
+                                     font_size, only=sized)
 
     # bbox makes the table fill its axes exactly (no internal gap), less any
     # strip kept for the note.

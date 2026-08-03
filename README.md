@@ -334,8 +334,45 @@ of **transforms** shapes the result, no Python required:
 | `groupby` | keys + aggregations (count, nunique, sum, mean, min, max) |
 | `sort` / `limit` / `rename` | the usual finishing touches |
 
-Datasets run in order and can feed each other with `{{name.column}}`, the same
-substitution the alert builder uses for chained steps.
+Datasets run in order and can feed each other, the same substitution the alert
+builder uses for chained steps. **Insert reference** in a raw dataset offers a
+choice of two, because they are different things:
+
+| Reference | What it becomes | What it is for |
+|---|---|---|
+| `{{name.column}}` | that column's distinct values, as a q list | a where clause — `sym in {{orders.sym}}` |
+| `{{table:name}}` | the whole result, as a q table | a join — `{{table:mine}} lj \`id xkey orders` |
+
+The column form can only ever ask *is it one of these*. The table form carries
+the rows themselves, which is what you need when the answer has to keep what the
+earlier dataset said beside each key — an uploaded file of order ids matched
+against the OMS, with the file's own note column still attached. It works on any
+dataset above it, including a raw query nobody has run yet, since it takes the
+result whatever shape it turns out to be.
+
+The rows travel inside the query text, so a large dataset makes a large query —
+the same bargain the column form already offers, one column at a time. Types are
+carried across properly: dates and timestamps are told apart by their values,
+clock columns go as q `time` to the millisecond, and a gap arrives as a typed
+null rather than as the word `nan`.
+
+**A dataset can be another dataset, shaped again.** *Add dataset from another*
+makes one whose source is not a server or a file but a dataset already on the
+dashboard: `orders_by_basket` starts from whatever `orders` finished on and
+applies its own transforms to it. `orders` is untouched — every widget already
+pointed at it still shows what it showed — so one query can feed a table of raw
+fills, a bar chart grouped by basket and a KPI ranked off that grouping without
+being run three times or duplicated three ways. Derived datasets chain: one can
+derive from another, as deep as the report needs.
+
+A derived dataset may only read one **declared above it**, since that is the
+order frames are produced in. That single rule is also what makes a cycle
+impossible to express — one of any two datasets has to come second — and it is
+why moving a dataset card down is what lets it reach another. Everything else
+about it is ordinary: it takes transforms, a max-rows cap, parameters and
+widgets exactly as any dataset does, and it belongs to a file dashboard and a
+query dashboard alike. If what it reads is still waiting for an upload, so is
+it — the panel says which file, rather than reporting a failure.
 
 **kdb integer nulls arrive as nulls, not as numbers.** An int vector has nowhere
 to put "unknown", so a q null *is* a value — the lowest the width holds. Left
@@ -367,9 +404,18 @@ stage: the query's own result first, then the frame after every transform, each
 with its row count, how many rows it gained or lost, and which columns it added
 or dropped. When a transform fails, the run stops there and names it — the frame
 shown above it is exactly what it was handed, so you can see *which* step went
-wrong rather than only that the dataset did. Running a raw-q dataset also teaches
+wrong rather than only that the dataset did. **Query sent** opens by itself when
+nothing ran — the query is the thing to look at then — and carries a **Copy the
+query** button, because what you do with a query that came back with an error is
+run it somewhere you can poke at it. The queries in the alert builder's Check
+result carry one for the same reason. It is the fully resolved query, dates,
+dataset references, cross-process handles and parameters all filled in — the
+text KDB actually received, not the template it was written as. Running a raw-q
+dataset also teaches
 the editor what columns that query returns, which is what the column pickers
-offer from then on.
+offer from then on — and when a picker in the Layout section has nothing to
+offer, **Find columns** sits above it and runs exactly that, so the answer is
+where the question is. A picker still takes a typed name either way.
 
 ### Environments — linking your servers
 
@@ -498,7 +544,7 @@ A dashboard is rows of 1–4 widgets, each row with a printed height in inches.
 | Widget | Notes |
 |---|---|
 | `kpi` | one aggregate, formatted, optionally turning red past a threshold |
-| `table` | column picker, per-column headers and formats, conditional highlighting |
+| `table` | column picker, per-column headers, formats and widths, conditional highlighting |
 | `bar` `line` `scatter` | x/y, optional split-by series, sorting, trend line |
 | `hist` `box` `heatmap` `pie` | distributions, spreads, grids, composition |
 | `text` | markdown with `{{dataset.agg.column}}` placeholders that update with the data |
@@ -511,9 +557,32 @@ Custom entry for anything else and a live sample of what your spec produces. A
 table's headers and formats are keyed to the **column**, not to its position, so
 removing one column never shifts another's settings onto it, and a column you
 deselect keeps what you gave it in case you put it back. Print order is changed
-where the columns are listed — arrows move a column up or down, taking its
-header and format with it, instead of deselecting the lot and picking them again
-in the order you wanted.
+where the columns are listed: arrows nudge a column one place, and a **Move to**
+box beside them takes a destination, so sending the last of twenty to the front
+is typing `1` rather than nineteen clicks. It takes its header and format with
+it either way. Rows are ordered the same way, and every row move says which row
+went where — these controls belong to the *slot* they sit in, so using one twice
+is a second, different move rather than the first one having failed.
+
+The Move to box is deliberately **blank rather than showing the current
+position**: a box that shows where you are is a box whose steppers move the row
+and then spring back to the number they started on, which reads as nothing
+having happened. The current position is the greyed-out placeholder instead.
+
+**A column's width can be set rather than earned.** By default a column's share
+of the table is proportional to the longest text in it, which is the right rule
+until one note, comment or reason field earns half the table and squeezes the
+eight short columns beside it. Setting a column to **Narrow**, **Medium** or
+**Wide** fixes its width instead, so it no longer argues its case from its own
+content. A name rather than a number, because a table has two outputs and each
+spends its own currency: on screen Streamlit sizes the column in pixels, on the
+page it takes a fixed share of the paper.
+
+On the page a set width also buys back type size. A column the author has
+narrowed takes no part in choosing how big the table prints — letting it would
+mean one clipped note column shrinking every figure on the page, the opposite of
+what narrowing it was for. It is cut to its box instead, with an ellipsis, the
+same way an over-wide table has always been handled once the paper runs out.
 
 The **Layout** editor shows where the page breaks will fall before you generate
 anything: a `page N` badge on every row, a `page break` marker where a new page
@@ -523,10 +592,19 @@ the breaks — you can lay the report out from the app instead of exporting a PD
 to find out. The figures come from the same pagination the PDF uses, so the two
 cannot disagree.
 
+**Copy puts a widget or a row on a clipboard, and you choose where it lands.**
+Copying a widget makes a *Paste* button appear on every row with room for one;
+copying a row makes a *Paste row here* appear in every gap between rows,
+including the bottom. What is held is said once at the top of the section, and it
+stays held until you clear it — so one carefully built table can be dropped onto
+four rows without being built four times. Each paste is a real copy: editing one
+never edits another.
+
 The editor has four sections — **Data**, **Layout**, **Preview** and
 **Library** — and validates on save: unknown datasets or environments, duplicate
-dataset names, forward references, missing tables, over-full rows and missing
-date constraints are all reported before anything is written.
+dataset names, forward references, a derived dataset reading one declared below
+it, missing tables, over-full rows and missing date constraints are all reported
+before anything is written.
 
 ### Parameters — a form the reader fills in
 

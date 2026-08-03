@@ -837,7 +837,9 @@ def _render_preview() -> None:
             title += f" · {s['rows']} row(s)"
         with st.expander(title, expanded=s["error"] is not None):
             if s["qsql"]:
-                qeditor.q_block(s["qsql"])
+                # The same reasoning as the dashboard editor's: a step that
+                # came back with an error is one you want to run by hand next.
+                qeditor.q_block(s["qsql"], copy=True)
             if s["error"]:
                 st.error(s["error"], icon=":material/error:")
             elif s["df"] is not None:

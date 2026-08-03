@@ -147,6 +147,13 @@ def _click(at: AppTest, key: str) -> AppTest:
     return at
 
 
+def _set_position(at: AppTest, key: str, position: int) -> AppTest:
+    """Type a destination into one of the 'move to' boxes."""
+    at.number_input(key=key).set_value(position).run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
 def _draft(at: AppTest) -> Dashboard:
     return at.session_state["dash_draft"]
 
@@ -304,6 +311,22 @@ def test_moving_a_row_up_carries_its_widgets(guided_db):
     assert rows[0].height_in == 2.0
 
 
+def test_moving_a_row_down_carries_its_widgets(guided_db):
+    at = _click(_open(guided_db, "Layout"), "r0_d")
+    rows = _draft(at).rows
+    assert [[w.title for w in r.widgets] for r in rows] == [["Three"],
+                                                            ["One", "Two"]]
+    assert rows[1].height_in == 1.0
+
+
+def test_jumping_a_row_carries_its_widgets(guided_db):
+    at = _set_position(_open(guided_db, "Layout"), "r1_pos", 1)
+    rows = _draft(at).rows
+    assert [[w.title for w in r.widgets] for r in rows] == [["Three"],
+                                                            ["One", "Two"]]
+    assert rows[0].height_in == 2.0
+
+
 def test_moving_a_widget_left_carries_its_spec(guided_db):
     at = _click(_open(guided_db, "Layout"), "r0w1_l")
     widgets = _draft(at).rows[0].widgets
@@ -421,6 +444,48 @@ def test_a_removed_column_keeps_its_header_for_when_it_comes_back(table_db):
     assert _spec(at)["labels"]["sym"] == "Symbol"
 
 
+def test_a_column_can_be_given_a_width_of_its_own(table_db):
+    at = _open(table_db, "Layout")
+    picker = next(el for el in at.selectbox
+                  if el.key == "r0w0_spec_col_price_w")
+    assert picker.value == "auto"                  # automatic until it is set
+    picker.set_value("small").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _spec(at)["widths"] == {"price": "small"}
+
+
+def test_a_column_set_back_to_automatic_stores_nothing(tmp_path):
+    dash = Dashboard(
+        id=1, name="Table",
+        datasets=[Dataset(name="d", env="orders", table="target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows",
+                                  spec={**TABLE_SPEC,
+                                        "widths": {"price": "large"}})],
+                  height_in=2.0)])
+    at = _open(_store(tmp_path, dash, "w.db"), "Layout")
+    assert at.selectbox(key="r0w0_spec_col_price_w").value == "large"
+    at.selectbox(key="r0w0_spec_col_price_w").set_value("auto").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _spec(at)["widths"] == {}
+
+
+def test_a_width_belongs_to_its_column_and_not_to_its_position(table_db):
+    """The same rule the headers and formats live by: drop a column and the
+    ones below keep their own settings instead of inheriting the gap."""
+    at = _open(table_db, "Layout")
+    at.selectbox(key="r0w0_spec_col_price_w").set_value("small").run()
+    at = _drop_column(at, ["size", "price", "state"])
+    assert _spec(at)["widths"] == {"price": "small"}
+
+
+def test_a_moved_column_takes_its_width_with_it(table_db):
+    at = _open(table_db, "Layout")
+    at.selectbox(key="r0w0_spec_col_state_w").set_value("small").run()
+    at = _set_position(at, "r0w0_spec_col_state_pos", 1)
+    assert _spec(at)["columns"] == ["state", "sym", "size", "price"]
+    assert _spec(at)["widths"] == {"state": "small"}
+
+
 def test_swapping_a_column_gives_the_new_one_a_blank_header(table_db):
     at = _drop_column(_open(table_db, "Layout"),
                       ["size", "price", "state", "when"])
@@ -443,6 +508,13 @@ def test_a_column_can_be_moved_earlier(table_db):
     assert _spec(at)["columns"] == ["sym", "size", "state", "price"]
 
 
+def test_a_column_crosses_the_whole_list_in_one_move(table_db):
+    """Why the box exists beside the arrows: reaching the front of a long table
+    was one click and one rerun per column passed."""
+    at = _set_position(_open(table_db, "Layout"), "r0w0_spec_col_state_pos", 1)
+    assert _spec(at)["columns"] == ["state", "sym", "size", "price"]
+
+
 def test_the_multiselect_agrees_with_the_new_order(table_db):
     """The picker keeps the selection in its own widget state; if it is not
     told, the next rerun hands back the old order and undoes the move."""
@@ -461,6 +533,8 @@ def test_the_ends_cannot_be_moved_off_the_list(table_db):
     at = _open(table_db, "Layout")
     assert at.button(key="r0w0_spec_col_sym_up").disabled
     assert at.button(key="r0w0_spec_col_state_down").disabled
+    box = at.number_input(key="r0w0_spec_col_sym_pos")
+    assert (box.min, box.max) == (1, 4)
 
 
 def test_moving_writes_down_an_all_columns_table(tmp_path):
@@ -474,6 +548,222 @@ def test_moving_writes_down_an_all_columns_table(tmp_path):
     at = _click(_open(_store(tmp_path, dash, "all.db"), "Layout"),
                 "r0w0_spec_col_sym_down")
     assert _spec(at)["columns"] == ["size", "sym", "side", "price"]
+
+
+# --- a 'move to' box asks for a destination, and keeps asking ---------------
+#
+# It must never show the position it sits at. A box that does belongs to the
+# slot rather than to what is in it: press its stepper twice and the second
+# press moves whatever has since landed there, silently undoing the first — the
+# whole layout back where it started, which reads as the control not working.
+
+def _four_rows(tmp_path) -> AppTest:
+    dash = _guided_dashboard()
+    dash.rows = [Row(widgets=[Widget(type="kpi", dataset="d", title=t)],
+                     height_in=1.0) for t in ("A", "B", "C", "D")]
+    return _open(_store(tmp_path, dash, "four.db"), "Layout")
+
+
+def _row_titles(at: AppTest) -> list[str]:
+    return [r.widgets[0].title for r in _draft(at).rows]
+
+
+def test_a_row_move_to_box_starts_and_stays_blank(tmp_path):
+    """The reported bug: the box showed the row's own position, so stepping it
+    once moved the row and sprang straight back to the number it started on —
+    which reads as the control having done nothing."""
+    at = _four_rows(tmp_path)
+    assert at.number_input(key="r3_pos").value is None
+    at = _set_position(at, "r3_pos", 3)
+    assert _row_titles(at) == ["A", "B", "D", "C"]
+    assert at.number_input(key="r3_pos").value is None
+
+
+def test_the_box_shows_where_the_row_is_now_without_holding_it(tmp_path):
+    """Blank, but not uninformative: the current position is the placeholder,
+    which is a prompt rather than a value the steppers can act on."""
+    at = _four_rows(tmp_path)
+    assert at.number_input(key="r3_pos").placeholder == "4"
+
+
+def test_every_row_move_says_what_it_moved(tmp_path):
+    """A control that belongs to a slot acts on whatever is in that slot, so a
+    second use is a second, different move — not the first one failing. Rows
+    are indistinguishable from the outside, so each move announces itself."""
+    at = _four_rows(tmp_path)
+    at = _set_position(at, "r3_pos", 3)
+    assert at.toast[0].value == "Row 4 moved to position 3"
+    at = _click(at, "r2_u")
+    assert at.toast[0].value == "Row 3 moved to position 2"
+    assert _row_titles(at) == ["A", "D", "B", "C"]
+
+
+def test_a_column_move_to_box_starts_and_stays_blank(table_db):
+    at = _open(table_db, "Layout")
+    assert at.number_input(key="r0w0_spec_col_state_pos").value is None
+    at = _set_position(at, "r0w0_spec_col_state_pos", 1)
+    assert at.number_input(key="r0w0_spec_col_state_pos").value is None
+    boxes = [el.value for el in at.number_input
+             if "_col_" in (el.key or "") and (el.key or "").endswith("_pos")]
+    assert boxes == [None, None, None, None]
+
+
+def test_stepping_one_column_box_twice_does_not_undo_itself(table_db):
+    at = _open(table_db, "Layout")
+    at = _set_position(_set_position(at, "r0w0_spec_col_state_pos", 1),
+                       "r0w0_spec_col_state_pos", 1)
+    assert _spec(at)["columns"] == ["state", "sym", "size", "price"]
+
+
+# --- a dataset built on another one -----------------------------------------
+
+def test_adding_a_derived_dataset_starts_it_on_the_one_above(raw_db):
+    at = _click(_open(raw_db), "dash_ds_addderived")
+    added = _draft(at).datasets[1]
+    assert (added.source, added.base) == ("derived", "by_market")
+    # Named after what it reads rather than 'dataset_2', which would read as a
+    # second dataset of its own.
+    assert added.name == "by_market_grouped"
+
+
+def test_renaming_a_dataset_carries_everything_derived_from_it(raw_db):
+    at = _click(_open(raw_db), "dash_ds_addderived")
+    at.text_input(key="ds0_n").set_value("orders").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _draft(at).datasets[1].base == "orders"
+
+
+def test_a_derived_dataset_can_only_read_the_ones_above_it(raw_db):
+    at = _click(_open(raw_db), "dash_ds_addderived")
+    picker = next(el for el in at.selectbox if el.key == "ds1_b")
+    assert picker.options == ["by_market"]
+
+
+# --- copy and paste: a copy lands where you put it -------------------------
+
+def _keys(at: AppTest) -> list[str]:
+    return [b.key for b in at.button]
+
+
+def test_copying_a_widget_does_not_place_it_anywhere_yet(guided_db):
+    """The copy goes to the clipboard. Deciding where it lands is the point of
+    the feature — inserting it beside the original decided for you."""
+    at = _click(_open(guided_db, "Layout"), "r0w0_dup")
+    rows = _draft(at).rows
+    assert [[w.title for w in r.widgets] for r in rows] == [["One", "Two"],
+                                                            ["Three"]]
+    assert at.session_state["dash_clip_widget"]["label"] == "One"
+
+
+def test_a_copied_widget_pastes_onto_another_row(guided_db):
+    at = _click(_click(_open(guided_db, "Layout"), "r0w0_dup"), "r1_wpaste")
+    widgets = _draft(at).rows[1].widgets
+    assert [w.title for w in widgets] == ["Three", "One"]
+    assert widgets[1].spec["column"] == "qty"
+
+
+def test_a_pasted_widget_shares_nothing_with_the_one_it_came_from(guided_db):
+    at = _click(_click(_open(guided_db, "Layout"), "r0w0_dup"), "r1_wpaste")
+    original = _draft(at).rows[0].widgets[0]
+    pasted = _draft(at).rows[1].widgets[1]
+    assert pasted.spec == original.spec and pasted.spec is not original.spec
+
+
+def test_a_copied_widget_stays_on_the_clipboard_for_a_second_paste(guided_db):
+    at = _click(_open(guided_db, "Layout"), "r0w0_dup")
+    at = _click(_click(at, "r1_wpaste"), "r1_wpaste")
+    assert [w.title for w in _draft(at).rows[1].widgets] == ["Three", "One",
+                                                             "One"]
+
+
+def test_there_is_nothing_to_paste_until_something_is_copied(guided_db):
+    assert "r1_wpaste" not in _keys(_open(guided_db, "Layout"))
+
+
+def test_a_copied_row_pastes_at_the_gap_you_choose(guided_db):
+    """'Below the one you copied' was the only place a row could land."""
+    at = _click(_click(_open(guided_db, "Layout"), "r1_c"), "r0_rpaste")
+    rows = _draft(at).rows
+    assert [[w.title for w in r.widgets] for r in rows] == [
+        ["Three"], ["One", "Two"], ["Three"]]
+    assert rows[0].height_in == 2.0
+
+
+def test_a_copied_row_can_also_land_at_the_bottom(guided_db):
+    at = _click(_click(_open(guided_db, "Layout"), "r0_c"), "rend_rpaste")
+    rows = _draft(at).rows
+    assert [[w.title for w in r.widgets] for r in rows] == [
+        ["One", "Two"], ["Three"], ["One", "Two"]]
+
+
+def test_a_pasted_row_shares_no_widget_with_the_row_it_came_from(guided_db):
+    at = _click(_click(_open(guided_db, "Layout"), "r0_c"), "rend_rpaste")
+    original, pasted = _draft(at).rows[0], _draft(at).rows[2]
+    assert pasted.widgets[0].spec == original.widgets[0].spec
+    assert pasted.widgets[0].spec is not original.widgets[0].spec
+
+
+def test_the_clipboard_can_be_put_down(guided_db):
+    at = _click(_click(_open(guided_db, "Layout"), "r0_c"), "dash_clip_clear")
+    assert "dash_clip_row" not in at.session_state
+    assert "r0_rpaste" not in _keys(at)
+
+
+def test_a_row_can_cross_the_whole_layout_in_one_move(tmp_path):
+    dash = _guided_dashboard()
+    dash.rows.append(Row(widgets=[Widget(type="kpi", dataset="d", title="Four")],
+                         height_in=1.0))
+    at = _set_position(_open(_store(tmp_path, dash, "four.db"), "Layout"),
+                       "r2_pos", 1)
+    assert [[w.title for w in r.widgets] for r in _draft(at).rows] == [
+        ["Four"], ["One", "Two"], ["Three"]]
+
+
+# --- a picker with nothing in it can say why --------------------------------
+
+def test_a_dataset_nobody_has_run_offers_a_way_to_find_its_columns(tmp_path):
+    """A raw query's shape is only knowable by running it, and the Layout
+    section is where not knowing it costs something."""
+    dash = Dashboard(
+        id=1, name="Unknown",
+        datasets=[Dataset(name="d", env="orders", mode="raw",
+                          raw_qsql="select from target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows")])])
+    at = _open(_store(tmp_path, dash, "unknown.db"), "Layout")
+    assert "dash_learn_cols" in _keys(at)
+
+
+def test_a_dataset_whose_columns_are_known_says_nothing(table_db):
+    assert "dash_learn_cols" not in _keys(_open(table_db, "Layout"))
+
+
+def _unknown_columns_dashboard() -> Dashboard:
+    return Dashboard(
+        id=1, name="Unknown",
+        datasets=[Dataset(name="d", env="orders", mode="raw",
+                          raw_qsql="select from target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows")])])
+
+
+def test_looking_for_columns_teaches_the_pickers_what_the_query_returns(tmp_path):
+    at = _click(_open(_store(tmp_path, _unknown_columns_dashboard(), "learn.db"),
+                      "Layout"), "dash_learn_cols")
+    assert at.session_state["dash_learned_cols"]["d"]
+    # Answered, so the notice that offered it has nothing left to say.
+    assert "dash_learn_cols" not in _keys(at)
+
+
+def test_looking_for_columns_against_a_dead_server_says_why(tmp_path):
+    """A run that cannot reach anything must not leave the button looking like
+    it did nothing — the reason is kept and shown under it."""
+    path = str(tmp_path / "dead.db")
+    s = Storage(path)
+    s.init_db()
+    s.add_connection(Connection(id=None, name="rdb", host="127.0.0.1", port=1,
+                                kind="realtime", env="orders"))
+    s.add_dashboard(_unknown_columns_dashboard())
+    at = _click(_open(path, "Layout"), "dash_learn_cols")
+    assert at.session_state["dash_learn_failed"]["d"]
 
 
 def test_deleting_a_transform_leaves_the_widgets_alone(raw_db):

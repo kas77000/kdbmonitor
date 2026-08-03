@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from kdbmonitor.core.models import Step
-from kdbmonitor.core.qfmt import format_q_value, format_q_list
+from kdbmonitor.core.qfmt import format_q_value, format_q_list, q_table
 
 
 def filter_clause(f) -> str:
@@ -30,13 +30,34 @@ import pandas as pd
 
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
 
+# The whole of an earlier result, rather than one column of it. Prefixed like
+# {{param:name}} and {{conn:ENV}} rather than written as a bare {{name}},
+# which could not be told apart from {{date_from}} or from a typo — and a
+# reference nobody can distinguish from a mistake is one that cannot be checked.
+_TABLE_REF = re.compile(r"\{\{table:(\w+)\}\}")
+
 
 def _infer_value_type(series: pd.Series) -> str:
     return "number" if pd.api.types.is_numeric_dtype(series) else "symbol"
 
 
 def substitute_refs(qsql: str, outputs: dict) -> str:
-    def repl(m: re.Match) -> str:
+    """Fill in every reference to an earlier result.
+
+    Two forms, and the difference is what you are going to do with it.
+    ``{{name.column}}`` is that column's distinct values as a q list, for a
+    ``where`` clause — the original form, and still the one to reach for when
+    the earlier result is there to narrow this query down.
+
+    ``{{table:name}}`` is the whole result as a q table, for a query that has
+    to *join* against it rather than filter by it: an uploaded file of order
+    ids matched row for row against the OMS, where one column's values could
+    only ever have asked "is it one of these" and never "and what did it say
+    beside it". It carries every row and column, so a large result makes a
+    large query — the same bargain the column form already offers, one column
+    at a time.
+    """
+    def column(m: re.Match) -> str:
         name, col = m.group(1), m.group(2)
         if name not in outputs:
             raise KeyError(f"unknown step reference: {name}")
@@ -47,7 +68,15 @@ def substitute_refs(qsql: str, outputs: dict) -> str:
         distinct = list(dict.fromkeys(series.tolist()))  # preserve order, dedupe
         return format_q_list(distinct, _infer_value_type(series))
 
-    return _REF.sub(repl, qsql)
+    def table(m: re.Match) -> str:
+        name = m.group(1)
+        if name not in outputs:
+            raise KeyError(f"unknown step reference: {name}")
+        # Parenthesised, so it can stand where a table name stands: 'select
+        # from (flip ...)' parses, 'select from flip ...' does not.
+        return "(" + q_table(outputs[name]) + ")"
+
+    return _TABLE_REF.sub(table, _REF.sub(column, qsql))
 
 
 from typing import Callable

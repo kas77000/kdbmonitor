@@ -357,7 +357,11 @@ def fits_width(rows: list[Row], results: dict, sheet: Page,
             if not pm.rows:
                 continue
             width_in = _widget_width_in(row, widget, sheet.content_w)
-            if table_fit_font(pm.columns, pm.rows, width_in) < TURN_FONT:
+            # With the author's own column widths, or a table narrowed by hand
+            # to fit portrait would still be counted as a reason to turn the
+            # whole report landscape.
+            if table_fit_font(pm.columns, pm.rows, width_in,
+                              pm.column_widths) < TURN_FONT:
                 return False
     return True
 

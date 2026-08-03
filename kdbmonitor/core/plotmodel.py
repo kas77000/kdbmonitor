@@ -152,6 +152,12 @@ class PlotModel:
     # printing, which is a page's worth and never sorted.
     frame: Optional[pd.DataFrame] = None
     column_formats: list[str] = field(default_factory=list)
+    # How wide each column should be, positionally: "" leaves it to the width
+    # its own text earns, and "small"/"medium"/"large" is the author saying a
+    # column is worth less (or more) of the page than its longest value would
+    # otherwise claim. A note column with one long entry in it takes the room
+    # nine short columns needed, and nothing about the text says it shouldn't.
+    column_widths: list[str] = field(default_factory=list)
 
     # charts
     series: list[Series] = field(default_factory=list)
@@ -306,9 +312,13 @@ def _table(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     # not. The screen sorts the values and formats them on the way out.
     frame = df[columns].copy()
     frame.columns = headers
+    # Keyed off the real column names like the formats above, not the display
+    # headers, so renaming a header keeps the width it was given.
+    widths = spec.get("widths", {})
     return PlotModel(kind="table", title=title, columns=headers,
                      rows=rows, cell_colors=cell_colors, frame=frame,
-                     column_formats=[formats.get(c, "") for c in columns])
+                     column_formats=[formats.get(c, "") for c in columns],
+                     column_widths=[str(widths.get(c, "")) for c in columns])
 
 
 def _y_label(spec: dict) -> str:

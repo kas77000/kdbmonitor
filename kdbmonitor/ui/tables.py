@@ -135,7 +135,15 @@ def _as_clock(column: pd.Series):
     return _ANCHOR + column
 
 
-def prepare(headers: list[str], formats: list[str], frame: pd.DataFrame
+# The widths Streamlit's column config understands. A dashboard is stored data
+# and can be hand-edited, so anything else is left to fall back to the automatic
+# width rather than handed to Streamlit, which refuses the whole table over one
+# bad value.
+WIDTHS = ("small", "medium", "large")
+
+
+def prepare(headers: list[str], formats: list[str], frame: pd.DataFrame,
+            widths: list[str] | None = None
             ) -> tuple[pd.DataFrame, dict]:
     """The frame Streamlit should draw, and the config to draw it with.
 
@@ -146,6 +154,11 @@ def prepare(headers: list[str], formats: list[str], frame: pd.DataFrame
     The frame comes back changed in one case only — a duration column becomes
     the clock time it stands for — because that column has no honest default
     to fall back to.
+
+    ``widths`` are the author's per-column widths, positional like ``formats``.
+    They are applied last, over whatever config the format needed, so a column
+    can be both formatted and narrowed — the two are separate questions and the
+    format branches above have no business knowing about the second.
     """
     config: dict = {}
     out = frame
@@ -194,13 +207,21 @@ def prepare(headers: list[str], formats: list[str], frame: pd.DataFrame
         else:
             config[header] = st.column_config.NumberColumn(
                 format=f"%.{decimals or 0}f")
+
+    for header, width in zip(headers, list(widths or []) + [""] * len(headers)):
+        if width not in WIDTHS or header not in frame.columns:
+            continue
+        if header in config:
+            config[header]["width"] = width
+        else:
+            config[header] = st.column_config.Column(width=width)
     return out, config
 
 
 def column_config(headers: list[str], formats: list[str],
-                  frame: pd.DataFrame) -> dict:
+                  frame: pd.DataFrame, widths: list[str] | None = None) -> dict:
     """Just the config half of :func:`prepare`."""
-    return prepare(headers, formats, frame)[1]
+    return prepare(headers, formats, frame, widths)[1]
 
 
 def matching(frame: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -358,7 +379,8 @@ def render(pm, height_px: int, key: str) -> None:
     # Prepared before either control, so a reader hunting for "14:30" is
     # matched against the value as it prints rather than the duration
     # underneath it, and the tick-lists offer the same words.
-    frame, config = prepare(list(pm.columns), pm.column_formats, frame)
+    frame, config = prepare(list(pm.columns), pm.column_formats, frame,
+                            pm.column_widths)
 
     stored = _stored(key)
 

@@ -246,6 +246,23 @@ def build_qsql(ds: Dataset, rt: ResolvedTime, outputs: dict, store=None,
     return params_mod.substitute_query(substitute_refs(q, outputs), literals)
 
 
+# How a dataset says it has nothing *yet*, as opposed to having failed. The
+# distinction is carried in the message because it travels: a dataset derived
+# from one that is waiting is waiting for the same upload, and passing the
+# reason along unchanged is what keeps the instruction intact all the way down
+# the chain.
+_WAITING = "waiting for "
+
+
+def _is_waiting(ds: Dataset, error: str) -> bool:
+    """Whether this error means 'nothing uploaded yet' rather than a fault.
+
+    Only asked of the two sources that can be in that state — a KDB query whose
+    error happens to start the same way has genuinely failed.
+    """
+    return ds.source in ("file", "derived") and error.startswith(_WAITING)
+
+
 def _file_source(ds: Dataset) -> str:
     """What stands in for the query on a file dataset — what it reads, not how.
 
@@ -261,18 +278,66 @@ def _file_source(ds: Dataset) -> str:
             f"{shape.header_row + 1}")
 
 
+def _derived_source(ds: Dataset) -> str:
+    """What stands in for the query on a derived dataset — where it starts.
+
+    Same job as :func:`_file_source`: the editor and the result panel both show
+    a dataset's query, and a dataset that sends none should say what it reads
+    instead rather than leave the box empty, which reads as something missing.
+    """
+    return f"from dataset: {ds.base}" if ds.base \
+        else "from dataset: (none chosen)"
+
+
+def _derived_frame(ds: Dataset, outputs: dict,
+                   upstream: dict) -> tuple[str, Optional[pd.DataFrame],
+                                            Optional[str]]:
+    """A derived dataset's starting frame: the one its base finished on.
+
+    The base's *output* rather than its raw fetch, because a derived dataset is
+    defined against the dataset as it reads — group ``orders`` and you mean the
+    orders the dashboard shows, not the rows the query returned before that
+    dataset's own filters ran. It is the same dict ``{{name.column}}`` reads, so
+    the two ways of building on an earlier dataset see the same frame.
+
+    A base that produced nothing is not this dataset's failure to explain, so
+    ``upstream`` carries the base's own reason and it is passed along. A file
+    dataset still waiting for its upload leaves everything derived from it
+    waiting too — an instruction rather than a fault, which is why the message
+    is kept exactly as it was written (see :class:`DatasetResult`).
+    """
+    where = _derived_source(ds)
+    if not ds.base:
+        return where, None, "no dataset to derive from — choose one"
+    frame = outputs.get(ds.base)
+    if frame is not None:
+        return where, frame, None
+    why = upstream.get(ds.base)
+    if why is None:
+        return where, None, (f"derives from '{ds.base}', which is not defined "
+                             f"above it")
+    if why.startswith(_WAITING):
+        return where, None, why
+    return where, None, f"'{ds.base}' failed, so this cannot run: {why}"
+
+
 def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
            uploads: Optional[dict] = None,
-           params: Optional[dict] = None) -> tuple[str, Optional[pd.DataFrame],
-                                                   Optional[str]]:
+           params: Optional[dict] = None,
+           upstream: Optional[dict] = None) -> tuple[str,
+                                                     Optional[pd.DataFrame],
+                                                     Optional[str]]:
     """Send the dataset's query — no transforms — as (qsql, frame, error).
 
     Never raises: every failure comes back as the error, along with whatever the
     query looked like at that point, so a caller can show it. Shared by the plain
-    run and the step-by-step trace, so both send exactly the same query. A file
-    dataset sends nothing — its frame either sits in ``uploads`` already read and
-    validated at the upload box, or it does not, and either way this is the only
-    branch that knows the difference; every line after it is source-agnostic.
+    run and the step-by-step trace, so both send exactly the same query. Two of
+    the three sources send nothing at all — a file dataset's frame sits in
+    ``uploads``, a derived one's in ``outputs`` — and this is the only place
+    that knows the difference; every line after it is source-agnostic.
+    ``upstream`` maps a dataset name to why it has no frame, so a derived
+    dataset can say what actually went wrong rather than that its base is
+    missing.
     """
     # A file dataset sends nothing. Its frame was read and checked at the upload
     # box (``core.filesource``), so all that happens here is picking it up —
@@ -282,8 +347,13 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
         frame = (uploads or {}).get(ds.name)
         if frame is None:
             return (_file_source(ds), None,
-                    f"waiting for {ds.file_label or 'a file to be uploaded'}")
+                    f"{_WAITING}{ds.file_label or 'a file to be uploaded'}")
         return _file_source(ds), frame, None
+
+    # Nor does a derived dataset: its frame is one an earlier dataset already
+    # finished with, fed forward by the callers below.
+    if ds.source == "derived":
+        return _derived_frame(ds, outputs, upstream or {})
 
     # Resolve first: the date guard must apply to the server actually queried,
     # and a market-data environment is never historical.
@@ -347,34 +417,38 @@ def _apply(ds: Dataset, qsql: str, df: pd.DataFrame,
 def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                 uploads: Optional[dict] = None,
                 values: Optional[dict] = None,
-                params: Optional[dict] = None) -> DatasetResult:
+                params: Optional[dict] = None,
+                upstream: Optional[dict] = None) -> DatasetResult:
     """Run one dataset, capturing any failure as an error on the result.
 
     ``values`` are already-resolved ``{{param:name}}`` substitutions for the
     transforms, and ``params`` the same values formatted as q literals for the
     query — see :func:`run_datasets`, which is what resolves both dataset by
-    dataset. A caller with no parameters to thread through (the historical
-    direct-call shape) omits them and gets the old behaviour.
+    dataset, along with ``upstream``. A caller with no parameters to thread
+    through (the historical direct-call shape) omits them and gets the old
+    behaviour.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params,
+                             upstream)
     if error is not None:
         return DatasetResult(ds.name, None, qsql, error,
-                             waiting=ds.source == "file"
-                             and error.startswith("waiting for"))
+                             waiting=_is_waiting(ds, error))
     return _apply(ds, qsql, df, values)
 
 
 def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                       uploads: Optional[dict] = None,
                       values: Optional[dict] = None,
-                      params: Optional[dict] = None) -> DatasetTrace:
+                      params: Optional[dict] = None,
+                      upstream: Optional[dict] = None) -> DatasetTrace:
     """Run one dataset keeping the frame after every transform.
 
     Same query, same transforms, same order as :func:`run_dataset` — only the
     intermediate frames are kept, so what you inspect step by step is what the
     dashboard will actually show.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params)
+    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params,
+                             upstream)
     if error is not None:
         return DatasetTrace(ds.name, qsql, error)
     return DatasetTrace(ds.name, qsql, None,
@@ -389,6 +463,10 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
     Successful (transformed, capped) frames are fed forward as ``outputs`` so a
     later dataset can reference an earlier one with ``{{name.column}}`` — that
     query-level reference is unrelated to parameters and unaffected by them.
+    A derived dataset is fed from that same dict: it *is* an earlier dataset's
+    output, with its own transforms on top. Why the ones that failed are kept
+    too is in :func:`_derived_frame` — a dataset built on one that is waiting
+    for an upload is waiting, not broken.
 
     Parameters are different: a ``column`` parameter's choices must come from a
     dataset's frame *as fetched*, before that dataset's own transforms run —
@@ -404,6 +482,7 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
     dashboard_time = resolve(dashboard.time_context, today)
     outputs: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
+    failures: dict[str, str] = {}
     results: dict[str, DatasetResult] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
@@ -412,15 +491,15 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
         # parameter already lives by: a dataset can only read one declared
         # before it.
         literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals,
+                                 failures)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)
                   for p in dashboard.parameters}
         if error is not None:
             res = DatasetResult(ds.name, None, qsql, error,
-                                waiting=ds.source == "file"
-                                and error.startswith("waiting for"),
+                                waiting=_is_waiting(ds, error),
                                 choices=choices)
         else:
             res = _apply(ds, qsql, df, values)
@@ -428,6 +507,12 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
         results[ds.name] = res
         if res.df is not None:
             outputs[ds.name] = res.df
+        else:
+            # Recorded from the *result*, not the fetch: a dataset whose query
+            # came back fine and whose transform then raised has no frame to
+            # derive from either, and the transform's message is the one worth
+            # passing on.
+            failures[ds.name] = res.error or "produced no frame"
     return results
 
 
@@ -437,13 +522,17 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
     """Run every dataset step by step, in declaration order, results by name.
 
     Like :func:`run_datasets`, a dataset's finished frame is fed forward so a
-    later one can still reference it with ``{{name.column}}``, and parameter
+    later one can reference it with ``{{name.column}}`` or derive from it
+    outright — a derived dataset's step 0 is the frame its base ended on, which
+    is what makes a chain inspectable stage by stage the whole way down. And as
+    there, parameter
     values/choices are resolved against each dataset's raw (pre-transform)
     frame as it is fetched — see that function's docstring for why.
     """
     dashboard_time = resolve(dashboard.time_context, today)
     outputs: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
+    failures: dict[str, str] = {}
     traces: dict[str, DatasetTrace] = {}
     for ds in dashboard.datasets:
         rt = effective_time(ds, dashboard_time, today)
@@ -452,7 +541,8 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
         # parameter already lives by: a dataset can only read one declared
         # before it.
         literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals)
+        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals,
+                                 failures)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)
@@ -466,4 +556,12 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
         traces[ds.name] = trace
         if trace.df is not None:
             outputs[ds.name] = trace.df
+        else:
+            # The failing step's message, not the trace's: a trace only carries
+            # an error of its own when nothing ran at all, and a pipeline that
+            # broke at step 3 should tell whatever derives from it that, rather
+            # than that it "produced no frame".
+            failed = trace.failed_step
+            failures[ds.name] = trace.error or (
+                failed.error if failed else "produced no frame")
     return traces

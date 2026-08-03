@@ -43,6 +43,7 @@ from kdbmonitor.core.transform import (
 from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui import qeditor
 from kdbmonitor.ui import tables
+from kdbmonitor.ui.tables import WIDTHS as TABLE_WIDTHS
 from kdbmonitor.ui.common import form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
@@ -99,11 +100,14 @@ REFERENCE_KINDS = ["constant", "mean", "median", "quantile", "column"]
 RAW_HELP = (
     "Raw q. In historical mode you MUST constrain `date` — use "
     "`{{date_from}}` / `{{date_to}}` / `{{date_list}}`. Reference another "
-    "dataset with `{{name.column}}`. To query a second KDB process in the same "
-    "query, list it under *Also connect* below and `hopen` it via `{{conn:ENV}}`."
+    "dataset with `{{name.column}}` for one column's values, or "
+    "`{{table:name}}` for the whole thing as a table you can join against. To "
+    "query a second KDB process in the same query, list it under *Also "
+    "connect* below and `hopen` it via `{{conn:ENV}}`."
 )
 
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
+_TABLE_REF = re.compile(r"\{\{table:(\w+)\}\}")
 _CONN_REF = re.compile(r"\{\{conn:([^{}]+)\}\}")
 
 # Formats offered by name, so nobody has to know Python format specs.
@@ -240,6 +244,13 @@ def dataset_columns(ds: Dataset, conn, learned: list[str] | None = None) -> list
         # converted from a query keeps its table name; reading that instead
         # would offer the columns of a table this dataset no longer touches.
         cols = [c.name for c in (ds.shape.columns if ds.shape else [])]
+    elif ds.source == "derived":
+        # A derived dataset starts where another one finished, and which
+        # dataset that is is a fact about the dashboard rather than about this
+        # one — so it arrives as ``learned``, resolved by
+        # :func:`produced_columns`. Its own transforms are then applied below
+        # exactly as for any other source.
+        cols = list(learned or [])
     elif ds.mode == "raw" or conn is None:
         cols = list(learned or [])
     else:
@@ -254,6 +265,35 @@ def dataset_columns(ds: Dataset, conn, learned: list[str] | None = None) -> list
             mapping = p.get("mapping", {})
             cols = [mapping.get(c, c) for c in cols]
     return list(dict.fromkeys(cols))
+
+
+def produced_columns(draft: Dashboard, ds: Dataset | None, store,
+                     _seen: tuple = ()) -> list[str]:
+    """The columns ``ds`` is expected to produce, following a derived dataset
+    back to the query or file its chain starts at.
+
+    :func:`dataset_columns` answers this for one dataset in isolation, which is
+    all a query or a file needs. A derived dataset's starting point is another
+    dataset, so answering for it means reading the dashboard — and reading it
+    recursively, since a dataset derived from a derived one is an ordinary thing
+    to build.
+
+    ``_seen`` guards that recursion. The ordering rule makes a cycle
+    unrepresentable in anything built here, but a bundle can be hand-edited
+    before it is imported, and this runs during validation — the one place that
+    must not crash on a dashboard somebody else wrote.
+    """
+    if ds is None or ds.name in _seen:
+        return []
+    if ds.source == "derived":
+        base = next((o for o in draft.datasets if o.name == ds.base), None)
+        start = produced_columns(draft, base, store, _seen + (ds.name,))
+        # Falling back to what the last preview returned matters most on the
+        # chains this exists for: derive from a raw query and neither end knows
+        # its own columns until something has actually run.
+        return dataset_columns(ds, None, start or learned_columns(ds.name))
+    return dataset_columns(ds, _connection_for(store, ds),
+                           learned_columns(ds.name))
 
 
 def suffix_length(mapping: dict) -> int:
@@ -543,7 +583,32 @@ def _file_dataset_problems(ds: Dataset) -> list[str]:
     return out
 
 
-def _parameter_raw_columns(ds: Dataset | None, conn) -> list[str]:
+def _derived_dataset_problems(ds: Dataset, seen: list[str]) -> list[str]:
+    """Everything wrong with a dataset derived from another one.
+
+    Only one thing can be: where it starts. ``seen`` is the datasets declared
+    above this one, and that is deliberately stricter than "exists" — frames are
+    fed forward in declaration order (see
+    :func:`kdbmonitor.core.dataset.run_datasets`), so a base declared below has
+    not run by the time this one needs it.
+
+    It is also what makes a cycle unrepresentable rather than merely
+    discouraged: nothing can derive from something that derives from it, because
+    one of the two has to come second.
+    """
+    if _blank(ds.base):
+        return [f"Dataset '{ds.name}' does not say which dataset it derives "
+                f"from."]
+    if ds.base == ds.name:
+        return [f"Dataset '{ds.name}' derives from itself."]
+    if ds.base not in seen:
+        return [f"Dataset '{ds.name}' derives from '{ds.base}', which is not "
+                f"defined above it."]
+    return []
+
+
+def _parameter_raw_columns(draft: Dashboard, ds: Dataset | None,
+                           store) -> list[str]:
     """What a ``column`` parameter can read from ``ds`` — its frame as fetched,
     before its own transforms run.
 
@@ -558,7 +623,13 @@ def _parameter_raw_columns(ds: Dataset | None, conn) -> list[str]:
         return []
     if ds.source == "file":
         return [c.name for c in (ds.shape.columns if ds.shape else [])]
-    return table_columns(ds, conn)
+    if ds.source == "derived":
+        # Its frame as fetched *is* the base's finished frame — the base's own
+        # transforms have already run by then, so unlike a query there is no
+        # earlier shape here for a parameter to be reading.
+        base = next((o for o in draft.datasets if o.name == ds.base), None)
+        return produced_columns(draft, base, store)
+    return table_columns(ds, _connection_for(store, ds))
 
 
 def _rule_problems(p: Parameter, label: str) -> list[str]:
@@ -674,8 +745,7 @@ def _parameter_problems(draft: Dashboard, store) -> list[str]:
                                 f"'{p.dataset}', which does not exist.")
                 continue
 
-            conn = _connection_for(store, ds)
-            columns = _parameter_raw_columns(ds, conn)
+            columns = _parameter_raw_columns(draft, ds, store)
             if columns and p.column not in columns:
                 problems.append(f"Parameter '{label}' reads column "
                                 f"'{p.column}' from dataset '{ds.name}', which "
@@ -742,13 +812,17 @@ def validate(draft: Dashboard, store) -> list[str]:
         # The dashboard's source governs its datasets. Switching a saved
         # dashboard between sources leaves the old ones behind, and a dataset
         # nobody is going to run is worth saying so about now rather than
-        # leaving to show up as an empty panel.
-        if ds.source != draft.source:
+        # leaving to show up as an empty panel. A derived dataset is exempt: it
+        # reads neither a server nor a file, only whatever the dataset above it
+        # produced, so it belongs to either kind of dashboard.
+        if ds.source not in (draft.source, "derived"):
             reads = ("an uploaded file" if draft.source == "file"
                      else "KDB queries")
             problems.append(
                 f"Dataset '{ds.name}' does not match this dashboard, which "
                 f"reads {reads}. Delete it, or change the dashboard's source.")
+        elif ds.source == "derived":
+            problems += _derived_dataset_problems(ds, seen)
         elif ds.source == "file":
             problems += _file_dataset_problems(ds)
         else:
@@ -757,16 +831,21 @@ def validate(draft: Dashboard, store) -> list[str]:
         # Raw q referencing another dataset or hopening a second environment.
         # These live in the shared loop rather than in _kdb_dataset_problems
         # because they need `seen` to know what was defined above this dataset —
-        # but they are still questions about q, so a file dataset is not asked
-        # them. It may well be carrying answers: a dataset converted from a
-        # query keeps its raw_qsql and extra_connections, and the file editor
-        # shows neither, so a complaint about them names a field its owner
-        # cannot reach and cannot clear.
-        if ds.source != "file":
+        # but they are still questions about q, so only a dataset that sends q
+        # is asked them. The others may well be carrying answers: a dataset
+        # converted from a query keeps its raw_qsql and extra_connections, and
+        # neither the file editor nor the derived one shows them, so a complaint
+        # about them names a field its owner cannot reach and cannot clear.
+        if ds.source == "kdb":
             for ref, _ in _REF.findall(ds.raw_qsql or ""):
                 if ref not in seen:
                     problems.append(f"Dataset '{ds.name}' references '{ref}', which is "
                                     f"not defined above it.")
+            for ref in _TABLE_REF.findall(ds.raw_qsql or ""):
+                if ref not in seen:
+                    problems.append(
+                        f"Dataset '{ds.name}' joins against '{ref}', which is "
+                        f"not defined above it.")
             for env in ds.extra_connections:
                 if env not in envs:
                     problems.append(f"Dataset '{ds.name}' also-connects to unknown "
@@ -805,6 +884,11 @@ def validate(draft: Dashboard, store) -> list[str]:
                 if col_fmt and not is_valid_format(col_fmt):
                     problems.append(f"{label}: number format '{col_fmt}' for column "
                                     f"'{col}' is not usable.")
+            for col, col_w in (w.spec.get("widths") or {}).items():
+                if col_w and col_w not in TABLE_WIDTHS:
+                    problems.append(
+                        f"{label}: '{col_w}' is not a column width for '{col}' "
+                        f"(have: {', '.join(TABLE_WIDTHS)}).")
 
             # Catch a column that stopped existing — e.g. a group-by was changed
             # after the widget was bound to one of its outputs. Only a dataset
@@ -868,6 +952,45 @@ _TRANSFORM_KEYS = r"%s_t(?:k_|\d)"
 _ROW_KEYS = r"r\d+"
 
 
+def _reordered(items: list, i: int, to: int) -> list:
+    """``items`` with the element at ``i`` moved to index ``to``, clamped.
+
+    One move, however far. Everything orderable in the editor used to be a pair
+    of arrows that swapped with the neighbour, which is fine for a row of four
+    widgets and quietly awful for a table of twenty columns: putting the last
+    one first was nineteen clicks and nineteen reruns. The arrows are still
+    there — they are what a number input's steppers do — but the number itself
+    is the way to cross a long list.
+    """
+    out = list(items)
+    item = out.pop(i)
+    out.insert(max(0, min(to, len(out))), item)
+    return out
+
+
+# What has been copied and not yet pasted, one slot per kind so copying a
+# widget does not lose a row that was waiting to land. Held in session state
+# rather than in the draft: a clipboard belongs to the person arranging the
+# dashboard, not to the dashboard.
+_CLIP_KEYS = {"widget": "dash_clip_widget", "row": "dash_clip_row"}
+
+
+def _copy(kind: str, payload: dict, label: str) -> None:
+    """Put a widget or a row on the clipboard, as it stands right now.
+
+    The payload is taken here rather than at paste time, and it is the stored
+    dict rather than the object: what lands is the thing as it was copied,
+    sharing no spec, no reference list and no band list with the original.
+    Editing either afterwards would otherwise edit both.
+    """
+    st.session_state[_CLIP_KEYS[kind]] = {"payload": payload, "label": label}
+
+
+def _clipboard(kind: str) -> dict | None:
+    """What is on the clipboard for this kind, or None."""
+    return st.session_state.get(_CLIP_KEYS[kind])
+
+
 def learned_columns(name: str) -> list[str]:
     """The columns this dataset's query returned the last time it was run here.
 
@@ -926,24 +1049,61 @@ def _ref_tokens(draft: Dashboard, index: int, store) -> list[str]:
     """
     tokens: list[str] = []
     for ds in draft.datasets[:index]:
-        conn = _connection_for(store, ds)
-        for col in dataset_columns(ds, conn, learned_columns(ds.name)):
+        for col in produced_columns(draft, ds, store):
             tokens.append(f"{{{{{ds.name}.{col}}}}}")
     return tokens
 
 
-def _insert_reference(tokens: list[str], text_key: str, key: str) -> None:
+def _table_tokens(draft: Dashboard, index: int) -> list[str]:
+    """Every ``{{table:name}}`` a dataset at ``index`` could reference.
+
+    Datasets above it, by the same rule and for the same reason as
+    :func:`_ref_tokens` — and needing no columns, since this form takes the
+    whole result whatever shape it turns out to be. So a raw query nobody has
+    run yet can still be joined against, where a column reference to it has
+    nothing to offer until something knows what it returns.
+    """
+    return [f"{{{{table:{ds.name}}}}}" for ds in draft.datasets[:index]]
+
+
+# What an earlier dataset can be inserted as. Two genuinely different things,
+# so they are chosen between rather than mixed into one list: one narrows this
+# query down, the other gives it something to join against.
+REFERENCE_KINDS: dict[str, str] = {
+    "column": "One column's values",
+    "table": "The whole dataset",
+}
+
+REFERENCE_HELP: dict[str, str] = {
+    "column": "The distinct values of that column, as a q list — for a where "
+              "clause, like `sym in {{orders.sym}}`.",
+    "table": "Every row and column, as a q table you can select from or join "
+             "against: `{{table:orders}} lj \\`id xkey select from fills`. "
+             "The rows travel inside the query, so a large dataset makes a "
+             "large query.",
+}
+
+
+def _insert_reference(column_tokens: list[str], table_tokens: list[str],
+                      text_key: str, key: str) -> None:
     """The 'Insert reference' control, appending a token to the text widget at
     ``text_key``. Must run *before* that widget is instantiated — writing to
     ``st.session_state[text_key]`` after Streamlit has already built the
     widget for this run raises, which is why this is always called ahead of
     the text input it feeds rather than beside or after it.
     """
-    if not tokens:
+    kinds = [k for k, available in (("column", column_tokens),
+                                    ("table", table_tokens)) if available]
+    if not kinds:
         return
-    rc = st.columns([4, 1], vertical_alignment="bottom")
-    token = rc[0].selectbox("Insert reference", tokens, key=f"{key}_refsel")
-    if rc[1].button("Insert", key=f"{key}_refins", icon=":material/add:"):
+    rc = st.columns([1.8, 3, 1], vertical_alignment="bottom")
+    kind = rc[0].selectbox("Insert", kinds,
+                           format_func=lambda k: REFERENCE_KINDS[k],
+                           key=f"{key}_refkind")
+    tokens = column_tokens if kind == "column" else table_tokens
+    token = rc[1].selectbox("Reference", tokens, key=f"{key}_refsel_{kind}",
+                            help=REFERENCE_HELP[kind])
+    if rc[2].button("Insert", key=f"{key}_refins", icon=":material/add:"):
         st.session_state[text_key] = (
             st.session_state.get(text_key, "") + " " + token).strip()
         st.rerun()
@@ -1223,15 +1383,74 @@ def _render_library(store) -> None:
                     st.rerun()
 
 
+def _rebase(draft: Dashboard, was: str, now: str) -> None:
+    """Follow a dataset's rename through everything derived from it.
+
+    The same care ``fileshape.rename_sample`` and ``ui_parameters.rename`` take,
+    for the same reason: a name typed into the box is still the same dataset,
+    and leaving the ones built on it pointing at a name that no longer exists
+    would break them for an edit nobody meant as a change.
+
+    The pickers are forgotten along with it — each holds the old name in its own
+    widget state, and a selectbox restored from state that is no longer among
+    its options would write that stale name straight back into the draft.
+    """
+    if not was or not now or was == now:
+        return
+    moved = False
+    for other in draft.datasets:
+        if other.source == "derived" and other.base == was:
+            other.base = now
+            moved = True
+    if moved:
+        _forget(r"ds\d+_b$")
+
+
 def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
     key = f"ds{index}"
     conn = _connection_for(store, ds)
+    was_named = ds.name
 
-    subtitle = ((ds.file_label or "an uploaded file") if ds.source == "file"
-                else (env_label(ds.env, store.list_environments().get(ds.env)
-                                or {}) if ds.env else "no environment"))
+    if ds.source == "file":
+        subtitle = ds.file_label or "an uploaded file"
+    elif ds.source == "derived":
+        subtitle = f"from {ds.base}" if ds.base else "from nothing yet"
+    else:
+        subtitle = (env_label(ds.env, store.list_environments().get(ds.env)
+                              or {}) if ds.env else "no environment")
     with st.expander(f"**{ds.name}** · {subtitle}", expanded=True):
-        if ds.source == "file":
+        if ds.source == "derived":
+            head = st.columns([2.4, 2.4, 1.8, ICON_COL],
+                              vertical_alignment="bottom")
+            ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
+            # Only the datasets above it: frames are fed forward in declaration
+            # order, so one declared below has not run when this one needs it.
+            # Offering it would be offering a choice that cannot work.
+            above = [d.name for d in draft.datasets[:index]]
+            options = with_stored(above, ds.base)
+            ds.base = head[1].selectbox(
+                "Derived from", options or [""],
+                index=options.index(ds.base) if ds.base in options else 0,
+                key=f"{key}_b",
+                help="The dataset this one starts from — its finished rows, "
+                     "after its own transforms. Only datasets above this one "
+                     "can be chosen; move this card down to reach another.")
+            ds.max_rows = int(head[2].number_input(
+                "Max rows", 1, 1_000_000, ds.max_rows, step=100,
+                key=f"{key}_mr"))
+            if head[3].button("", icon=":material/delete:", key=f"{key}_del"):
+                draft.datasets.pop(index)
+                _forget(r"ds\d+")              # every card below renumbers
+                st.rerun()
+            if not above:
+                st.caption(":orange[Nothing above this to derive from — move "
+                           "it below the dataset it should read.]")
+            elif ds.base:
+                st.caption(f"Starts from **{ds.base}**'s finished rows and "
+                           f"applies the transforms below. **{ds.base}** "
+                           f"itself is untouched — every widget already on it "
+                           f"still shows what it showed.")
+        elif ds.source == "file":
             from kdbmonitor.ui import fileshape
 
             head = st.columns([3, 1.8, ICON_COL], vertical_alignment="bottom")
@@ -1334,6 +1553,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                              ref_tokens=_ref_tokens(draft, index, store))
             else:
                 _insert_reference(_ref_tokens(draft, index, store),
+                                  _table_tokens(draft, index),
                                   f"{key}_q", key)
                 ds.raw_qsql = qeditor.q_area("q", value=ds.raw_qsql or "",
                                              height=180, help=RAW_HELP,
@@ -1350,6 +1570,10 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                     st.caption("Use in your q: "
                                + "  ".join(f"`{{{{conn:{e}}}}}`"
                                            for e in ds.extra_connections))
+
+        # After the name box of whichever branch drew it, and before anything
+        # reads a base: renaming this dataset moves every dataset built on it.
+        _rebase(draft, was_named, ds.name)
 
         st.markdown("**Transforms**")
         for i, t in enumerate(list(ds.transforms)):
@@ -1383,9 +1607,9 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 # ones before it, not the dataset's final shape.
                 upstream = Dataset(name=ds.name, env=ds.env, mode=ds.mode,
                                    table=ds.table, transforms=ds.transforms[:i],
-                                   source=ds.source, shape=ds.shape)
-                _transform_form(t, dataset_columns(upstream, conn,
-                                                   learned_columns(ds.name)),
+                                   source=ds.source, shape=ds.shape,
+                                   base=ds.base)
+                _transform_form(t, produced_columns(draft, upstream, store),
                                 f"{key}_t{i}")
 
         add = st.columns([1.6, 1.6, 4.8], vertical_alignment="bottom")
@@ -1448,9 +1672,7 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
                 index=names.index(p.dataset) if p.dataset in names else 0,
                 key=f"{key}_ds")
             ds = next((d for d in draft.datasets if d.name == p.dataset), None)
-            conn = _connection_for(store, ds) if ds else None
-            columns = (dataset_columns(ds, conn, learned_columns(p.dataset))
-                      if ds else [])
+            columns = produced_columns(draft, ds, store)
             p.column = _pick(c[1], "Column", columns, p.column, f"{key}_col")
 
         p.default = st.text_input(
@@ -1592,12 +1814,29 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
     for i, ds in enumerate(list(draft.datasets)):
         _dataset_card(store, ds, i, draft)
 
-    if st.button("Add dataset", icon=":material/add:", type="primary"):
+    add = st.columns([1.5, 2.1, 4.4], vertical_alignment="bottom")
+    if add[0].button("Add dataset", icon=":material/add:", type="primary",
+                     key="dash_ds_add"):
         envs = sorted(store.list_environments())
         draft.datasets.append(Dataset(
             name=unique_name("dataset", [d.name for d in draft.datasets]),
             env="" if draft.source == "file" else (envs[0] if envs else ""),
             source=draft.source))
+        st.rerun()
+    # Named after the last dataset it could read, because that is the one it
+    # starts on — 'orders_2' would be a second orders, and this is not one.
+    last = draft.datasets[-1].name if draft.datasets else ""
+    if add[1].button("Add dataset from another", icon=":material/alt_route:",
+                     key="dash_ds_addderived", disabled=not draft.datasets,
+                     help="A second shape of a dataset you already have — group "
+                          "it, filter it, rank it — without changing what the "
+                          "original shows."
+                          if draft.datasets else
+                          "Add a dataset first; this one starts from it."):
+        draft.datasets.append(Dataset(
+            name=unique_name(f"{last}_grouped",
+                             [d.name for d in draft.datasets]),
+            env="", source="derived", base=last))
         st.rerun()
 
     st.divider()
@@ -1656,28 +1895,45 @@ def _render_step(step: Step) -> None:
         st.caption(":orange[No rows at this step.]")
 
 
-def run_preview(store, mgr, draft: Dashboard):
-    """Every dataset run step by step, so the editor can show what each did.
+def learn_columns(store, mgr, draft: Dashboard):
+    """Run every dataset step by step, keeping what each one's frame started as.
 
-    A file dataset previews against the sample its shape editor is holding, so
-    the frame the author sees is the same one a viewer's upload would produce.
-    Every dataset previews against the parameter values currently selected —
-    otherwise the author would be building a pipeline against a different
-    frame from the one their reader will actually see.
+    A file dataset runs against the sample its shape editor is holding, so the
+    frame the author sees is the same one a viewer's upload would produce. Every
+    dataset runs against the parameter values currently selected — otherwise the
+    author would be building a pipeline against a different frame from the one
+    their reader will actually see.
+
+    Returns the traces, and remembers two things from them: what each query
+    returned, which is the only reliable knowledge there is of a raw dataset's
+    shape, and why the ones that came back with nothing did — a picker still
+    empty after a run should be able to say what stopped it.
     """
-    if not st.session_state.pop("dash_preview_data", False):
-        return None
     from kdbmonitor.ui.fileshape import stored_sample
     uploads = {ds.name: stored_sample(ds.name) for ds in draft.datasets
                if ds.source == "file" and stored_sample(ds.name) is not None}
     traces = trace_datasets(draft, store, mgr, date.today(), uploads=uploads,
                             chosen=ui_parameters.chosen_values(draft))
+    failed = {}
     for name, trace in traces.items():
-        # The query's own columns are the only reliable knowledge we have of a
-        # raw dataset's shape — keep them for the column pickers.
         if trace.steps:
             _remember_columns(name, trace.steps[0].columns)
+        if trace.error:
+            failed[name] = trace.error
+    st.session_state["dash_learn_failed"] = failed
     return traces
+
+
+def run_preview(store, mgr, draft: Dashboard):
+    """The step-by-step run behind the Data section's 'Run and inspect' button.
+
+    The same run as :func:`learn_columns` — the button there wants the frames,
+    the one in Layout wants only the columns they came with, and running it
+    twice for the two of them would send every query twice.
+    """
+    if not st.session_state.pop("dash_preview_data", False):
+        return None
+    return learn_columns(store, mgr, draft)
 
 
 def _render_dataset_results(traces) -> None:
@@ -1694,8 +1950,11 @@ def _render_dataset_results(traces) -> None:
     for name, trace in traces.items():
         with st.container(border=True):
             st.markdown(f"### {name}")
+            # Open when nothing ran, which is when the query is the thing you
+            # need to look at — and copyable, because the next step after a
+            # query that failed here is running it somewhere you can poke at it.
             with st.expander("Query sent", expanded=not trace.steps):
-                qeditor.q_block(trace.qsql, empty="(no query)")
+                qeditor.q_block(trace.qsql, empty="(no query)", copy=True)
 
             if trace.error:
                 st.error(trace.error, icon=":material/error:")
@@ -1735,21 +1994,39 @@ def _pick_many(container, label: str, columns: list[str], current, key: str,
                                  **kwargs)
 
 
-def _move_column(spec: dict, shown: list[str], i: int, j: int, key: str) -> None:
-    """Swap two of a table's columns, as a button callback.
+def _move_column(spec: dict, shown: list[str], i: int, to: int, cols_key: str,
+                 form_key: str) -> None:
+    """Move one of a table's columns to index ``to``, as a widget callback.
 
     An empty ``columns`` means 'all of them, in dataset order'; there is no
     order to move within until it is written down, so the first move records
     the list as it stands and moves within that.
 
-    Runs as an ``on_click`` rather than inline, because the multiselect holds
-    the selection in its own widget state: it has to be told the new order too,
-    and Streamlit only allows that before the widget is drawn.
+    Runs as a callback rather than inline, because the multiselect holds the
+    selection in its own widget state: it has to be told the new order too, and
+    Streamlit only allows that before the widget is drawn.
+
+    Every 'move to' box is emptied afterwards, and that is the whole reason they
+    are blank rather than showing the current position. A box that springs back
+    to a number belongs to the *slot* it sits in, not to the column that was in
+    it: press its stepper twice and the second press moves whatever has since
+    landed there, undoing the first. Blank asks for a destination, which is a
+    question with the same answer however many times it is asked.
     """
-    order = list(shown)
-    order[i], order[j] = order[j], order[i]
+    order = _reordered(shown, i, to)
     spec["columns"] = order
-    st.session_state[key] = order
+    st.session_state[cols_key] = order
+    for col in order:
+        st.session_state[f"{form_key}_col_{_slug(col)}_pos"] = None
+
+
+def _jump_column(spec: dict, shown: list[str], i: int, cols_key: str,
+                 form_key: str, pos_key: str) -> None:
+    """Move a column to the position typed into its 'move to' box."""
+    target = st.session_state.get(pos_key)
+    if target is None:                    # cleared rather than typed into
+        return
+    _move_column(spec, shown, i, int(target) - 1, cols_key, form_key)
 
 
 def _format_picker(container, label: str, current: str, key: str,
@@ -1781,6 +2058,45 @@ def _format_picker(container, label: str, current: str, key: str,
         help="A Python format spec (,.0f or .2%) or a date pattern (%Y-%m-%d).")
     container.caption(f"→ **{format_sample(spec)}**")
     return spec
+
+
+# Width by name rather than by number, because a table has two outputs and a
+# number would only ever be honest about one of them: the screen sizes a column
+# in pixels, the printed page in its share of the paper. A name means the same
+# thing to both — "this column is narrow" — and each spends its own currency on
+# it (``ui.tables.WIDTHS`` and ``render_mpl.WIDTH_CHARS``).
+# AUTO is a spelled-out option rather than the empty string the spec stores,
+# because a picker's options are values a person chooses between and "" is not
+# one of those — the same reason the highlight picker offers "(none)".
+AUTO_WIDTH = "auto"
+WIDTH_LABELS: dict[str, str] = {
+    AUTO_WIDTH: "Automatic", "small": "Narrow", "medium": "Medium",
+    "large": "Wide",
+}
+
+
+def _width_picker(container, current: str, key: str,
+                  show_label: bool = True) -> str:
+    """How much of the table's width one column is worth, '' for automatic.
+
+    'Automatic' is the default and means what it always did: a column's share
+    is proportional to the longest text in it. That is the right rule until it
+    isn't — one long note, comment or reason field earns room out of all
+    proportion to how much anyone needs to read of it, and takes it from the
+    nine short columns beside it.
+    """
+    options = list(WIDTH_LABELS)
+    chosen = container.selectbox(
+        "Width", options,
+        index=options.index(current) if current in options else 0,
+        format_func=lambda w: WIDTH_LABELS[w], key=key,
+        label_visibility="visible" if show_label else "collapsed",
+        help=("How much width this column gets. 'Automatic' hands it a share "
+              "proportional to its longest value, which is what makes one long "
+              "note column squeeze eight short ones. A named width is fixed "
+              "instead, and text past it is cut with an ellipsis rather than "
+              "allowed to run into the next column.") if show_label else None)
+    return "" if chosen == AUTO_WIDTH else chosen
 
 
 def _references_bands_form(s: dict, columns: list[str], key: str) -> None:
@@ -1887,13 +2203,14 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
 
         shown = s["columns"]
         if shown:
-            st.caption("Header text and format, per column, top to bottom in "
-                       "the order they print. Leave the header blank to keep "
-                       "the column's own name.")
+            st.caption("Header text, format and width, per column, top to "
+                       "bottom in the order they print. Leave the header blank "
+                       "to keep the column's own name.")
             labels = dict(s.get("labels", {}))
             formats = dict(s.get("formats", {}))
+            widths = dict(s.get("widths", {}))
             for i, col in enumerate(shown):
-                cc = st.columns([1.6, 2.2, 2.6, ICON_COL, ICON_COL],
+                cc = st.columns([1.1, 1.7, 1.9, 1.2, 0.9, ICON_COL, ICON_COL],
                                 vertical_alignment="bottom")
                 cc[0].markdown(f"`{col}`")
                 # Keyed by column name, never by row number: drop a column and
@@ -1907,21 +2224,37 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                 formats[col] = _format_picker(
                     cc[2], "Format", formats.get(col, ""), f"{slot}_fmt",
                     show_label=i == 0)
-                cc[3].button("", icon=":material/arrow_upward:",
+                widths[col] = _width_picker(cc[3], widths.get(col, ""),
+                                            f"{slot}_w", show_label=i == 0)
+                # A destination, alongside the arrows rather than instead of
+                # them: this list is as long as the dataset is wide, and
+                # stepping a column up one place at a time is a click and a
+                # rerun per place. Blank, and blank again after each move —
+                # see _move_column for why it must never show a position.
+                cc[3].number_input(
+                    "Move to", 1, len(shown), value=None, step=1,
+                    key=f"{slot}_pos", placeholder=str(i + 1),
+                    label_visibility="visible" if i == 0 else "collapsed",
+                    help="Type the place this column should print at — one move "
+                         "however far it travels. The arrows move it one place.",
+                    on_change=_jump_column,
+                    args=(s, shown, i, f"{key}_cols", key, f"{slot}_pos"))
+                cc[4].button("", icon=":material/arrow_upward:",
                              key=f"{slot}_up", disabled=i == 0,
                              help="Print this column one place earlier.",
                              on_click=_move_column,
-                             args=(s, shown, i, i - 1, f"{key}_cols"))
-                cc[4].button("", icon=":material/arrow_downward:",
+                             args=(s, shown, i, i - 1, f"{key}_cols", key))
+                cc[5].button("", icon=":material/arrow_downward:",
                              key=f"{slot}_down", disabled=i == len(shown) - 1,
                              help="Print this column one place later.",
                              on_click=_move_column,
-                             args=(s, shown, i, i + 1, f"{key}_cols"))
+                             args=(s, shown, i, i + 1, f"{key}_cols", key))
             # Empties go, but a column that is merely not shown keeps what it
             # was given: deselecting a column to try another must not throw its
             # header away, or putting it back means typing it again.
             s["labels"] = {k: v for k, v in labels.items() if v and v.strip()}
             s["formats"] = {k: v for k, v in formats.items() if v}
+            s["widths"] = {k: v for k, v in widths.items() if v}
 
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
         hl_opts = ["(none)"] + with_stored(columns, current if current != "(none)"
@@ -1998,7 +2331,119 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
 
 # --- layout section --------------------------------------------------------
 
-def _render_layout(store, draft: Dashboard) -> None:
+def _move_row(draft: Dashboard, i: int, to: int) -> None:
+    """Move a row and say so, then rerun. Never returns.
+
+    Every control here belongs to a *slot* rather than to what is currently in
+    it — that is what ``_forget`` exists for, and it is true of the arrows as
+    much as of the 'move to' box. It has one consequence worth announcing: after
+    a move the row has gone somewhere else, and using the same control again
+    acts on whatever has since arrived. Rows look alike from the outside ("Row 3
+    · 2 widget(s)"), so without being told, a second press reads as the first
+    one having done nothing at all rather than as a second, different move.
+    """
+    to = max(0, min(to, len(draft.rows) - 1))
+    if to != i:
+        draft.rows[:] = _reordered(draft.rows, i, to)
+        st.toast(f"Row {i + 1} moved to position {to + 1}",
+                 icon=":material/swap_vert:")
+    _forget(_ROW_KEYS)      # including the 'move to' box, which blanks again
+    st.rerun()
+
+
+def _placed_widget(payload: dict, names: list[str]) -> Widget:
+    """A stored widget, rebuilt and pointed at a dataset this dashboard has.
+
+    Through the dict and back, so it shares no spec, no reference list and no
+    band list with whatever it came from. A widget off the library or the
+    clipboard names the dataset it was built against, and that may be another
+    dashboard's — keep the name when it fits, and otherwise point it somewhere
+    real rather than at nothing.
+    """
+    w = widget_from_dict(payload)
+    if w.dataset not in names:
+        w.dataset = names[0]
+    return w
+
+
+def _paste_row_here(draft: Dashboard, at: int, key: str) -> None:
+    """The 'paste a copied row here' gap between two rows.
+
+    Drawn only while a row is actually on the clipboard, so the layout is not
+    carrying an insert point between every pair of rows for the whole time
+    nobody is pasting anything.
+    """
+    clip = _clipboard("row")
+    if not clip:
+        return
+    if st.button(f"Paste {clip['label']} here", icon=":material/content_paste:",
+                 key=key, type="tertiary",
+                 help="The copy stays on the clipboard, so it can be pasted "
+                      "again further down."):
+        draft.rows.insert(at, row_from_dict(clip["payload"]))
+        _forget(_ROW_KEYS)
+        st.rerun()
+
+
+def _render_clipboard() -> None:
+    """What is held for pasting, and a way to put it down.
+
+    Said once at the top rather than left to be inferred from the paste buttons
+    that appear further down: a clipboard nobody can see is a clipboard nobody
+    remembers filling, and the row insert points only make sense once you know
+    why they turned up.
+    """
+    held = [(kind, clip) for kind in _CLIP_KEYS
+            if (clip := _clipboard(kind)) is not None]
+    if not held:
+        return
+    c = st.columns([6, 1.4], vertical_alignment="bottom")
+    what = " and ".join(f"{kind} **{clip['label']}**" for kind, clip in held)
+    c[0].caption(f":material/content_paste: Holding {what} — paste with the "
+                 f"buttons below. It stays here until it is cleared, so it can "
+                 f"be pasted more than once.")
+    if c[1].button("Clear", key="dash_clip_clear", icon=":material/backspace:"):
+        for kind, _ in held:
+            st.session_state.pop(_CLIP_KEYS[kind], None)
+        st.rerun()
+
+
+def _render_unknown_columns(store, mgr, draft: Dashboard) -> None:
+    """The way out of a column picker with nothing in it.
+
+    A raw q query's columns are only knowable by running it, and this is the
+    section where not knowing them costs something: reopen a saved dashboard,
+    come straight here to add a table, and every picker is empty because nothing
+    has run in this editing session yet. You can still type a column name — the
+    pickers all take one — but typing from memory is not the job, so the run
+    that would answer it is offered right here rather than in another section.
+    """
+    unknown = [ds.name for ds in draft.datasets
+               if not produced_columns(draft, ds, store)]
+    if not unknown:
+        return
+
+    c = st.columns([6, 1.8], vertical_alignment="bottom")
+    c[0].caption(f":orange[No columns known yet for "
+                 f"{', '.join(f'**{n}**' for n in unknown)} — a query's shape "
+                 f"is only knowable by running it. The pickers below take a "
+                 f"typed name meanwhile.]")
+    if c[1].button("Find columns", icon=":material/search:",
+                   key="dash_learn_cols",
+                   help="Run each dataset once and keep what it returned, so "
+                        "the pickers can offer real column names."):
+        learn_columns(store, mgr, draft)
+        st.rerun()
+
+    # Why a run did not answer it, if one has been tried — a dataset whose
+    # server is down would otherwise leave the button looking like it did
+    # nothing at all.
+    for name, why in (st.session_state.get("dash_learn_failed") or {}).items():
+        if name in unknown:
+            st.caption(f":red[{name}: {why}]")
+
+
+def _render_layout(store, mgr, draft: Dashboard) -> None:
     if not draft.datasets:
         st.warning("Add a dataset first — widgets read from datasets.",
                    icon=":material/warning:")
@@ -2029,14 +2474,19 @@ def _render_layout(store, draft: Dashboard) -> None:
                    f"holds carries on over further pages, which only the data "
                    f"can tell you.{turns}")
 
+    _render_unknown_columns(store, mgr, draft)
+    _render_clipboard()
+
     for r_i, row in enumerate(list(draft.rows)):
         placed = placements.get(r_i)
         if placed and placed.starts_page and placed.page > 1:
             st.markdown(f":gray[──────  page break  ·  page {placed.page} "
                         f"starts here  ──────]")
 
+        _paste_row_here(draft, r_i, f"r{r_i}_rpaste")
+
         with st.container(border=True):
-            head = st.columns([3, 1.6, 0.6, 0.6, 0.6, 0.6],
+            head = st.columns([2.2, 1.3, 1.1, 0.6, 0.6, 0.6, 0.6],
                               vertical_alignment="bottom")
             page_badge = (f" :blue-badge[page {placed.page}]" if placed else "")
             head[0].markdown(f"**Row {r_i + 1}**{page_badge} · "
@@ -2044,23 +2494,37 @@ def _render_layout(store, draft: Dashboard) -> None:
             row.height_in = float(head[1].number_input(
                 "Height (in)", 0.4, 9.0, float(row.height_in), step=0.1,
                 key=f"r{r_i}_h", help="Printed height on the A4 page."))
-            if head[2].button("", icon=":material/arrow_upward:", key=f"r{r_i}_u",
-                              disabled=r_i == 0):
-                draft.rows[r_i - 1], draft.rows[r_i] = draft.rows[r_i], draft.rows[r_i - 1]
-                _forget(_ROW_KEYS)
-                st.rerun()
-            if head[3].button("", icon=":material/arrow_downward:", key=f"r{r_i}_d",
-                              disabled=r_i == len(draft.rows) - 1):
-                draft.rows[r_i + 1], draft.rows[r_i] = draft.rows[r_i], draft.rows[r_i + 1]
-                _forget(_ROW_KEYS)
-                st.rerun()
-            if head[4].button("", icon=":material/content_copy:",
+            # A destination, beside the arrows rather than instead of them:
+            # reaching the top of a long report was one click and one full
+            # rerun per row passed. Blank, and blank again after each move, for
+            # the reason given in _move_column — a box showing this row's
+            # position belongs to the *slot*, so stepping it twice moves
+            # whatever has since landed there and undoes the first move.
+            target = head[2].number_input(
+                "Move to", 1, len(draft.rows), value=None, step=1,
+                key=f"r{r_i}_pos", placeholder=str(r_i + 1),
+                help="Type the position this row should print at — one move "
+                     "however far it travels. The arrows move it one place.")
+            if target is not None:
+                _move_row(draft, r_i, int(target) - 1)
+            if head[3].button("", icon=":material/arrow_upward:",
+                              key=f"r{r_i}_u", disabled=r_i == 0,
+                              help="Move this row one place earlier."):
+                _move_row(draft, r_i, r_i - 1)
+            if head[4].button("", icon=":material/arrow_downward:",
+                              key=f"r{r_i}_d", disabled=r_i == len(draft.rows) - 1,
+                              help="Move this row one place later."):
+                _move_row(draft, r_i, r_i + 1)
+            if head[5].button("", icon=":material/content_copy:",
                               key=f"r{r_i}_c",
-                              help="Copy this row, widgets and all, in below."):
-                draft.rows.insert(r_i + 1, row_from_dict(row_to_dict(row)))
-                _forget(_ROW_KEYS)
+                              help="Copy this row, widgets and all. 'Paste row "
+                                   "here' then appears between every row, so "
+                                   "the copy lands where you want it rather "
+                                   "than only below the original."):
+                _copy("row", row_to_dict(row),
+                      f"row {r_i + 1} ({len(row.widgets)} widget(s))")
                 st.rerun()
-            if head[5].button("", icon=":material/delete:", key=f"r{r_i}_x"):
+            if head[6].button("", icon=":material/delete:", key=f"r{r_i}_x"):
                 draft.rows.pop(r_i)
                 _forget(_ROW_KEYS)
                 st.rerun()
@@ -2101,17 +2565,14 @@ def _render_layout(store, draft: Dashboard) -> None:
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
                     if c[6].button("", icon=":material/content_copy:",
-                                   key=f"{key}_dup", disabled=len(row.widgets) >= 4,
-                                   help="Copy this widget in beside itself. Two "
-                                        "tables laid out the same way over "
-                                        "different datasets are then one change "
-                                        "apart, not built twice."):
-                        # Through the dict and back, so the copy shares no spec,
-                        # no reference list and no band list with the original —
-                        # editing one would otherwise edit both.
-                        row.widgets.insert(w_i + 1,
-                                           widget_from_dict(widget_to_dict(w)))
-                        _forget(rf"r{r_i}w\d+")
+                                   key=f"{key}_dup",
+                                   help="Copy this widget. 'Paste' then "
+                                        "appears on every row that has room — "
+                                        "including this one — so two tables "
+                                        "laid out the same way over different "
+                                        "datasets are one change apart, "
+                                        "wherever on the page they belong."):
+                        _copy("widget", widget_to_dict(w), w.title or w.type)
                         st.rerun()
                     if c[7].button("", icon=":material/close:", key=f"{key}_del"):
                         row.widgets.pop(w_i)
@@ -2122,8 +2583,7 @@ def _render_layout(store, draft: Dashboard) -> None:
                     # Namespaced: the card's own controls live under "{key}_*",
                     # so an axis field called "_x" would collide with the remove
                     # button. Keep the spec form in its own key space.
-                    _widget_form(w, dataset_columns(ds, _connection_for(store, ds),
-                                                    learned_columns(w.dataset)),
+                    _widget_form(w, produced_columns(draft, ds, store),
                                  f"{key}_spec")
                     # Saving to the library is something done once a widget is
                     # finished, not while it is being arranged — so it sits
@@ -2134,7 +2594,7 @@ def _render_layout(store, draft: Dashboard) -> None:
                     _save_to_library(lib[0], store, "widget", widget_to_dict(w),
                                      key, suggested=w.title)
 
-            add = st.columns([1.4, 1.6, 5], vertical_alignment="bottom")
+            add = st.columns([1.4, 1.6, 1.9, 3.1], vertical_alignment="bottom")
             full = len(row.widgets) >= 4
             if add[0].button("Add widget", icon=":material/add:",
                              key=f"r{r_i}_add", disabled=full):
@@ -2143,13 +2603,17 @@ def _render_layout(store, draft: Dashboard) -> None:
             saved = _load_from_library(add[1], store, "widget", f"r{r_i}_wlib",
                                        disabled=full)
             if saved:
-                w = widget_from_dict(saved.payload)
-                # A saved widget names the dataset it was built against, which
-                # this dashboard may not have. Keep the name when it fits, and
-                # otherwise point it somewhere real rather than at nothing.
-                if w.dataset not in names:
-                    w.dataset = names[0]
-                row.widgets.append(w)
+                row.widgets.append(_placed_widget(saved.payload, names))
+                st.rerun()
+            clip = _clipboard("widget")
+            if clip and add[2].button(
+                    f"Paste '{clip['label']}'", icon=":material/content_paste:",
+                    key=f"r{r_i}_wpaste", disabled=full,
+                    help="This row is full — a row holds at most 4 widgets."
+                         if full else "Paste the copied widget onto this row. "
+                                      "It stays on the clipboard, so it can be "
+                                      "pasted onto other rows too."):
+                row.widgets.append(_placed_widget(clip["payload"], names))
                 st.rerun()
 
         # Room left below this row, so you can see what will still fit before
@@ -2164,6 +2628,10 @@ def _render_layout(store, draft: Dashboard) -> None:
             else:
                 st.caption(f":gray[{free:.1f} in still free on page "
                            f"{placed.page}.]")
+
+    # The last insert point, so a copied row can land at the bottom too — every
+    # other one sits above a row.
+    _paste_row_here(draft, len(draft.rows), "rend_rpaste")
 
     if st.button("Add row", icon=":material/add:", type="primary"):
         draft.rows.append(Row(widgets=[], height_in=2.5))
@@ -2325,7 +2793,7 @@ def render(store, mgr) -> None:
             _render_library(store)
     elif section == "Layout":
         with form_area():
-            _render_layout(store, draft)
+            _render_layout(store, mgr, draft)
     else:
         # Run first, draw second: the forms above the results are built from
         # what the run just learned about each query.
