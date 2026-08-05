@@ -544,7 +544,7 @@ A dashboard is rows of 1–4 widgets, each row with a printed height in inches.
 | Widget | Notes |
 |---|---|
 | `kpi` | one aggregate, formatted, optionally turning red past a threshold |
-| `table` | column picker, per-column headers, formats and widths, conditional highlighting |
+| `table` | column picker, per-column headers, formats and widths, conditional highlighting, on-screen grouping |
 | `bar` `line` `scatter` | x/y, optional split-by series, sorting, trend line |
 | `hist` `box` `heatmap` `pie` | distributions, spreads, grids, composition |
 | `text` | markdown with `{{dataset.agg.column}}` placeholders that update with the data |
@@ -583,6 +583,34 @@ narrowed takes no part in choosing how big the table prints — letting it would
 mean one clipped note column shrinking every figure on the page, the opposite of
 what narrowing it was for. It is cut to its box instead, with an ellipsis, the
 same way an over-wide table has always been handled once the paper runs out.
+
+**A table on screen can be read as a tree.** Pick a column in **Group rows by**
+and the rows are gathered under its values — every order on a venue under that
+venue, every fill in a basket under the basket — one heading per value with a
+row count beside it, folded away until you open it. It narrows nothing: every
+row is still there, one level down, and the column gathered on is not repeated
+inside the group because the heading is already saying it.
+
+Which column that is belongs to **whoever is reading**, not to whoever built the
+dashboard. The same picker sits above the table in the live view, so the same
+table gets read by venue at nine and by basket when something goes wrong at half
+past, without opening the editor. What you choose there sticks — including
+choosing *(none)* over a grouping the author set — and survives the refresh
+underneath you, the same way a column filter does. The setting in the editor is
+where a reader lands, not where they are stuck.
+
+A few headings arrive open, since that is the whole table anyway; more than a
+handful arrive folded, so the page is a summary you open one line of. Searching
+or filtering opens them again — *4 of 900 rows* over four closed doors would be
+that line telling the truth and showing nothing. A column with a different value
+in every row is not offered (a fold between every row is not a grouping), and a
+grouping that would run past 50 headings is listed flat instead, with the page
+saying so rather than appearing to ignore the picker.
+
+Grouping is a screen affordance, like sorting and the search box: **the PDF
+prints every row in one flat list.** Paper has no folds to open. To print
+by-group figures, group the *data* instead — a `groupby` transform, or a derived
+dataset — which is a different and permanent thing.
 
 The **Layout** editor shows where the page breaks will fall before you generate
 anything: a `page N` badge on every row, a `page break` marker where a new page
@@ -909,6 +937,8 @@ kdbmonitor/
     timectx.py             # period spec -> dates, q date clause, {{date_*}} refs
     transform.py           # dataset transforms (derive/groupby/sort/...)
     dataset.py             # run a dataset: env+period -> connection -> rows
+    tablefilter.py         # narrowing a table by its columns, spreadsheet-style
+    tablegroup.py          # gathering a table's rows under the value they share
     theme.py               # palette shared by both renderers
     plotmodel.py           # widget + rows -> resolved, backend-agnostic plot
     render_plotly.py       # PlotModel -> interactive figure (screen)
@@ -919,7 +949,7 @@ kdbmonitor/
     dashboards.py          # gallery, tab strip, live view, PDF export
     dashboard_editor.py    # dataset + layout editors, save-time validation
     qeditor.py             # the q box (numbers, Tab) and coloured q output
-    tables.py              # a dashboard table on screen: formats, times, search
+    tables.py              # a dashboard table on screen: formats, search, filters, grouping
     popup.py               # the modal a fired alert opens, with its rows in it
     engine.py              # the monitoring loop (runs in the app shell, every tab)
 ```

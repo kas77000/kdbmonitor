@@ -9,11 +9,36 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from kdbmonitor.ui.tables import filter_key
+from kdbmonitor.ui.tables import filter_key, search_key
 
 SIDE = filter_key("w1", "side", "in")
 QTY_LO = filter_key("w1", "qty", "lo")
 QTY_HI = filter_key("w1", "qty", "hi")
+
+
+def _gen(app) -> int:
+    """How many times this table has been cleared.
+
+    Every control's key carries it, because that is the only thing a browser
+    accepts as 'start again' — so a test that clears and then looks at a
+    control has to ask for the key it has now, not the one it had.
+    """
+    try:
+        return int(app.session_state["tbl_gen_w1"])
+    except KeyError:
+        return 0
+
+
+def side_key(app) -> str:
+    return filter_key("w1", "side", "in", _gen(app))
+
+
+def qty_lo_key(app) -> str:
+    return filter_key("w1", "qty", "lo", _gen(app))
+
+
+def query_key(app) -> str:
+    return search_key("w1", _gen(app))
 
 SCRIPT = '''
 import pandas as pd
@@ -151,8 +176,9 @@ def test_one_click_puts_every_row_back_however_many_columns_were_narrowed(at):
     _clear_all(at)[0].click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert len(_drawn(at)) == 9
-    assert [m for m in at.multiselect if m.key == SIDE][0].value == []
-    assert [n for n in at.number_input if n.key == QTY_LO][0].value is None
+    assert [m for m in at.multiselect if m.key == side_key(at)][0].value == []
+    assert [n for n in at.number_input
+            if n.key == qty_lo_key(at)][0].value is None
 
 
 def test_clearing_takes_the_search_box_with_it(at):
@@ -163,7 +189,40 @@ def test_clearing_takes_the_search_box_with_it(at):
     _clear_all(at)[0].click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert len(_drawn(at)) == 9
-    assert [t for t in at.text_input if t.key == "tbl_q_w1"][0].value == ""
+    assert [t for t in at.text_input if t.key == query_key(at)][0].value == ""
+
+
+def test_clearing_gives_every_control_a_key_it_has_never_had(at):
+    """The difference is invisible here and decides it in a browser.
+
+    A browser remembers a widget by its id and re-sends what it holds on the
+    next rerun. Emptying the store, or deleting the key server-side, does not
+    reach it — so a search somebody had just cleared came back on their very
+    next click, and a ticked venue came back with it, under a button that had
+    reported putting every row back. A closed Filters popover is worse again:
+    its controls are off the page while their values are still remembered.
+    A key the browser has never seen is the one thing it reads as 'new'.
+    """
+    [m for m in at.multiselect if m.key == SIDE][0].set_value(["BUY"])
+    [t for t in at.text_input if t.key == "tbl_q_w1"][0].set_value("6981")
+    at.run()
+    _clear_all(at)[0].click().run()
+    assert _gen(at) == 1
+    assert side_key(at) != SIDE and query_key(at) != "tbl_q_w1"
+    assert [m for m in at.multiselect if m.key == side_key(at)][0].value == []
+    assert [t for t in at.text_input if t.key == query_key(at)][0].value == ""
+
+
+def test_clearing_twice_keeps_moving_the_keys_on(at):
+    """Once would fix the first clear and leave the second not working."""
+    [m for m in at.multiselect if m.key == SIDE][0].set_value(["BUY"])
+    at.run()
+    _clear_all(at)[0].click().run()
+    [m for m in at.multiselect if m.key == side_key(at)][0].set_value(["SELL"])
+    at.run()
+    _clear_all(at)[0].click().run()
+    assert _gen(at) == 2
+    assert len(_drawn(at)) == 9
 
 
 def test_a_search_alone_can_be_undone_the_same_way(at):

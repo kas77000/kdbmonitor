@@ -75,6 +75,7 @@ def referenced_columns(widget: Widget) -> list[str]:
     named = [widget.spec.get(f) for f in COLUMN_SPEC_FIELDS.get(widget.type, ())]
     if widget.type == "table":
         named += list(widget.spec.get("columns") or [])
+        named.append(widget.spec.get("group_by"))
     return [c for c in named if isinstance(c, str) and c.strip()]
 
 
@@ -158,6 +159,13 @@ class PlotModel:
     # otherwise claim. A note column with one long entry in it takes the room
     # nine short columns needed, and nothing about the text says it shouldn't.
     column_widths: list[str] = field(default_factory=list)
+    # Which column the screen should gather the rows under, as a display
+    # header. The author's starting point and nothing more: the reader picks
+    # their own and keeps it, because the question a table is being asked
+    # changes far faster than the dashboard answering it. Empty means a flat
+    # list, which is what a table has always been and what it stays on the
+    # printed page — a page has no folds to open.
+    group_by: str = ""
 
     # charts
     series: list[Series] = field(default_factory=list)
@@ -315,10 +323,17 @@ def _table(df: pd.DataFrame, spec: dict, title: str) -> PlotModel:
     # Keyed off the real column names like the formats above, not the display
     # headers, so renaming a header keeps the width it was given.
     widths = spec.get("widths", {})
+    # Carried as the display header rather than the real name, because the
+    # screen groups the frame above and that frame wears the headers. A
+    # group-by naming a column this table does not show is dropped: the heading
+    # would be the one thing on screen the reader could not see the value of.
+    group = spec.get("group_by", "")
+    group_header = headers[columns.index(group)] if group in columns else ""
     return PlotModel(kind="table", title=title, columns=headers,
                      rows=rows, cell_colors=cell_colors, frame=frame,
                      column_formats=[formats.get(c, "") for c in columns],
-                     column_widths=[str(widths.get(c, "")) for c in columns])
+                     column_widths=[str(widths.get(c, "")) for c in columns],
+                     group_by=group_header)
 
 
 def _y_label(spec: dict) -> str:

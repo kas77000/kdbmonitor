@@ -1483,6 +1483,15 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 help="Named by the servers it holds, so you are picking a "
                      "database rather than remembering which environment name "
                      "stands for it.")
+            # Re-read the server now that the environment above is this run's
+            # rather than last run's. Everything below asks it what tables and
+            # columns exist, and the one taken at the top of this function was
+            # fetched before the picker had spoken: moving a dataset to another
+            # environment left the Table list showing the *old* environment's
+            # tables, and the selectbox does not merely display that list — it
+            # writes one of them back into ds.table. A dataset would quietly
+            # come away pointed at a table its own server does not have.
+            conn = _connection_for(store, ds)
             modes = list(PERIOD_MODE_LABELS)
             market = is_marketdata_env(
                 store.list_environments().get(ds.env) or {})
@@ -2255,6 +2264,28 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
             s["labels"] = {k: v for k, v in labels.items() if v and v.strip()}
             s["formats"] = {k: v for k, v in formats.items() if v}
             s["widths"] = {k: v for k, v in widths.items() if v}
+
+        # Where the reader starts, not where they are stuck: the picker over
+        # the table itself is theirs to change, and what they choose there
+        # outlives a refresh. So this is a default, and saying so is the whole
+        # point of the caption underneath.
+        stored_group = s.get("group_by", "")
+        group_opts = [tables.NO_GROUP] + with_stored(columns, stored_group)
+        chosen = st.selectbox(
+            "Group rows by", group_opts,
+            index=group_opts.index(stored_group)
+            if stored_group in group_opts else 0,
+            key=f"{key}_grp", accept_new_options=True,
+            help="Gathers the rows under the values of one column — every "
+                 "order on a venue under that venue, folded away until it is "
+                 "opened. It narrows nothing: every row is still there, one "
+                 "level down.")
+        s["group_by"] = "" if chosen == tables.NO_GROUP else chosen
+        st.caption("Grouping is for the screen. Whoever is reading can group "
+                   "by any column they like without editing anything, and "
+                   "their choice sticks; this is the one they land on. The "
+                   "printed page keeps every row in one flat list — paper has "
+                   "no folds to open.")
 
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
         hl_opts = ["(none)"] + with_stored(columns, current if current != "(none)"

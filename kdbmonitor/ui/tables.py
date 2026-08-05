@@ -20,7 +20,29 @@ import pandas as pd
 import streamlit as st
 
 from kdbmonitor.core import tablefilter as tf
+from kdbmonitor.core import tablegroup as tg
 from kdbmonitor.core.plotmodel import format_time_of_day
+
+ROW_PX = 35          # Streamlit's data-editor row height, header included
+
+
+def fitted_height(n_rows: int, allotted_px: int) -> int:
+    """Height in pixels for st.dataframe: what the rows need, capped by the slot.
+
+    Forcing the row's printed height on a short table pads it with blank filler
+    rows, which reads as missing data. So a table that fits gets exactly the
+    height its rows come to, and only one taller than its slot is constrained —
+    there the cap is what makes it scroll rather than lose rows.
+
+    A pixel count rather than st.dataframe's "content", which Streamlit only
+    learned in 1.46: this is the same number, arrived at here instead of there,
+    and every version takes it. An empty table keeps a row's worth of room, so
+    its empty state has somewhere to print.
+
+    Lives here rather than beside the dashboard page because a group inside a
+    tree is a table too, and the two have to be sized by the same rule.
+    """
+    return min(ROW_PX * (max(n_rows, 1) + 1) + 3, allotted_px)
 
 # ",.0f" and friends: an optional thousands comma, then optional decimals.
 _NUMERIC = re.compile(r"^(,)?\.?(\d+)?f$")
@@ -47,8 +69,50 @@ _MOMENT_TOKENS: dict[str, str] = {
 }
 
 
-def search_key(widget_key: str) -> str:
-    return f"tbl_q_{widget_key}"
+def gen_key(widget_key: str) -> str:
+    return f"tbl_gen_{widget_key}"
+
+
+def generation(widget_key: str) -> int:
+    """How many times this table's controls have been cleared.
+
+    It rides on every control's key, so clearing gives them all new keys. That
+    is the only thing a browser accepts as "start again": a widget keeps what
+    it holds under an id it has seen before, and re-sends it on the next rerun
+    — see :func:`_clear`.
+    """
+    return int(st.session_state.get(gen_key(widget_key), 0))
+
+
+def _generational(name: str, gen: int) -> str:
+    """A key that is unchanged until the first clear, so nothing stored under
+    the original name is orphaned by adding this."""
+    return name if not gen else f"{name}_g{gen}"
+
+
+def search_key(widget_key: str, gen: int = 0) -> str:
+    return _generational(f"tbl_q_{widget_key}", gen)
+
+
+# What the group-by picker says for a flat table. A word rather than an empty
+# option, because "" in a selectbox reads as a rendering fault.
+NO_GROUP = "(none)"
+
+
+def group_key(widget_key: str) -> str:
+    return f"tbl_g_{widget_key}"
+
+
+def group_frame_key(widget_key: str, label: str) -> str:
+    """One heading's own table, named for the heading rather than its place.
+
+    Hashed and named like :func:`filter_key`, and for the same reason: a
+    refresh can bring the headings back in another order, and a key tied to
+    position would hand one group's scroll and column sort to whichever group
+    landed in its slot.
+    """
+    token = hashlib.md5(str(label).encode("utf-8")).hexdigest()[:10]
+    return f"tbl_grp_{token}_{widget_key}"
 
 
 def state_key(widget_key: str) -> str:
@@ -66,7 +130,7 @@ def state_key(widget_key: str) -> str:
     return f"tbl_state_{widget_key}"
 
 
-def filter_key(widget_key: str, column: str, part: str) -> str:
+def filter_key(widget_key: str, column: str, part: str, gen: int = 0) -> str:
     """A filter control's key, named for its column rather than its position.
 
     Hashed because a header can hold spaces, dots and anything else a query
@@ -75,15 +139,25 @@ def filter_key(widget_key: str, column: str, part: str) -> str:
     or to bring back a column that a parameter had taken away, and a positional
     key would hand one column's condition to whichever column landed in its
     place.
+
+    ``gen`` is this table's clear count — see :func:`generation`.
     """
     token = hashlib.md5(str(column).encode("utf-8")).hexdigest()[:10]
-    return f"tbl_f{part}_{token}_{widget_key}"
+    return _generational(f"tbl_f{part}_{token}_{widget_key}", gen)
 
 
 def _stored(widget_key: str) -> dict:
-    """This table's remembered controls: what was typed, not what it meant."""
-    return st.session_state.setdefault(
-        state_key(widget_key), {"vals": {}, "query": ""})
+    """This table's remembered controls: what was typed, not what it meant.
+
+    ``group`` is three-valued on purpose. ``None`` is nobody has chosen yet, so
+    the author's grouping stands; ``""`` is a reader who chose a flat table, and
+    it has to outlast a refresh or the author's choice would spring back every
+    few seconds under somebody who had just turned it off.
+    """
+    held = st.session_state.setdefault(
+        state_key(widget_key), {"vals": {}, "query": "", "group": None})
+    held.setdefault("group", None)
+    return held
 
 
 def forget(key_prefix: str) -> None:
@@ -261,11 +335,30 @@ def filterable(frame: pd.DataFrame, formats: list[str]) -> pd.DataFrame:
     column really is — would be answering a question nobody asked.
     """
     out = frame.copy()
-    for i, name in enumerate(out.columns):
-        if is_clock(out[name]):
-            spec = formats[i] if i < len(formats) else ""
-            out[name] = out[name].dt.strftime(_strftime_for(spec))
+    for i in range(len(out.columns)):
+        column = out.iloc[:, i]
+        shown = as_shown(column, _format_at(formats, i))
+        if shown is not column:
+            out.isetitem(i, shown)
     return out
+
+
+def _format_at(formats: list[str], i: int) -> str:
+    return formats[i] if i < len(formats) else ""
+
+
+def as_shown(column: pd.Series, spec: str) -> pd.Series:
+    """One column the way it prints — a clock as its time, not as its anchor.
+
+    Everything else is handed back untouched, so a caller can put a whole frame
+    or a single column through it and get the same answer either way. That
+    matters where a grouping heading is taken from one column of a frame the
+    reader is looking at: the heading has to say 09:15, which is what the cell
+    under it says, rather than the 1970 timestamp holding it.
+    """
+    if not is_clock(column):
+        return column
+    return column.dt.strftime(_strftime_for(spec))
 
 
 def _strftime_for(spec: str) -> str:
@@ -283,29 +376,33 @@ def _range_control(column: pd.Series, name: str, key: str, raw: dict) -> None:
     """
     low, high = tf.bounds_of(column)
     dates = pd.api.types.is_datetime64_any_dtype(column)
+    gen = generation(key)
     left, right = st.columns(2)
     if dates:
         with left:
             st.date_input("From", value=raw.get("lo"),
-                          key=filter_key(key, name, "lo"))
+                          key=filter_key(key, name, "lo", gen))
         with right:
             st.date_input("To", value=raw.get("hi"),
-                          key=filter_key(key, name, "hi"))
+                          key=filter_key(key, name, "hi", gen))
         return
     step = 1 if pd.api.types.is_integer_dtype(column) else None
     with left:
         st.number_input("At least", value=raw.get("lo"), step=step,
-                        placeholder=f"{low}", key=filter_key(key, name, "lo"),
+                        placeholder=f"{low}",
+                        key=filter_key(key, name, "lo", gen),
                         label_visibility="collapsed")
     with right:
         st.number_input("At most", value=raw.get("hi"), step=step,
-                        placeholder=f"{high}", key=filter_key(key, name, "hi"),
+                        placeholder=f"{high}",
+                        key=filter_key(key, name, "hi", gen),
                         label_visibility="collapsed")
 
 
 def _controls(frame: pd.DataFrame, key: str, stored: dict) -> None:
     """One control per column, chosen by what the column holds and seeded by
     what was last typed into it."""
+    gen = generation(key)
     for name in frame.columns:
         column = frame[name]
         raw = stored["vals"].get(name) or tf.blank()
@@ -315,15 +412,92 @@ def _controls(frame: pd.DataFrame, key: str, stored: dict) -> None:
             st.multiselect(
                 name, tf.options_with(column, raw.get("in")),
                 default=list(raw.get("in") or []),
-                key=filter_key(key, name, "in"),
+                key=filter_key(key, name, "in", gen),
                 placeholder="all", label_visibility="collapsed")
         elif kind == "contains":
             st.text_input(
                 name, value=raw.get("txt") or "",
-                key=filter_key(key, name, "txt"),
+                key=filter_key(key, name, "txt", gen),
                 placeholder="contains…", label_visibility="collapsed")
         else:
             _range_control(column, name, key, raw)
+
+
+def _group_choice(stored: dict, pm) -> str:
+    """The column this table is meant to be gathered under, asked for or not.
+
+    The author's ``group_by`` is a starting point: it applies until somebody
+    reading picks their own, and after that theirs is the answer — including
+    when theirs is "no grouping at all", which is why the store holds ``""``
+    and ``None`` as different things.
+    """
+    chosen = stored.get("group")
+    return (getattr(pm, "group_by", "") or "") if chosen is None else chosen
+
+
+def _grouped_on(stored: dict, pm, frame: pd.DataFrame) -> str:
+    """The same choice, once this snapshot has been asked whether it can honour
+    it — '' where it cannot, which is a flat table.
+
+    A choice naming a column that is not here is remembered rather than
+    honoured, so a column a parameter took away brings its grouping back with
+    it, exactly as a tick survives a snapshot with no BUYs in it.
+    """
+    chosen = _group_choice(stored, pm)
+    # Exactly one, never merely present: two columns sharing a display header
+    # cannot be told apart by name, and picking one of them at random is worse
+    # than not grouping.
+    return chosen if list(frame.columns).count(chosen) == 1 else ""
+
+
+def _group_control(container, offered: list[str], key: str,
+                   current: str) -> None:
+    """The picker that says which column the rows are gathered under.
+
+    Seeded rather than read: like every other control over a table, what it
+    holds is put back from the durable store, because Streamlit deletes the
+    value of a widget it did not draw and a refresh can take this one off the
+    page for a run.
+    """
+    options = [NO_GROUP] + list(offered)
+    if current and current not in options:
+        options.append(current)
+    container.selectbox(
+        "Group by", options, key=group_key(key),
+        index=options.index(current) if current in options else 0,
+        help="Gather the rows under the values of one column — every order on "
+             "a venue, every fill in a basket — and fold the rest away. Yours "
+             "to change whenever the question changes; it narrows nothing, so "
+             "every row is still here. The printed page stays a flat list.")
+
+
+def _draw_groups(parts: list, config: dict, height_px: int, key: str,
+                 open_all: bool) -> None:
+    """The tree: one heading per group, its rows underneath.
+
+    Headings start open only while there are few enough of them to read at
+    once, or while something is narrowing the table. That second case is the
+    one that matters: a reader who has just searched is being told "3 of 900
+    rows", and three rows behind three closed doors is that line telling the
+    truth and showing nothing.
+    """
+    for label, part in parts:
+        with st.expander(f"{label}  ·  {len(part):,}", expanded=open_all):
+            if not len(part.columns):
+                # Grouped by the only column it has. The heading and its count
+                # are the whole answer; an empty frame under it would just be
+                # a box of nothing.
+                continue
+            st.dataframe(part, use_container_width=True, hide_index=True,
+                         height=fitted_height(len(part), height_px),
+                         column_config={c: config[c] for c in part.columns
+                                        if c in config},
+                         key=group_frame_key(key, label))
+
+
+# Above this many headings a tree opened all at once is a wall rather than a
+# summary, so they start folded and the reader opens what they came for.
+OPEN_UP_TO = 6
 
 
 def _remember(frame: pd.DataFrame, key: str, stored: dict) -> None:
@@ -339,12 +513,16 @@ def _remember(frame: pd.DataFrame, key: str, stored: dict) -> None:
     rather than having it wiped by the absence of the box that set it. The way
     out of one of those is Clear all, which empties both.
     """
-    if search_key(key) in st.session_state:
-        stored["query"] = st.session_state[search_key(key)] or ""
+    gen = generation(key)
+    if search_key(key, gen) in st.session_state:
+        stored["query"] = st.session_state[search_key(key, gen)] or ""
+    if group_key(key) in st.session_state:
+        chosen = st.session_state[group_key(key)]
+        stored["group"] = "" if chosen == NO_GROUP else (chosen or "")
     for name in frame.columns:
         raw = dict(stored["vals"].get(name) or tf.blank())
         for part in tf.PARTS:
-            widget = filter_key(key, name, part)
+            widget = filter_key(key, name, part, gen)
             if widget not in st.session_state:
                 continue
             value = st.session_state[widget]
@@ -353,15 +531,42 @@ def _remember(frame: pd.DataFrame, key: str, stored: dict) -> None:
 
 
 def _clear(frame: pd.DataFrame, key: str) -> None:
-    for name in frame.columns:
-        for part in tf.PARTS:
-            st.session_state.pop(filter_key(key, name, part), None)
-    st.session_state.pop(search_key(key), None)
-    st.session_state.pop(state_key(key), None)
+    """Put every row back: forget what was typed, and re-key what typed it.
+
+    Emptying the store is only half of it. The controls on screen keep what
+    they are holding — a browser remembers a widget by its id, and re-sends
+    that value on the next rerun — so a search somebody had just cleared came
+    back on their very next click, and a ticked venue came back with it, the
+    table narrowing again under a button that had reported putting every row
+    back. Deleting the keys server-side does not help: the browser is not
+    asking.
+
+    A closed Filters popover makes it worse rather than better. Its controls
+    are gone from the page while their values are still remembered, so there
+    is nothing on screen to correct and nothing in session state to find.
+
+    Bumping the generation gives every control a key it has never had, which
+    is the one thing a browser reads as "this is a new control, I have nothing
+    for it". The grouping is deliberately left alone: it hides no rows, so
+    "put every row back" has nothing to say about it, and a reader who had
+    turned the author's grouping off would otherwise find it back on for having
+    cleared a filter.
+    """
+    st.session_state[gen_key(key)] = generation(key) + 1
+    held = st.session_state.pop(state_key(key), None) or {}
+    st.session_state[state_key(key)] = {"vals": {}, "query": "",
+                                        "group": held.get("group")}
+    # The grouping outlives the clear. It hides no rows, so "put every row
+    # back" has nothing to say about it — and a reader who had turned the
+    # author's grouping off would otherwise find it back on for having cleared
+    # a filter.
+    held = st.session_state.pop(state_key(key), None) or {}
+    st.session_state[state_key(key)] = {"vals": {}, "query": "",
+                                        "group": held.get("group")}
 
 
 def render(pm, height_px: int, key: str) -> None:
-    """One table, with its search box and its column filters above it.
+    """One table, with its search box, its grouping and its column filters.
 
     Falls back to the formatted rows where there is no typed frame — a table
     sliced for printing has one page's worth and nothing to sort.
@@ -389,7 +594,11 @@ def render(pm, height_px: int, key: str) -> None:
     # unless something is already narrowed, and then they have to stay whatever
     # the row count is. A refresh that briefly returns four rows must not take
     # away the only control that can undo the filter which is hiding the rest.
-    narrowed = tf.active_count(tf.filters_from(stored["vals"])) or stored["query"]
+    # A grouped table keeps its controls for the same reason: the picker that
+    # gathered the rows under a heading is the only one that can flatten them
+    # out again, whatever the row count is this second.
+    narrowed = (tf.active_count(tf.filters_from(stored["vals"]))
+                or stored["query"] or _group_choice(stored, pm))
     if len(frame) <= 8 and not narrowed:
         st.dataframe(frame, use_container_width=True, hide_index=True,
                      height=height_px, column_config=config)
@@ -401,7 +610,18 @@ def render(pm, height_px: int, key: str) -> None:
     filters = tf.filters_from(stored["vals"])
     live = tf.active_count(filters)
 
-    box, opener = st.columns([4, 1], vertical_alignment="bottom")
+    asked = _group_choice(stored, pm)
+    grouped = _grouped_on(stored, pm, frame)
+    # Read off the whole snapshot rather than off the rows a filter left, so
+    # narrowing a table never takes away the column you were about to group it
+    # by. The picker earns its place on the row only where there is something
+    # to gather the rows under, or where somebody has already asked for one.
+    offered = tg.groupable(against)
+    if offered or asked:
+        box, tree, opener = st.columns([3, 1.5, 1], vertical_alignment="bottom")
+        _group_control(tree, offered, key, asked)
+    else:
+        box, opener = st.columns([4, 1], vertical_alignment="bottom")
     with opener:
         # The count rides on the button, so a table that is being narrowed says
         # so before anybody opens anything. A popover is a closed door, and a
@@ -415,27 +635,59 @@ def render(pm, height_px: int, key: str) -> None:
                           on_click=_clear, args=(against, key))
     with box:
         query = st.text_input(
-            "Search", value=stored["query"], key=search_key(key),
+            "Search", value=stored["query"], key=search_key(key, generation(key)),
             placeholder="search every column…", label_visibility="collapsed")
 
     kept = tf.apply(against, filters)
     shown = matching(frame.loc[kept.index], query)
 
-    if live or (query and len(shown) != len(frame)):
+    # Grouped against the values as they print, taken from the rows on screen
+    # rather than from the whole frame: the heading over 09:15 has to say
+    # 09:15, and a tree drawn from rows a filter removed would be a tree of
+    # empty headings.
+    parts = []
+    if grouped:
+        spec = _format_at(list(pm.column_formats or []),
+                          list(frame.columns).index(grouped))
+        parts = tg.split(shown.drop(columns=[grouped]),
+                         tg.labels(as_shown(shown[grouped], spec)))
+    # More headings than a tree can carry. The rows are all still here, so they
+    # are shown as the list they were, and the reason is said out loud — a
+    # grouping that quietly did nothing would read as a broken picker.
+    crowded = len(parts) > tg.MAX_GROUPS
+
+    narrowing = bool(live or (query and len(shown) != len(frame)))
+    if narrowing or grouped:
         told = tf.summary(against, filters)
+        said = [f"{len(shown):,} of {len(frame):,} rows" if narrowing
+                else f"{len(shown):,} rows"]
+        if grouped:
+            said.append(f"{len(parts):,} "
+                        + ("group" if len(parts) == 1 else "groups")
+                        + f" by {grouped}"
+                        + (" — too many to fold, so they are listed"
+                           if crowded else ""))
+        if told:
+            said.append(told)
         # The undo sits beside the line that reports the narrowing, because
         # that line is where somebody notices rows are missing. Reaching it
         # through the popover meant opening the filters to stop filtering, and
         # then clearing them one column at a time if you did not spot the
         # button at the bottom.
         note, undo = st.columns([5, 1], vertical_alignment="center")
-        note.caption(f":gray[{len(shown):,} of {len(frame):,} rows"
-                     + (f" · {told}" if told else "") + "]")
-        undo.button("Clear all", key=f"tbl_clearall_{key}", type="tertiary",
-                    icon=":material/filter_alt_off:", use_container_width=True,
-                    help="Put every row back — clears every column filter and "
-                         "the search box",
-                    on_click=_clear, args=(against, key))
+        note.caption(f":gray[{' · '.join(said)}]")
+        if narrowing:
+            undo.button("Clear all", key=f"tbl_clearall_{key}", type="tertiary",
+                        icon=":material/filter_alt_off:",
+                        use_container_width=True,
+                        help="Put every row back — clears every column filter "
+                             "and the search box",
+                        on_click=_clear, args=(against, key))
+
+    if parts and not crowded:
+        _draw_groups(parts, config, height_px, key,
+                     open_all=narrowing or len(parts) <= OPEN_UP_TO)
+        return
 
     st.dataframe(shown, use_container_width=True, hide_index=True,
                  height=height_px, column_config=config)

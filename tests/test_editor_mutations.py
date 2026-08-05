@@ -58,6 +58,7 @@ def _raw_dashboard() -> Dashboard:
                    spec={"columns": ["market", "n_orders", "order_qty"],
                          "labels": {"market": "Market"},
                          "formats": {"order_qty": ",.0f"},
+                         "group_by": "market",
                          "highlight": [{"column": "n_orders", "op": ">",
                                         "value": 0, "color": "critical"}]})],
                   height_in=2.0)])
@@ -476,6 +477,92 @@ def test_a_width_belongs_to_its_column_and_not_to_its_position(table_db):
     at.selectbox(key="r0w0_spec_col_price_w").set_value("small").run()
     at = _drop_column(at, ["size", "price", "state"])
     assert _spec(at)["widths"] == {"price": "small"}
+
+
+# --- moving a dataset to another environment --------------------------------
+#
+# The card asks its server what tables exist. That server has to be the one the
+# *environment picker on this run* names — not the one it named last run. Every
+# picker below reads it, and a Streamlit picker does not merely show a list: it
+# writes one of its options straight back into the draft.
+
+REF_SCHEMA = {"instrument": ["sym", "sector", "currency"]}
+
+
+@pytest.fixture()
+def two_env_db(tmp_path):
+    """Two environments whose servers hold entirely different tables."""
+    path = str(tmp_path / "envs.db")
+    s = Storage(path)
+    s.init_db()
+    s.add_connection(Connection(id=None, name="rdb", host="demo", port=1,
+                                kind="realtime", env="orders", schema=SCHEMA))
+    s.add_connection(Connection(id=None, name="ref", host="demo", port=2,
+                                kind="marketdata", env="refdata",
+                                schema=REF_SCHEMA))
+    s.add_dashboard(Dashboard(
+        id=1, name="Envs",
+        datasets=[Dataset(name="d", env="refdata", table="instrument")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows",
+                                  spec={})], height_in=2.0)]))
+    return path
+
+
+def _env_moved(db_path) -> AppTest:
+    at = _open(db_path, "Data")
+    assert at.selectbox(key="ds0_t").options == ["instrument"]   # before
+    at.selectbox(key="ds0_e").set_value("orders").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def test_changing_the_environment_offers_that_environment_s_tables(two_env_db):
+    """It offered the old one's until something else caused a second rerun."""
+    assert _env_moved(two_env_db).selectbox(key="ds0_t").options == sorted(SCHEMA)
+
+
+def test_a_moved_dataset_does_not_keep_pointing_at_the_old_server_s_table(two_env_db):
+    """The picker writes its value back, so a stale list is not a display fault
+    — it re-points the dataset at a table its new server has never heard of."""
+    ds = _draft(_env_moved(two_env_db)).datasets[0]
+    assert ds.env == "orders" and ds.table in SCHEMA
+
+
+def test_the_filters_offer_the_new_table_s_columns_too(two_env_db):
+    """Same stale server, one row further down the card."""
+    at = _env_moved(two_env_db)
+    at.button(key="ds0_addf").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.selectbox(key="ds0_fc_0").options == SCHEMA["target"]
+
+
+# --- the grouping a table starts out under ----------------------------------
+
+def test_a_table_is_flat_until_somebody_picks_a_column_to_gather_it_by(table_db):
+    at = _open(table_db, "Layout")
+    assert at.selectbox(key="r0w0_spec_grp").value == "(none)"
+    assert not _spec(at).get("group_by")
+
+
+def test_picking_one_writes_it_into_the_table(table_db):
+    at = _open(table_db, "Layout")
+    at.selectbox(key="r0w0_spec_grp").set_value("price").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _spec(at)["group_by"] == "price"
+
+
+def test_setting_it_back_to_none_stores_no_grouping_rather_than_the_word(tmp_path):
+    dash = Dashboard(
+        id=1, name="Table",
+        datasets=[Dataset(name="d", env="orders", table="target")],
+        rows=[Row(widgets=[Widget(type="table", dataset="d", title="Rows",
+                                  spec={**TABLE_SPEC, "group_by": "state"})],
+                  height_in=2.0)])
+    at = _open(_store(tmp_path, dash, "grp.db"), "Layout")
+    assert at.selectbox(key="r0w0_spec_grp").value == "state"
+    at.selectbox(key="r0w0_spec_grp").set_value("(none)").run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _spec(at)["group_by"] == ""
 
 
 def test_a_moved_column_takes_its_width_with_it(table_db):

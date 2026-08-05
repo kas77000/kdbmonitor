@@ -27,7 +27,7 @@ from kdbmonitor.core.render_plotly import figure
 from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
 )
-from kdbmonitor.ui import parameters
+from kdbmonitor.ui import parameters, tables
 from kdbmonitor.ui.common import pluralize
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
@@ -113,23 +113,10 @@ def unique_dashboard_name(name: str, taken) -> str:
     return candidate
 
 
-ROW_PX = 35          # Streamlit's data-editor row height, header included
-
-
-def table_height(n_rows: int, allotted_px: int) -> int:
-    """Height in pixels for st.dataframe: what the rows need, capped by the slot.
-
-    Forcing the row's printed height on a short table pads it with blank filler
-    rows, which reads as missing data. So a table that fits gets exactly the
-    height its rows come to, and only one taller than its slot is constrained —
-    there the cap is what makes it scroll rather than lose rows.
-
-    A pixel count rather than st.dataframe's "content", which Streamlit only
-    learned in 1.46: this is the same number, arrived at here instead of there,
-    and every version takes it. An empty table keeps a row's worth of room, so
-    its empty state has somewhere to print.
-    """
-    return min(ROW_PX * (max(n_rows, 1) + 1) + 3, allotted_px)
+# How tall one table is drawn. The rule lives with the tables themselves,
+# because a group inside a grouped table is a table too and the two have to be
+# sized the same way; this name is what the page has always called it.
+table_height = tables.fitted_height
 
 
 # --- widget rendering ------------------------------------------------------
@@ -157,7 +144,6 @@ def render_widget(pm, height_px: int, key: str, waiting: bool = False) -> None:
         st.markdown(pm.text)
         return
     if pm.kind == "table":
-        from kdbmonitor.ui import tables
         tables.render(pm, table_height(len(pm.rows), height_px), key)
         return
     st.plotly_chart(figure(pm), use_container_width=True, key=key)
