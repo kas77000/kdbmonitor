@@ -23,6 +23,7 @@ from kdbmonitor.core.plotmodel import build_plot_model
 from kdbmonitor.core.portability import (
     export_dashboards_json, import_dashboards_json,
 )
+from kdbmonitor.core.qcache import QueryCache
 from kdbmonitor.core.render_plotly import figure
 from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
@@ -246,11 +247,45 @@ def refresh(store, mgr, dashboard: Dashboard,
         dashboard.time_context = coerce_spec(dashboard.time_context,
                                              dashboard.periods)
     payload = {"results": run_datasets(dashboard, store, mgr, date.today(),
-                                       uploads=uploads, chosen=chosen),
+                                       uploads=uploads, chosen=chosen,
+                                       cache=static_cache()),
                "as_of": datetime.now(),
                "rt": resolve(dashboard.time_context, date.today())}
     st.session_state[frames_key(dashboard.id)] = payload
     return payload
+
+
+# --- datasets that are fetched once ---------------------------------------- #
+
+_STATIC_KEY = "dash_static_frames"
+
+
+def static_cache() -> QueryCache:
+    """Where the frames of datasets marked static are held.
+
+    One cache for every dashboard in the session, because it is keyed by the
+    query rather than by whoever asked for it: two dashboards reading the same
+    instrument list from the same server fetch it once between them.
+    """
+    return st.session_state.setdefault(_STATIC_KEY, QueryCache())
+
+
+def static_datasets(dashboard: Dashboard) -> list[str]:
+    """The names of this dashboard's datasets that are fetched once, in order."""
+    return [d.name for d in dashboard.datasets
+            if d.source == "kdb" and getattr(d, "static", False)]
+
+
+def reload_static(dashboard_id: int) -> None:
+    """Let go of every held frame and re-run, so static datasets are asked again.
+
+    Every one, not only this dashboard's: entries are keyed by the query, so a
+    dropped one costs whoever else was reading it a single re-fetch, while
+    working out which keys belong to which dashboard would cost the reader a
+    control that only sometimes does what it says.
+    """
+    static_cache().clear()
+    force_refresh(dashboard_id)
 
 
 def _drop_frames(dashboard_id: int) -> None:
@@ -921,6 +956,8 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         _render_period(store, dashboard,
                        st.session_state.get(frames_key(dashboard.id)))
 
+    _render_static_note(dashboard, st.session_state.get(frames_key(dashboard.id)))
+
     # The file comes first and the controls that narrow it come after, which is
     # both the order somebody works in and the order the data needs: a picker
     # over a column cannot offer anything until there is a column to read.
@@ -947,6 +984,43 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
 
     _live()
     _render_export(dashboard)
+
+
+def held_since(dashboard: Dashboard, payload: dict | None) -> datetime | None:
+    """When the oldest held frame on this page was fetched, or None if none is.
+
+    The oldest, because it is the one a reader would be wrong about for longest.
+    A static dataset that was fetched *this* run has no stamp — it went to the
+    server like any other — so a page whose frames were just taken says nothing
+    until they are being reused.
+    """
+    results = (payload or {}).get("results") or {}
+    stamps = [res.cached_at for name in static_datasets(dashboard)
+              if (res := results.get(name)) is not None
+              and res.cached_at is not None]
+    return min(stamps) if stamps else None
+
+
+def _render_static_note(dashboard: Dashboard, payload: dict | None) -> None:
+    """What is being held rather than re-queried, and the way to ask again.
+
+    Said on the page rather than only in the editor: data that is not being
+    refreshed must not look like data that is, and the reader — who may not be
+    the author — is the one making decisions on it.
+    """
+    names = static_datasets(dashboard)
+    if not names:
+        return
+    since = held_since(dashboard, payload)
+    when = f", held since {since:%H:%M}" if since else ""
+    c = st.columns([5, 1.3], vertical_alignment="center")
+    c[0].caption(f":material/lock_clock: **{', '.join(names)}** "
+                 f"{'is' if len(names) == 1 else 'are'} fetched once{when} — "
+                 f"a refresh leaves {'it' if len(names) == 1 else 'them'} alone.")
+    if c[1].button("Reload static", icon=":material/history:",
+                   key=f"rl_static_{dashboard.id}",
+                   help="Ask the server for these datasets again now."):
+        reload_static(dashboard.id)
 
 
 def _render_export(dashboard: Dashboard) -> None:

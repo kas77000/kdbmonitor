@@ -22,6 +22,27 @@ class Step:
     filters: list[Filter] = field(default_factory=list)
     raw_qsql: Optional[str] = None
     output_name: str = "step1"
+    # How long this step's rows may be reused before it goes back to the server;
+    # 0 (the default) is every tick, as it always was. For the step that fetches
+    # what does not change — the basket, the universe, the book mapping — so an
+    # alert checking every 15 seconds does not ask for it 240 times an hour.
+    #
+    # A TTL rather than a plain "fetch once", because an alert runs unattended
+    # all day: held forever means it would still be checking yesterday's basket
+    # tomorrow morning, and nothing on screen would say so. The cache is keyed
+    # by the query as resolved, so a step whose text depends on an earlier one
+    # re-fetches when that changes regardless of the TTL. See core.qcache.
+    cache_secs: int = 0
+
+
+# How long a step's rows may be held, as durations somebody would actually pick.
+# Label -> seconds, and 0 is "go every time". Here rather than in the Builder
+# because the Monitor describes a saved alert in the same words — see
+# core.summaries.cache_summary.
+STEP_CACHE_PRESETS: dict[str, int] = {
+    "Not at all": 0, "1 minute": 60, "15 minutes": 900, "1 hour": 3600,
+    "4 hours": 14400, "24 hours": 86400,
+}
 
 
 @dataclass
@@ -159,6 +180,19 @@ class Connection:
     standalone: bool = False
 
 
+def _int(value, default: int) -> int:
+    """A stored number, or the default if it is not one.
+
+    Reading a saved alert must not raise: a bundle can be hand-edited before it
+    is imported, and a bad number in it should cost that one field its value
+    rather than cost the import its error message.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def channels_from_dict(d: dict) -> Channels:
     """Channels from stored JSON, including alerts saved before this grew.
 
@@ -205,6 +239,9 @@ def alert_from_dict(d: dict) -> Alert:
                 server=s["server"], table=s["table"], mode=s["mode"],
                 filters=[Filter(**f) for f in s["filters"]],
                 raw_qsql=s["raw_qsql"], output_name=s["output_name"],
+                # An alert saved before this existed queried every tick, which
+                # is what it did — an upgrade starts holding nothing back.
+                cache_secs=_int(s.get("cache_secs"), 0),
             )
             for s in d["steps"]
         ],

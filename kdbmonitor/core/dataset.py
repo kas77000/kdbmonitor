@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import pandas as pd
@@ -20,6 +20,7 @@ from kdbmonitor.core.dashboard_models import Dashboard, Dataset
 from kdbmonitor.core.models import (
     CONNECTION_KINDS, KIND_LABELS, Connection,
 )
+from kdbmonitor.core.qcache import QueryCache
 from kdbmonitor.core.timectx import (
     ResolvedTime, date_clause, has_date_constraint, resolve, substitute_dates,
     unresolved_date_refs,
@@ -43,6 +44,11 @@ class DatasetResult:
     # Carried on the result so the controls can be built from the last run
     # rather than by fetching a second time.
     choices: dict = field(default_factory=dict)
+    # When a held frame was fetched, for a static dataset that was answered
+    # from the cache rather than from the server; None means this run went and
+    # asked. The page says so: data that is not being refreshed should not look
+    # like data that is.
+    cached_at: Optional[datetime] = None
 
 
 @dataclass
@@ -59,6 +65,9 @@ class DatasetTrace:
     # Same reasoning as DatasetResult.choices — read from the frame as fetched,
     # before this dataset's own transforms could have narrowed it down.
     choices: dict = field(default_factory=dict)
+    # As DatasetResult.cached_at: when the frame step 0 starts from was fetched,
+    # if it came from the cache rather than from the server.
+    cached_at: Optional[datetime] = None
 
     @property
     def df(self) -> Optional[pd.DataFrame]:
@@ -324,10 +333,13 @@ def _derived_frame(ds: Dataset, outputs: dict,
 def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
            uploads: Optional[dict] = None,
            params: Optional[dict] = None,
-           upstream: Optional[dict] = None) -> tuple[str,
-                                                     Optional[pd.DataFrame],
-                                                     Optional[str]]:
-    """Send the dataset's query — no transforms — as (qsql, frame, error).
+           upstream: Optional[dict] = None,
+           cache: Optional[QueryCache] = None) -> tuple[str,
+                                                        Optional[pd.DataFrame],
+                                                        Optional[str],
+                                                        Optional[datetime]]:
+    """Send the dataset's query — no transforms — as
+    (qsql, frame, error, cached_at).
 
     Never raises: every failure comes back as the error, along with whatever the
     query looked like at that point, so a caller can show it. Shared by the plain
@@ -338,6 +350,12 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
     ``upstream`` maps a dataset name to why it has no frame, so a derived
     dataset can say what actually went wrong rather than that its base is
     missing.
+
+    ``cache`` is where a **static** dataset's frame is held between runs, and
+    ``cached_at`` is when the frame handed back was fetched — set only when this
+    call was answered from there rather than from the server. Pass no cache and
+    a static dataset is an ordinary one, which is what the editor's preview
+    wants: an explicit Run should go and ask.
     """
     # A file dataset sends nothing. Its frame was read and checked at the upload
     # box (``core.filesource``), so all that happens here is picking it up —
@@ -347,26 +365,27 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
         frame = (uploads or {}).get(ds.name)
         if frame is None:
             return (_file_source(ds), None,
-                    f"{_WAITING}{ds.file_label or 'a file to be uploaded'}")
-        return _file_source(ds), frame, None
+                    f"{_WAITING}{ds.file_label or 'a file to be uploaded'}", None)
+        return _file_source(ds), frame, None, None
 
     # Nor does a derived dataset: its frame is one an earlier dataset already
-    # finished with, fed forward by the callers below.
+    # finished with, fed forward by the callers below. Nor has it anything to
+    # cache — the fetch its base was spared is the only round trip there was.
     if ds.source == "derived":
-        return _derived_frame(ds, outputs, upstream or {})
+        return (*_derived_frame(ds, outputs, upstream or {}), None)
 
     # Resolve first: the date guard must apply to the server actually queried,
     # and a market-data environment is never historical.
     try:
         conn, effective = resolve_target(store, ds.env, rt)
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a page
-        return "", None, str(exc)
+        return "", None, str(exc), None
 
     if effective.mode == "historical" and ds.mode == "raw" \
             and not has_date_constraint(ds.raw_qsql or ""):
         return (ds.raw_qsql or "", None,
                 "historical query must constrain 'date' — add a "
-                "date within ({{date_from}};{{date_to}}) clause")
+                "date within ({{date_from}};{{date_to}}) clause", None)
 
     qsql = ""
     try:
@@ -377,10 +396,21 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
             return (qsql, None,
                     "this query uses {{date_from}}/{{date_to}} outside a "
                     "{{#historical}}…{{/historical}} block, so it cannot run in "
-                    "real-time — wrap the date predicate in that block")
-        return qsql, mgr.get(conn).query(qsql), None
+                    "real-time — wrap the date predicate in that block", None)
+        # Keyed on the query as resolved and the server it goes to, so a change
+        # to either is a different question and gets asked. See core.qcache.
+        holding = cache if (ds.static and cache is not None) else None
+        key = (conn.host, conn.port, qsql)
+        if holding is not None:
+            held = holding.get(key)
+            if held is not None:
+                return qsql, held.df, None, held.at
+        df = mgr.get(conn).query(qsql)
+        if holding is not None:
+            holding.put(key, df)
+        return qsql, df, None, None
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
-        return qsql, None, str(exc)
+        return qsql, None, str(exc), None
 
 
 def _shaped(ds: Dataset, values: Optional[dict]) -> list:
@@ -396,29 +426,35 @@ def _shaped(ds: Dataset, values: Optional[dict]) -> list:
 
 
 def _apply(ds: Dataset, qsql: str, df: pd.DataFrame,
-          values: Optional[dict]) -> DatasetResult:
+          values: Optional[dict],
+          cached_at: Optional[datetime] = None) -> DatasetResult:
     """The transform half of a run: shape the fetched frame, then cap it.
 
     Split out of :func:`run_dataset` so :func:`run_datasets` can resolve a
     dataset's parameter values — which needs that dataset's *raw* frame — after
     the fetch but before this runs.
+
+    Transforms run whether the frame was fetched or held: they are this run's
+    work over that frame, and a parameter feeding one is answered now.
     """
     try:
         shaped = apply_transforms(df, _shaped(ds, values))
     except Exception as exc:      # noqa: BLE001 - a broken panel, not a broken page
-        return DatasetResult(ds.name, None, qsql, str(exc))
+        return DatasetResult(ds.name, None, qsql, str(exc), cached_at=cached_at)
 
     total = len(shaped)
     capped = shaped.head(ds.max_rows).reset_index(drop=True)
     return DatasetResult(ds.name, capped, qsql, None,
-                         row_count=total, truncated=total > len(capped))
+                         row_count=total, truncated=total > len(capped),
+                         cached_at=cached_at)
 
 
 def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                 uploads: Optional[dict] = None,
                 values: Optional[dict] = None,
                 params: Optional[dict] = None,
-                upstream: Optional[dict] = None) -> DatasetResult:
+                upstream: Optional[dict] = None,
+                cache: Optional[QueryCache] = None) -> DatasetResult:
     """Run one dataset, capturing any failure as an error on the result.
 
     ``values`` are already-resolved ``{{param:name}}`` substitutions for the
@@ -426,38 +462,42 @@ def run_dataset(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
     query — see :func:`run_datasets`, which is what resolves both dataset by
     dataset, along with ``upstream``. A caller with no parameters to thread
     through (the historical direct-call shape) omits them and gets the old
-    behaviour.
+    behaviour, and the same goes for ``cache`` — see :func:`_fetch`.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params,
-                             upstream)
+    qsql, df, error, cached_at = _fetch(ds, rt, store, mgr, outputs, uploads,
+                                        params, upstream, cache)
     if error is not None:
         return DatasetResult(ds.name, None, qsql, error,
                              waiting=_is_waiting(ds, error))
-    return _apply(ds, qsql, df, values)
+    return _apply(ds, qsql, df, values, cached_at)
 
 
 def run_dataset_steps(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
                       uploads: Optional[dict] = None,
                       values: Optional[dict] = None,
                       params: Optional[dict] = None,
-                      upstream: Optional[dict] = None) -> DatasetTrace:
+                      upstream: Optional[dict] = None,
+                      cache: Optional[QueryCache] = None) -> DatasetTrace:
     """Run one dataset keeping the frame after every transform.
 
     Same query, same transforms, same order as :func:`run_dataset` — only the
     intermediate frames are kept, so what you inspect step by step is what the
     dashboard will actually show.
     """
-    qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, params,
-                             upstream)
+    qsql, df, error, cached_at = _fetch(ds, rt, store, mgr, outputs, uploads,
+                                        params, upstream, cache)
     if error is not None:
         return DatasetTrace(ds.name, qsql, error)
     return DatasetTrace(ds.name, qsql, None,
-                        transform_steps(df, _shaped(ds, values)))
+                        transform_steps(df, _shaped(ds, values)),
+                        cached_at=cached_at)
 
 
 def run_datasets(dashboard: Dashboard, store, mgr, today: date,
                  uploads: Optional[dict] = None,
-                 chosen: Optional[dict] = None) -> dict[str, DatasetResult]:
+                 chosen: Optional[dict] = None,
+                 cache: Optional[QueryCache] = None
+                 ) -> dict[str, DatasetResult]:
     """Run every dataset in declaration order, returning results by name.
 
     Successful (transformed, capped) frames are fed forward as ``outputs`` so a
@@ -478,6 +518,11 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
     the same ordering rule ``{{name.column}}`` already lives by, since a KDB
     dataset's query can itself depend on an earlier dataset's finished output,
     so every fetch cannot happen in a first pass before any transform runs.
+
+    ``cache`` holds the frames of datasets marked static, so they are fetched
+    once and read from there on every later run — see :func:`_fetch`. Nothing
+    else changes: a held frame goes through this dataset's transforms and feeds
+    the ones below it exactly as a fetched one does.
     """
     dashboard_time = resolve(dashboard.time_context, today)
     outputs: dict[str, pd.DataFrame] = {}
@@ -491,8 +536,8 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
         # parameter already lives by: a dataset can only read one declared
         # before it.
         literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals,
-                                 failures)
+        qsql, df, error, cached_at = _fetch(ds, rt, store, mgr, outputs, uploads,
+                                            literals, failures, cache)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)
@@ -502,7 +547,7 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
                                 waiting=_is_waiting(ds, error),
                                 choices=choices)
         else:
-            res = _apply(ds, qsql, df, values)
+            res = _apply(ds, qsql, df, values, cached_at)
             res.choices = choices
         results[ds.name] = res
         if res.df is not None:
@@ -518,7 +563,9 @@ def run_datasets(dashboard: Dashboard, store, mgr, today: date,
 
 def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
                    uploads: Optional[dict] = None,
-                   chosen: Optional[dict] = None) -> dict[str, DatasetTrace]:
+                   chosen: Optional[dict] = None,
+                   cache: Optional[QueryCache] = None
+                   ) -> dict[str, DatasetTrace]:
     """Run every dataset step by step, in declaration order, results by name.
 
     Like :func:`run_datasets`, a dataset's finished frame is fed forward so a
@@ -541,8 +588,8 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
         # parameter already lives by: a dataset can only read one declared
         # before it.
         literals = params_mod.q_values(dashboard.parameters, chosen or {}, raw)
-        qsql, df, error = _fetch(ds, rt, store, mgr, outputs, uploads, literals,
-                                 failures)
+        qsql, df, error, cached_at = _fetch(ds, rt, store, mgr, outputs, uploads,
+                                            literals, failures, cache)
         raw[ds.name] = df
         values = params_mod.resolve_values(dashboard.parameters, chosen or {}, raw)
         choices = {p.name: params_mod.choices_for(p, raw)
@@ -552,7 +599,7 @@ def trace_datasets(dashboard: Dashboard, store, mgr, today: date,
         else:
             trace = DatasetTrace(ds.name, qsql, None,
                                  transform_steps(df, _shaped(ds, values)),
-                                 choices=choices)
+                                 choices=choices, cached_at=cached_at)
         traces[ds.name] = trace
         if trace.df is not None:
             outputs[ds.name] = trace.df

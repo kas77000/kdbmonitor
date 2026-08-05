@@ -5,7 +5,9 @@ share one source of truth for how an alert is described to a human.
 """
 from __future__ import annotations
 
-from kdbmonitor.core.models import Channels, Step, TriggerCondition
+from kdbmonitor.core.models import (
+    STEP_CACHE_PRESETS, Channels, Step, TriggerCondition,
+)
 
 # Short forms of the delivery names, for a one-line summary of an alert. The
 # full labels live in models.DELIVERY_LABELS, which is what the Builder shows.
@@ -99,14 +101,30 @@ def transform_summary(transform) -> str:
     return kind
 
 
+def cache_summary(secs: int) -> str:
+    """'cached 1 hour' — how long a step's rows stand before it queries again.
+
+    Empty for a step that queries every check, which is what most do: a summary
+    should say what is unusual about a step, and going to the server is not.
+    """
+    if not secs:
+        return ""
+    label = next((k for k, v in STEP_CACHE_PRESETS.items() if v == secs and v),
+                 f"{secs}s")
+    return f"cached {label.lower()}"
+
+
 def step_summary(step: Step) -> str:
     """One-line description of a single chain step."""
     if step.mode == "raw":
-        return f"{step.server} · raw qSQL"
-    where = ""
-    if step.filters:
-        where = " where " + ", ".join(
-            f"{'not ' if f.negated else ''}{f.column} {f.op} {f.value}"
-            for f in step.filters
-        )
-    return f"{step.server} · {step.table}{where}"
+        head = f"{step.server} · raw qSQL"
+    else:
+        where = ""
+        if step.filters:
+            where = " where " + ", ".join(
+                f"{'not ' if f.negated else ''}{f.column} {f.op} {f.value}"
+                for f in step.filters
+            )
+        head = f"{step.server} · {step.table}{where}"
+    held = cache_summary(getattr(step, "cache_secs", 0))
+    return f"{head} · {held}" if held else head

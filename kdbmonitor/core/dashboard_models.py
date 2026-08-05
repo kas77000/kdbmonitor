@@ -94,6 +94,13 @@ class Dataset:
     extra_connections: list[str] = field(default_factory=list)  # raw only
     transforms: list[Transform] = field(default_factory=list)
     max_rows: int = 5000
+    # This query answers the same thing every time — an instrument list, a book
+    # mapping, a universe loaded at start of day — so it is sent once and its
+    # frame held for the rest of the session rather than re-sent on every
+    # refresh. What "the same thing" means is the query as resolved: change it,
+    # or change a parameter or period that goes into it, and it is a different
+    # question and is asked again. See core.qcache.
+    static: bool = False
     # --- file-backed datasets -------------------------------------------
     # A file dataset ignores env/time_mode/mode/table/filters/raw_qsql above:
     # they describe a server, and there is no server. transforms and max_rows
@@ -336,6 +343,9 @@ def _dataset_from_dict(d: dict) -> Dataset:
         extra_connections=list(d.get("extra_connections", [])),
         transforms=[transform_from_dict(t) for t in d.get("transforms", [])],
         max_rows=d.get("max_rows", 5000),
+        # A dashboard saved before this existed asked every time, which is what
+        # it did — nothing starts being held because the app was upgraded.
+        static=bool(d.get("static", False)),
         source=d.get("source", "kdb"),
         shape=_shape_from_dict(d.get("shape")),
         file_label=d.get("file_label", ""),

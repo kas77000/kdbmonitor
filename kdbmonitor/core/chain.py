@@ -79,16 +79,45 @@ def substitute_refs(qsql: str, outputs: dict) -> str:
     return _TABLE_REF.sub(table, _REF.sub(column, qsql))
 
 
-from typing import Callable
+from datetime import datetime
+from typing import Callable, Optional
 from kdbmonitor.core.models import Alert
+from kdbmonitor.core.qcache import QueryCache
 
 
-def run_chain(alert: Alert, client_for: Callable[[str], object]) -> pd.DataFrame:
+def step_frame(step, qsql: str, client_for: Callable[[str], object],
+               cache: Optional[QueryCache] = None,
+               now: Optional[datetime] = None) -> pd.DataFrame:
+    """One step's rows: held ones while its TTL says they still stand, else sent.
+
+    A step with ``cache_secs`` of 0 — every step, until somebody says otherwise
+    — goes to the server, which is what an alert has always done. The key is the
+    resolved query and the server it goes to, so a step whose text depends on an
+    earlier result stops matching the moment that result changes, TTL or no TTL.
+    """
+    ttl = getattr(step, "cache_secs", 0) or 0
+    holding = cache if (ttl and cache is not None) else None
+    key = (step.server, qsql)
+    if holding is not None:
+        held = holding.get(key, now=now, ttl=ttl)
+        if held is not None:
+            return held.df
+    df = client_for(step.server).query(qsql)
+    if holding is not None:
+        holding.put(key, df, now)
+    return df
+
+
+def run_chain(alert: Alert, client_for: Callable[[str], object],
+              cache: Optional[QueryCache] = None,
+              now: Optional[datetime] = None) -> pd.DataFrame:
+    """The chain's final result. ``cache`` holds the rows of steps that ask for
+    it (see :func:`step_frame`); without one every step queries, as before."""
     outputs: dict[str, pd.DataFrame] = {}
     final: pd.DataFrame = pd.DataFrame()
     for step in alert.steps:
         qsql = substitute_refs(build_step_qsql(step), outputs)
-        final = client_for(step.server).query(qsql)
+        final = step_frame(step, qsql, client_for, cache, now)
         outputs[step.output_name] = final
     return final
 
@@ -112,6 +141,10 @@ def preview_chain(alert: Alert, client_for: Callable[[str], object]) -> list[Ste
     Unlike run_chain, this never raises: a failing step is recorded with its
     error message and the chain stops there. Use it to preview/investigate an
     alert without recording a run or sending notifications.
+
+    No cache, deliberately, whatever a step's TTL says: Preview is somebody
+    asking for this query to be run, and answering it from a held frame would
+    show them what the alert last saw rather than what the server says now.
     """
     outputs: dict[str, pd.DataFrame] = {}
     results: list[StepResult] = []

@@ -9,6 +9,7 @@ from kdbmonitor.core.models import Alert
 from kdbmonitor.core.chain import run_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.fingerprint import result_fingerprint
+from kdbmonitor.core.qcache import QueryCache
 from kdbmonitor.core.rearm import should_notify
 
 
@@ -30,9 +31,13 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
 def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
                    prev_run: Optional[dict], now: datetime,
                    last_notified_ts: Optional[str] = None,
-                   last_triggered_hash: Optional[str] = None) -> EvalResult:
+                   last_triggered_hash: Optional[str] = None,
+                   cache: Optional[QueryCache] = None) -> EvalResult:
+    """One evaluation of an alert. ``cache`` is where the rows of steps with a
+    TTL are held between ticks; ``now`` is what those TTLs are measured against,
+    so a caller passing one passes the other."""
     try:
-        df = run_chain(alert, client_for)
+        df = run_chain(alert, client_for, cache=cache, now=now)
     except Exception as exc:  # noqa: BLE001 - surface any query/connection error
         return EvalResult(status="error", triggered=False, notify=False,
                           row_count=None, message=f"{alert.name}: error - {exc}")

@@ -9,7 +9,7 @@ from kdbmonitor.core import zones
 
 from kdbmonitor.core.models import (
     Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels, Schedule,
-    Window, DELIVERY_LABELS,
+    Window, DELIVERY_LABELS, STEP_CACHE_PRESETS,
 )
 from kdbmonitor.core.chain import build_step_qsql, preview_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
@@ -173,6 +173,7 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_initialized": True, "b_edit_id": None, "b_edit_enabled": True,
         "b_name": "", "b_interval": 30, "b_nsteps": 1, "b_nf_0": 0,
         "b_srv_0": servers[0], "b_mode_0": "Guided", "b_raw_0": "",
+        "b_cache_0": "Not at all",
         "b_ctype": "has_rows", "b_ccol": "", "b_cop": ">", "b_cvtype": "number",
         "b_cval": "", "b_cagg": "max", "b_cn": 1,
         "b_delivery": ["in_app", "sound", "browser"], "b_email": "", "b_hooks": "",
@@ -227,6 +228,7 @@ def _load_edit(alert: Alert) -> None:
         s[f"b_tbl_{i}"] = step.table
         s[f"b_mode_{i}"] = "Raw" if step.mode == "raw" else "Guided"
         s[f"b_raw_{i}"] = step.raw_qsql or ""
+        s[f"b_cache_{i}"] = _cache_label(step.cache_secs)
         s[f"b_nf_{i}"] = len(step.filters)
         for j, f in enumerate(step.filters):
             s[f"b_fnot_{i}_{j}"] = f.negated
@@ -271,12 +273,13 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
                 _remove_step(i)
                 st.rerun()
 
-        top = st.columns([2, 3, 2], vertical_alignment="bottom")
+        top = st.columns([2, 2.6, 1.8, 1.8], vertical_alignment="bottom")
         server = _safe_select(top[0], "Server", servers, key=f"b_srv_{i}")
         schema = _schema_for(store, server)
         tables = list(schema.keys())
-        mode = top[2].segmented_control("Mode", ["Guided", "Raw"], key=f"b_mode_{i}")
+        mode = top[3].segmented_control("Mode", ["Guided", "Raw"], key=f"b_mode_{i}")
         mode = mode or "Guided"
+        cache_secs = _cache_control(top[2], i)
 
         filters: list[Filter] = []
         raw_qsql = None
@@ -329,10 +332,42 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
 
         step = Step(server=server, table=table if tables else "", mode=
                     "raw" if mode == "Raw" else "form", filters=filters,
-                    raw_qsql=raw_qsql, output_name=f"step{i + 1}")
+                    raw_qsql=raw_qsql, output_name=f"step{i + 1}",
+                    cache_secs=cache_secs)
         st.caption("Query preview")
         qeditor.q_block(build_step_qsql(step))
+        if cache_secs:
+            st.caption(f":material/lock_clock: These rows are fetched once and "
+                       f"reused for **{_cache_label(cache_secs).lower()}** — for "
+                       f"a step that reads what does not change within that "
+                       f"time. Preview always goes to the server.")
         return step
+
+
+def _cache_label(secs: int) -> str:
+    """The preset label for a stored TTL, falling back to 'Not at all'.
+
+    A hand-edited bundle can hold a duration nobody can pick here. It still
+    *runs* — the TTL is a number of seconds, not a menu — but the control has to
+    show something selectable, and re-saving the alert through this form is what
+    would then round it to a preset.
+    """
+    return next((k for k, v in STEP_CACHE_PRESETS.items() if v == secs),
+                "Not at all")
+
+
+def _cache_control(container, i: int) -> int:
+    """How long this step's rows may be reused, in seconds (0 = every check)."""
+    label = _safe_select(
+        container, "Cache result for", list(STEP_CACHE_PRESETS),
+        key=f"b_cache_{i}",
+        help="For a step that fetches what doesn't change — a basket, a "
+             "universe, a book mapping. It is fetched once and reused for this "
+             "long, so a check running every 15 seconds doesn't ask for it "
+             "again every 15 seconds. A duration rather than 'once' on purpose: "
+             "an alert runs all day, and reference data that rolls overnight "
+             "would otherwise be checked against yesterday's.")
+    return STEP_CACHE_PRESETS.get(label, 0)
 
 
 def _raw_ref_helper(i: int) -> None:
@@ -577,7 +612,7 @@ def _remove_filter(i: int, j: int) -> None:
 
 
 def _copy_step_state(src: int, dst: int) -> None:
-    for p in ("srv", "tbl", "mode", "raw", "nf"):
+    for p in ("srv", "tbl", "mode", "raw", "cache", "nf"):
         if f"b_{p}_{src}" in st.session_state:
             _queue_value(f"b_{p}_{dst}", st.session_state[f"b_{p}_{src}"])
     nf = int(st.session_state.get(f"b_nf_{src}", 0))
@@ -598,7 +633,8 @@ def _delete_step_state(i: int) -> None:
     for k in list(st.session_state.keys()):
         if k.startswith(f"b_srv_{i}") or k.startswith(f"b_tbl_{i}") \
            or k.startswith(f"b_mode_{i}") or k.startswith(f"b_raw_{i}") \
-           or k.startswith(f"b_nf_{i}") or k.startswith(f"b_f") and f"_{i}_" in k:
+           or k.startswith(f"b_cache_{i}") or k.startswith(f"b_nf_{i}") \
+           or k.startswith(f"b_f") and f"_{i}_" in k:
             st.session_state.pop(k, None)
 
 

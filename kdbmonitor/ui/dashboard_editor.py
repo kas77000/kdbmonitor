@@ -1471,7 +1471,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 st.rerun()
             fileshape.render(ds, key=key)
         else:
-            head = st.columns([2, 2, 1.8, 1.6, ICON_COL], vertical_alignment="bottom")
+            head = st.columns([2, 2, 1.7, 1.4, 1.3, ICON_COL],
+                              vertical_alignment="bottom")
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             pairs = store.list_environments()
             envs = sorted(pairs)
@@ -1507,10 +1508,23 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                           "stays live — or the other way around.")
             ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
                                                    ds.max_rows, step=100, key=f"{key}_mr"))
-            if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
+            ds.static = head[4].checkbox(
+                "Static", value=ds.static, key=f"{key}_st",
+                help="This query answers the same thing every time — an "
+                     "instrument list, a book mapping, a universe loaded at "
+                     "start of day. It is sent once and its rows reused, so an "
+                     "auto-refresh doesn't ask for it again every few seconds. "
+                     "Change the query, a parameter in it or the period and it "
+                     "is asked again; 'Reload static' on the dashboard asks "
+                     "again on demand.")
+            if head[5].button("", icon=":material/delete:", key=f"{key}_del"):
                 draft.datasets.pop(index)
                 _forget(r"ds\d+")                  # every card below renumbers
                 st.rerun()
+            if ds.static:
+                st.caption(":material/lock_clock: Fetched once and held — a "
+                           "refresh leaves this dataset alone until its query "
+                           "changes or somebody reloads it.")
 
             if ds.time_mode == "custom":
                 rng = ((ds.time_context or {}).get("range") or {})

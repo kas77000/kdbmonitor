@@ -22,6 +22,7 @@ from kdbmonitor.core.evaluate import evaluate_alert
 from kdbmonitor.core.notifiers import (
     InAppSink, delivery_payload, dispatch, send_email, post_webhook,
 )
+from kdbmonitor.core.qcache import QueryCache
 from kdbmonitor.ui import popup
 from kdbmonitor.ui.common import (
     INTERVAL_PRESETS, is_due, make_client_for, should_capture_result,
@@ -30,6 +31,12 @@ from kdbmonitor.ui.common import (
 _RUNNING_KEY = "mon_running"
 _GRAN_KEY = "mon_gran"
 _DEFAULT_GRAN = "15s"
+# Where the rows of steps with a TTL are held between ticks. One cache for every
+# alert, because it is keyed by the query rather than by whoever asked: two
+# alerts reading the same universe from the same server fetch it once between
+# them. It lives in session state, so a restart starts empty — the TTL is what
+# keeps it honest while the app is up (see models.Step.cache_secs).
+_STEP_CACHE_KEY = "alert_step_cache"
 
 
 # --- persisted monitoring state (survives page switches and restarts) ------- #
@@ -244,6 +251,8 @@ def run_tick(store, mgr) -> None:
 
     if monitoring_on(store):
         email_fn = _email_fn(store)
+        step_cache: QueryCache = st.session_state.setdefault(_STEP_CACHE_KEY,
+                                                             QueryCache())
         for a in store.list_alerts():
             if not a.enabled:
                 continue
@@ -255,7 +264,8 @@ def run_tick(store, mgr) -> None:
                 continue
             res = evaluate_alert(a, resolve, prev_run=latest, now=now,
                                  last_notified_ts=store.last_notified_at(a.id),
-                                 last_triggered_hash=store.last_triggered_hash(a.id))
+                                 last_triggered_hash=store.last_triggered_hash(a.id),
+                                 cache=step_cache)
             store.record_run(a.id, ts=now.isoformat(), status=res.status,
                              triggered=res.triggered, notified=res.notify,
                              row_count=res.row_count, message=res.message,

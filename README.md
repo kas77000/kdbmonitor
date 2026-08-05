@@ -14,6 +14,7 @@ Built with [Streamlit](https://streamlit.io/) and [PyKX](https://code.kx.com/pyk
 - **Monitor** alerts live. Once monitoring is on it **keeps running on every tab and auto-resumes after a restart** (the on/off state is saved), so alerts keep arming and triggering all day without babysitting the Monitor tab. Each alert runs on its own interval.
 - **Be told your own way**: every alert picks any combination of an in-app message, a sound, a **browser notification that shows even when the window is minimized**, a notification that **brings the window back to the front** when you click it (with a flashing tab title until you do), a **pop-up showing the rows that fired it**, an email, and a Teams/Slack message.
 - **Only when it matters**: give an alert **active hours** — 16:30, or 17:45–18:00, Mon–Fri, in whatever timezone you think in — and it isn't evaluated at all outside them, so a check that only means something in a window stops crying wolf for the rest of the day.
+- **Stop asking for what doesn't change**: a dashboard dataset can be marked **Static** and a chain step given a **cache duration**, so the instrument list, the basket or the book mapping is fetched once and reused instead of being re-queried on every refresh or every check.
 - **Track the day** with durable per-day counters (triggered / armed / errors / notifications) that are derived from the persisted run log, so **they don't reset when you restart the app**.
 - **Never miss a trigger**: an alert that has fired keeps a red **NEW** badge until you open it with **View**.
 - **Investigate** results: preview an alert's output while building it, and open a full **Result page** for a triggered alert to view, export (Excel/CSV) or copy the data.
@@ -104,6 +105,7 @@ Every step produces a table (a result). Steps run in order. Each step has:
     - **Value(s)** — the right-hand side. For `in`, comma-separate values (`AAPL,MSFT`). For `like`, use q patterns such as `A*` or `*USD*`.
     - **Type** — how the value is written into q: **symbol** (`` `AAPL ``), **number** (`101.5`), or **string** (`"buy"`). (`like` is always a string pattern.)
   - **Raw** lets you type qSQL directly, for anything the form can't express. This is also the only mode that can **reuse an earlier step's result** (next section). The box is a [q editor](#writing-q): line numbers, Tab to indent, and a coloured copy of the query underneath.
+- **Cache result for** — how long this step's rows may be reused before it goes back to the server: *Not at all* (the default, and what every step did before), 1 minute … 24 hours. For the step that fetches **what doesn't change** — a basket, a universe, a book mapping — so an alert checking every 15 seconds doesn't ask for it 240 times an hour. It is a duration rather than a plain "once" because an alert runs unattended all day: reference data that rolls overnight would otherwise be checked against yesterday's, with nothing on screen to say so. The rows are held against the query **as it actually runs**, so a step whose text depends on an earlier result queries again the moment that result changes, whatever the duration says. **Check result** always goes to the server.
 - **Query preview** — under each step you see the q query that will run, syntax-coloured and numbered. In Raw mode, references appear unresolved (they are filled in at run time).
 
 Use **Add step** to chain more steps; each step has a **Remove** control.
@@ -756,6 +758,23 @@ Each dashboard has its own interval (off, 5s … 15m) and runs inside a Streamli
 fragment while its page is open. Navigate away or switch tabs and it stops — a
 dashboard you are not looking at costs nothing. Nothing runs in the background,
 and the alert engine is untouched.
+
+#### Static — the datasets that only need asking once
+
+Some of what a dashboard reads does not change: the instrument list, the book
+mapping, a universe loaded at start of day. Tick **Static** on a dataset and its
+query is sent **once**; every refresh after that reads the rows already in hand,
+so a page refreshing every 15 seconds stops asking a reference table the same
+question 240 times an hour. Everything else about the dataset is unchanged — its
+transforms still run, the datasets derived from it still read it, and the panels
+beside it still refresh on the interval.
+
+The rows are held against the query **as it actually runs**, which is what keeps
+it honest: edit the query, change a parameter that goes into it, or switch the
+period, and it is a different question and gets asked. The dashboard says what
+it is holding and since when, and **Reload static** beside that note asks for
+all of it again. Two dashboards reading the same table from the same server
+share one fetch.
 
 ### Dashboards from a file
 
