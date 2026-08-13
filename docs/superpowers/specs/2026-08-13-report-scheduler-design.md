@@ -138,11 +138,13 @@ class ReportJob:
     subject: str = "{dashboard} — {date}"
     body: str = ""
 
-    notify_on_failure: bool = True
     retries: int = 3
     retry_delay_secs: int = 120
     grace_minutes: int = 60
 ```
+
+There is no per-job failure-notice switch and no per-job admin address. A failed
+run is reported to one place, configured once (§6.1).
 
 `period` holds a time-context spec of the same shape the dashboard stores, so
 the same `resolve()` in `core/timectx.py` reads both and the job cannot express
@@ -237,33 +239,57 @@ In order:
    `timectx.resolve(spec, now.date())`.
 3. Merge parameters: the dashboard's defaults, overlaid with `job.parameters`.
 4. `run_datasets(dashboard, store, mgr, now.date(), chosen=chosen)`.
-5. If **every** dataset failed, treat the run as failed — an empty report is
-   not a report. If some failed, continue: the PDF renders those panels as
-   error widgets, which is the same thing the screen would show, and the
-   outcome carries the list of failed dataset names in `failed_datasets`.
-   `run_job` returns `ok=True` in that case — the report was produced and sent —
-   and it is the loop that turns a non-empty `failed_datasets` into the run
-   status `partial`. Deciding it here would mean `reportrun` knowing about the
-   history table it does not otherwise touch.
+5. **If any dataset failed, the run failed.** No PDF is rendered and nothing is
+   sent. See §5.1.
 6. `dashboard_to_pdf_bytes(dashboard, results, rt, as_of=now, chosen=chosen)`.
 7. Attach under `dashpdf.pdf_filename(dashboard, now)` and send.
 
 ```python
+@dataclass
+class DatasetFailure:
+    name: str
+    error: str
+    qsql: str = ""          # the query that was sent, for the admin notice
+
 @dataclass
 class RunOutcome:
     ok: bool
     pages: int = 0
     bytes_sent: int = 0
     recipients: int = 0
-    failed_datasets: list[str] = ...
-    error: Optional[str] = None
+    failures: list[DatasetFailure] = ...
+    error: Optional[str] = None      # one-line summary of why
 ```
+
+### 5.1 Any dataset failing fails the run
+
+On screen, a dashboard with one broken panel is still useful: the reader sees
+the error in place, knows which number is missing, and reads the rest with that
+in mind. A PDF in an inbox is not read that way. It arrives detached from the
+app, is forwarded on, and is quoted from days later, by which time nobody knows
+that the panel showing zero was a dead connection rather than a quiet morning.
+A report that is wrong and plausible is worse than one that did not arrive.
+
+So the rule is strict: **one dataset in error means no report is sent.**
+Datasets in the *waiting* state count as failures too — `DatasetResult.waiting`
+distinguishes "no upload yet" from "broken" for the reader's benefit, but either
+way the frame is absent and the page would print without it.
+
+`run_datasets` is still allowed to run to completion rather than being stopped
+at the first error — it captures failures rather than raising, which is what
+makes this cheap. One notice then names *every* broken dataset, instead of the
+admin fixing one at 07:05 and discovering the next at 07:00 tomorrow.
+
+This is why the retries in §7.2 matter more than they first appear: the common
+dataset failure is a server that has not finished coming up, and three attempts
+two minutes apart is the difference between a report that is late by four
+minutes and one that does not arrive.
 
 `send` is a parameter so tests drive the whole path without a mail server, and
 so the page's *Send now* button and the scheduler share one implementation
 rather than two that agree today.
 
-### 5.1 Why file dashboards are refused
+### 5.2 Why file dashboards are refused
 
 `Dashboard.source` is `kdb` or `file`. A file dashboard reads from a
 spreadsheet somebody uploads in the browser; at 07:00 there is no browser and
@@ -297,14 +323,59 @@ Admin gains a **Send test email** button beside the existing fields. Verifying a
 relay by waiting for tomorrow's 07:00 is not a reasonable way to find out that
 the port is wrong.
 
-### 6.1 Failure notices
+### 6.1 Failure notices go to the admin, and to nobody else
 
-When a job has exhausted its retries and `notify_on_failure` is set, a plain
-text mail goes to the same recipients, subject prefixed `[FAILED]`, naming the
-job, the time it was due and the error. The reasoning is that the recipients are
-the only people who will notice the absence of a report, and they are otherwise
-left waiting for something that is never coming. A failure notice carries no
-attachment and is sent once per failed run, not once per attempt.
+**The recipients are never told that a run failed.** They receive the report or
+they receive nothing.
+
+This follows from what the recipient list is for. Its members are traders and
+risk staff who asked for a PDF at 07:00; a mail telling them that `open_orders`
+returned `handle: connection refused` asks them to act on something they cannot
+act on, and a list that sometimes carries reports and sometimes carries
+apologies gets filtered. The people who can do something about a failed run are
+the people who run KdbMonitor, and they are the only ones written to.
+
+One setting in Admin, beside the SMTP fields:
+
+```
+scheduler_admin_email = "kdb-support@corp.local"       # comma-separated for several
+```
+
+A single setting rather than a field on each job: when the person carrying
+support changes, that is one edit and not one per report. If a particular job
+ever needs its own owner, this is where that field goes.
+
+The notice is sent once per failed run — not once per attempt — after the
+retries are exhausted, carries no attachment, and names in full:
+
+```
+Subject: [KdbMonitor] FAILED — Morning OMS report
+
+Job:        Morning OMS report
+Dashboard:  OMS Overview
+Due:        2026-08-14 07:00 Europe/London
+Attempts:   3
+Recipients: 3 (not sent to)
+
+2 of 5 datasets failed:
+
+  open_orders   handle: connection refused
+                select from orders where date=2026.08.13, ...
+
+  fills         `type error
+                select sum size by sym from fills where ...
+```
+
+The failing q text is included because the admin's next action is to run it, and
+finding it otherwise means opening the dashboard and reconstructing which
+substitutions produced it. It is safe to include *here* precisely because this
+mail goes to one internal support address rather than to a distribution list.
+
+**When no admin address is set,** a failure is silent by mail. That is a real
+hole, so it is closed in the app rather than by guessing an address: Admin shows
+a warning whenever report jobs exist and the field is empty, the Schedules page
+marks the job failed, and the sidebar badge turns red — which is the only part
+of this anybody sees without going looking.
 
 ---
 
@@ -510,11 +581,12 @@ CREATE TABLE IF NOT EXISTS report_job_runs (
     fired_for   TEXT NOT NULL,       -- the scheduled instant
     started_at  TEXT NOT NULL,
     finished_at TEXT,
-    status      TEXT NOT NULL,       -- ok | partial | failed | missed
+    status      TEXT NOT NULL,       -- ok | failed | missed
     attempts    INTEGER NOT NULL DEFAULT 1,
     pages       INTEGER,
     recipients  INTEGER,
-    error       TEXT
+    error       TEXT,                -- one-line summary
+    detail_json TEXT                 -- [{name, error, qsql}, ...] per failed dataset
 );
 CREATE INDEX IF NOT EXISTS ix_report_job_runs_job ON report_job_runs (job_id, fired_for DESC);
 ```
@@ -572,18 +644,25 @@ will notice, since nobody visits this page on a normal morning.
 ✓  Morning OMS report        07:00 Mon–Fri (Europe/London)     next: Thu 14 Aug 07:00
    last run  ✓ 13 Aug 07:00 · 2 pages · 3 recipients
 ✗  Risk EOD                  16:35 Mon–Fri (Europe/London)     next: Thu 14 Aug 16:35
-   last run  ✗ 12 Aug 16:35 · "handle: connection refused" · 3 attempts · notice sent
+   last run  ✗ 12 Aug 16:35 · 2 datasets failed · 3 attempts · admin notified
 ```
 
 Opened, a job edits: name, dashboard (kdb-sourced only), recurrence (times +
 days + zone, with cron behind an *Advanced* toggle), period override, parameter
 values drawn from that dashboard's declared parameters, recipients, subject and
-body, and the failure-notice switch. Validation problems print before the save
-button, as the Builder does with alert schedules.
+body. Validation problems print before the save button, as the Builder does with
+alert schedules.
 
 Two actions per job beyond save and delete: **Send now**, which calls
 `run_job` in the Streamlit process and reports what happened without touching
 `last_fired_at`; and **History**, the last runs from `report_job_runs`.
+
+A failed run opens to the same detail the admin was mailed — every failed
+dataset with its error and the query that produced it, read back from
+`detail_json`. Deliberately the same content from the same source: an admin
+mailed at 07:00 and an admin who comes looking at 09:00 must not be given two
+different accounts of one failure. *Send now* is the natural next step from that
+screen once the cause is fixed.
 
 *Send now* is worth the small cost of building. Without it, the first honest
 test of a new job is tomorrow at 07:00, and it either works or produces a
@@ -610,17 +689,27 @@ malformed input through `validate()` rather than at match time.
 page count and bytes beginning `%PDF`. A job overriding the period produces a
 different `ResolvedTime` from the dashboard's saved one; a parameter override
 reaches `run_datasets` as `chosen`, and an absent one falls back to the
-dashboard's default. Every dataset failing gives `ok=False`; one of three
-failing gives `ok=True` with that one named in `failed_datasets`, which the
-loop is separately tested to record as `partial`. A file-sourced dashboard is
-refused with a message naming the reason.
+dashboard's default. A file-sourced dashboard is refused with a message naming
+the reason.
+
+**Failing a run** — the rule in §5.1 gets its own tests, since it is the one
+place a wrong answer reaches a recipient. One dataset of five failing gives
+`ok=False`, names that dataset in `failures` with its error and query, and —
+asserted explicitly — **calls `send` zero times**. Two failing are both listed,
+so the run is not abandoned at the first. A dataset in the `waiting` state fails
+the run in the same way as one in error. A run where every dataset succeeds
+still sends exactly once.
 
 **Mail** — `smtplib.SMTP` monkeypatched. Recipients, sender and subject are as
 configured; placeholders in the subject are substituted and an unknown one is
 left intact; the attachment carries the `pdf_filename()` name and
-`application/pdf`; a failure notice has no attachment and its subject is
-prefixed. Empty `smtp_host` fails the run with a message that says SMTP is not
-configured, rather than raising.
+`application/pdf`. The failure notice goes to `scheduler_admin_email` alone —
+asserted against the recipient list to show that no address from it appears —
+carries no attachment, names every failed dataset with its query, and is sent
+once for a run of three attempts rather than three times. With
+`scheduler_admin_email` empty, no mail is sent at all and the run is still
+recorded `failed`. Empty `smtp_host` fails the run with a message that says SMTP
+is not configured, rather than raising.
 
 **The loop** — with an injected clock and an injected `run_job`. A job due now
 runs once and only once; a second tick in the same minute does not run it
@@ -646,6 +735,15 @@ no jobs, with jobs, and with the scheduler in each of its states.
 
 ## 13. Consequences worth stating
 
+- **A failed report is silent to the people expecting it.** By design (§6.1):
+  its absence is the only signal they get, and if they do not notice the absence,
+  nobody on the desk notices at all. This is the right trade for a report that
+  would otherwise be wrong, but it puts the whole burden of noticing on the admin
+  address being set and read — which is why Admin warns when it is empty.
+- **One broken dataset stops the whole report,** including the panels that
+  worked. A dashboard carrying one flaky optional dataset alongside four
+  dependable ones will fail every morning that dataset does. The fix is to split
+  it into two dashboards rather than to weaken the rule.
 - **Reports run against live connections at odd hours.** A job at 07:00 queries
   whatever the servers hold at 07:00. Nothing here waits for a feed to be ready;
   a report that must not run before a load completes should be scheduled after
