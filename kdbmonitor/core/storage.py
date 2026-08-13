@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from kdbmonitor.core.models import (
@@ -13,9 +13,15 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.dashboard_models import (
     Component, Dashboard, dashboard_from_json, dashboard_to_json,
 )
+from kdbmonitor.core.reportjob import ReportJob, job_from_json, job_to_json
 
 RESULT_RETENTION_DAYS = 20   # default; overridable via the 'result_retention_days' setting
 RESULT_MAX_ROWS = 500        # default row cap per snapshot; overridable via 'result_max_rows'
+
+# How much history one report job keeps. Enough to see a pattern of morning
+# failures, bounded so a job running every fifteen minutes cannot fill the
+# database.
+REPORT_RUN_RETENTION = 200
 
 
 def _jsonable(v):
@@ -40,6 +46,13 @@ class Storage:
     def __init__(self, path: str = "kdbmonitor.db"):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Two processes share this file: the app and the report scheduler. In
+        # the default rollback journal the second one to write meets "database
+        # is locked", so WAL — one writer, concurrent readers — is a
+        # requirement of the scheduler rather than tidying. The busy timeout
+        # covers the moments they collide anyway.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
 
     def init_db(self) -> None:
         self.conn.executescript(
@@ -98,6 +111,30 @@ class Storage:
                 payload_json TEXT NOT NULL,
                 UNIQUE (kind, name)             -- saving under a name replaces it
             );
+            CREATE TABLE IF NOT EXISTS report_jobs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                dashboard_id  INTEGER NOT NULL,
+                spec_json     TEXT NOT NULL DEFAULT '{}',
+                last_fired_at TEXT,
+                created_at    TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS report_job_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id      INTEGER NOT NULL,
+                fired_for   TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT,
+                status      TEXT NOT NULL,
+                attempts    INTEGER NOT NULL DEFAULT 1,
+                pages       INTEGER,
+                recipients  INTEGER,
+                error       TEXT,
+                detail_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_report_job_runs_job
+                ON report_job_runs (job_id, fired_for DESC);
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -581,6 +618,121 @@ class Storage:
             " ORDER BY id DESC LIMIT 1", (alert_id,),
         ).fetchone()
         return r["result_hash"] if r else None
+
+    # --- scheduled reports ---
+    @staticmethod
+    def _stamp(when: datetime) -> str:
+        """An aware datetime as the 20-character UTC text everything stores.
+
+        One spelling throughout: the scheduler's lock compares timestamps as
+        strings, and a second format would make a fresh lock look stale.
+        """
+        return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def add_report_job(self, job: ReportJob) -> int:
+        # A new job starts from now, not from null: runs_between would
+        # otherwise be asked what it missed since the epoch, and told to send
+        # all of it.
+        now = self._stamp(datetime.now(timezone.utc))
+        job.last_fired_at = job.last_fired_at or now
+        cur = self.conn.execute(
+            "INSERT INTO report_jobs(name, enabled, dashboard_id, spec_json, "
+            "last_fired_at, created_at) VALUES (?,?,?,?,?,?)",
+            (job.name, 1 if job.enabled else 0, job.dashboard_id,
+             job_to_json(job), job.last_fired_at, now))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _row_to_report_job(self, r: sqlite3.Row) -> ReportJob:
+        job = job_from_json(r["spec_json"])
+        # The columns are authoritative for everything also held in a column:
+        # they are what the scheduler updates on a run, and re-serialising the
+        # whole payload on every fire would rewrite the job to store a date.
+        job.id = r["id"]
+        job.enabled = bool(r["enabled"])
+        job.dashboard_id = r["dashboard_id"]
+        job.last_fired_at = r["last_fired_at"]
+        return job
+
+    def list_report_jobs(self) -> list[ReportJob]:
+        rows = self.conn.execute(
+            "SELECT * FROM report_jobs ORDER BY name COLLATE NOCASE").fetchall()
+        return [self._row_to_report_job(r) for r in rows]
+
+    def get_report_job(self, jid: int) -> Optional[ReportJob]:
+        r = self.conn.execute(
+            "SELECT * FROM report_jobs WHERE id=?", (jid,)).fetchone()
+        return self._row_to_report_job(r) if r else None
+
+    def update_report_job(self, job: ReportJob) -> None:
+        self.conn.execute(
+            "UPDATE report_jobs SET name=?, enabled=?, dashboard_id=?, "
+            "spec_json=? WHERE id=?",
+            (job.name, 1 if job.enabled else 0, job.dashboard_id,
+             job_to_json(job), job.id))
+        self.conn.commit()
+
+    def delete_report_job(self, jid: int) -> None:
+        self.conn.execute("DELETE FROM report_jobs WHERE id=?", (jid,))
+        self.conn.execute("DELETE FROM report_job_runs WHERE job_id=?", (jid,))
+        self.conn.commit()
+
+    def set_report_job_enabled(self, jid: int, enabled: bool) -> None:
+        self.conn.execute("UPDATE report_jobs SET enabled=? WHERE id=?",
+                          (1 if enabled else 0, jid))
+        self.conn.commit()
+
+    def set_report_job_fired(self, jid: int, fired_at: datetime) -> None:
+        """Record the *fire time* just run — never the moment it finished.
+
+        A slow run stamped by its end would put last_fired_at past the next
+        fire time, and that report would never be sent at all.
+        """
+        self.conn.execute("UPDATE report_jobs SET last_fired_at=? WHERE id=?",
+                          (self._stamp(fired_at), jid))
+        self.conn.commit()
+
+    def record_report_run(self, job_id: int, fired_for: datetime,
+                          started_at: datetime,
+                          finished_at: Optional[datetime] = None,
+                          status: str = "ok", attempts: int = 1,
+                          pages: Optional[int] = None,
+                          recipients: Optional[int] = None,
+                          error: Optional[str] = None,
+                          detail: Optional[list[dict]] = None) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO report_job_runs(job_id, fired_for, started_at, "
+            "finished_at, status, attempts, pages, recipients, error, "
+            "detail_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (job_id, self._stamp(fired_for), self._stamp(started_at),
+             self._stamp(finished_at) if finished_at else None,
+             status, attempts, pages, recipients, error,
+             json.dumps(detail) if detail else None))
+        # Trimmed per job rather than globally: a report running every fifteen
+        # minutes must not push a daily one's only failure out of its history.
+        self.conn.execute(
+            "DELETE FROM report_job_runs WHERE job_id=? AND id NOT IN ("
+            "  SELECT id FROM report_job_runs WHERE job_id=? "
+            "  ORDER BY id DESC LIMIT ?)",
+            (job_id, job_id, REPORT_RUN_RETENTION))
+        self.conn.commit()
+        return cur.lastrowid
+
+    @staticmethod
+    def _row_to_report_run(r: sqlite3.Row) -> dict:
+        run = dict(r)
+        run["detail"] = json.loads(run.pop("detail_json") or "[]")
+        return run
+
+    def list_report_runs(self, job_id: int, limit: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM report_job_runs WHERE job_id=? "
+            "ORDER BY id DESC LIMIT ?", (job_id, limit)).fetchall()
+        return [self._row_to_report_run(r) for r in rows]
+
+    def latest_report_run(self, job_id: int) -> Optional[dict]:
+        runs = self.list_report_runs(job_id, limit=1)
+        return runs[0] if runs else None
 
     # --- settings ---
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
