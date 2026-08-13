@@ -335,15 +335,36 @@ act on, and a list that sometimes carries reports and sometimes carries
 apologies gets filtered. The people who can do something about a failed run are
 the people who run KdbMonitor, and they are the only ones written to.
 
-One setting in Admin, beside the SMTP fields:
+One setting in Admin, beside the SMTP fields, holding **a list of addresses** —
+support is rarely one person, and a report failing at 07:00 should not depend on
+whether that person is in yet:
 
 ```
-scheduler_admin_email = "kdb-support@corp.local"       # comma-separated for several
+scheduler_admin_email = "kdb-support@corp.local, alice@corp.local, bob@corp.local"
 ```
 
-A single setting rather than a field on each job: when the person carrying
-support changes, that is one edit and not one per report. If a particular job
-ever needs its own owner, this is where that field goes.
+Stored as one string and parsed to a list on read: split on comma **or**
+semicolon, each entry trimmed, empties dropped. Semicolons are accepted because
+that is what Outlook puts on the clipboard, and rejecting a pasted address list
+for its separator is a way of being wrong about something that does not matter.
+
+Admin validates the field on save — anything without an `@` is named and the
+save refused — and prints the parsed list back as it will actually be used, so
+a stray separator is visible before it costs a notice rather than after:
+
+```
+Admin notifications
+  [kdb-support@corp.local; alice@corp.local, bob@corp.local            ]
+  → 3 addresses: kdb-support@corp.local, alice@corp.local, bob@corp.local
+```
+
+Every address goes in `To:` of a single mail rather than one mail each. They are
+colleagues working the same failure, and seeing who else was told — and being
+able to reply to all of them — is the point.
+
+One setting rather than a field on each job: when the people carrying support
+change, that is one edit and not one per report. If a particular job ever needs
+its own owner, this is where that field goes.
 
 The notice is sent once per failed run — not once per attempt — after the
 retries are exhausted, carries no attachment, and names in full:
@@ -708,7 +729,14 @@ asserted against the recipient list to show that no address from it appears —
 carries no attachment, names every failed dataset with its query, and is sent
 once for a run of three attempts rather than three times. With
 `scheduler_admin_email` empty, no mail is sent at all and the run is still
-recorded `failed`. Empty `smtp_host` fails the run with a message that says SMTP
+recorded `failed`.
+
+**The admin list** — parsing has its own tests, being the kind of thing that
+works until somebody pastes from Outlook. Comma-separated, semicolon-separated
+and mixed all parse to the same list; surrounding whitespace is trimmed; empty
+entries and a trailing separator are dropped; a single address parses to a list
+of one; an entry without `@` fails Admin's validation by name. Three configured
+addresses produce **one** mail carrying all three in `To:`, not three mails. Empty `smtp_host` fails the run with a message that says SMTP
 is not configured, rather than raising.
 
 **The loop** — with an injected clock and an injected `run_job`. A job due now
