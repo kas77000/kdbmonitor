@@ -18,10 +18,11 @@ Built with [Streamlit](https://streamlit.io/) and [PyKX](https://code.kx.com/pyk
 - **Track the day** with durable per-day counters (triggered / armed / errors / notifications) that are derived from the persisted run log, so **they don't reset when you restart the app**.
 - **Never miss a trigger**: an alert that has fired keeps a red **NEW** badge until you open it with **View**.
 - **Investigate** results: preview an alert's output while building it, and open a full **Result page** for a triggered alert to view, export (Excel/CSV) or copy the data.
+- **Mail a dashboard on a clock**: schedule a dashboard to run at 07:00 on weekdays and arrive as a PDF in people's inboxes. This runs in a **separate process** that survives closing the app, so a report goes out whether or not anybody left a browser open. See [Scheduled reports](#scheduled-reports).
 - **Share** whole setups with teammates via JSON export/import — export **alerts** (bundled with their connections) or **connections on their own**.
 - **Try it with no KDB at all** using the built-in **demo mock**.
 
-> Note on scope: checks run **only while the app is open** in a browser and monitoring is toggled on — but they run on **whichever tab you're on**, not only the Monitor page, and monitoring resumes automatically when you reopen the app. There is no always-on background daemon (by design, for now). The core logic is written to make adding one later straightforward.
+> Note on scope: **alert** checks run only while the app is open in a browser and monitoring is toggled on — but they run on **whichever tab you're on**, not only the Monitor page, and monitoring resumes automatically when you reopen the app. **Scheduled reports are different**: they run in a background process that outlives the app (see [Scheduled reports](#scheduled-reports)).
 
 ---
 
@@ -64,14 +65,15 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 
 ---
 
-## The four views (plus a Result page)
+## The views (plus a Result page)
 
 | View | Purpose |
 |------|---------|
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
 | **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export alerts. Preview an alert's result before saving. |
 | **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries (or an uploaded file), refreshing on their own interval, exportable as a PDF. |
-| **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, import/export connections, and set SMTP for email alerts. |
+| **Schedules** | Set up dashboards to run on a clock and arrive by email as a PDF, and start/stop/restart the process that runs them. |
+| **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, import/export connections, set SMTP, and say which addresses hear about a failed report. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
 ---
@@ -898,6 +900,98 @@ machine whose Admin has the same environment names.
 
 ---
 
+## Scheduled reports
+
+A dashboard is worth reading at 07:00, and the person who needs to read it is
+usually not the person who built it. The **Schedules** page runs a dashboard on
+a clock and mails the same PDF the Download button produces to a list of
+recipients.
+
+### The scheduler is its own process
+
+Streamlit only executes while a browser session is being served, so a schedule
+cannot live inside it. Reports are sent by a separate process that shares only
+the database:
+
+```
+python -m kdbmonitor.scheduler        # or run_scheduler.bat on Windows
+```
+
+**You do not normally have to run this.** Opening the app starts one if one
+should be running and none is, and it is spawned *detached* — closing the app,
+the terminal or the browser leaves it running, so a 07:00 report goes out
+whether or not anybody was around the night before.
+
+Exactly one scheduler runs against a database, however many are started. Each
+claims a lock in the `settings` table and refreshes it while it runs; a second
+copy finds the lock held and exits quietly. That is what stops two schedulers
+mailing every recipient two of everything, and it is why starting one by hand
+while the app already started one is safe.
+
+### Start, stop, restart
+
+The Schedules page shows what the process is doing and gives you the three
+buttons. Stopping is cooperative — the page writes an intent, the scheduler
+reads it between one-second slices of its sleep and exits, finishing any report
+already in flight. Nothing is ever killed by pid, which on Windows cannot be
+done reliably anyway.
+
+Pressing **Stop** also stops the app from starting another one; otherwise the
+next page load would put back what you just stopped. **Restart** is stop, wait
+for the lock to clear, start — what you want after changing the SMTP host or
+pulling new code. If a stop has not landed within ten seconds the page says
+`not responding` and offers a **Force stop**, but only when the process is on
+the machine you are looking at.
+
+Set `KDBMONITOR_NO_AUTOSTART=1` if you would rather run the scheduler under
+Task Scheduler or as a service and have the app leave it alone.
+
+### A job
+
+| Field | |
+|---|---|
+| **Dashboard** | Any KDB-sourced dashboard. File dashboards cannot be scheduled — they read from a spreadsheet somebody uploads in the browser, and at 07:00 there is no browser. |
+| **When** | One or more times of day, a set of weekdays, and a timezone — or a 5-field **cron** expression behind the *Advanced* toggle. Times are read in the job's own zone, and daylight saving is computed on the day. |
+| **Period** | The dashboard's own, or an override. Relative periods resolve against the day the job runs, so *Yesterday* means yesterday every morning. |
+| **Parameters** | Values for the dashboard's parameters; anything left blank keeps that parameter's default. |
+| **Recipients** | Comma or semicolon separated. |
+| **Subject / body** | `{dashboard}`, `{date}`, `{time}` and `{job}` are substituted. |
+
+**Send now** runs the job immediately without touching its schedule, so you can
+tell whether a new job works without waiting until tomorrow.
+
+### When a run fails
+
+**Any dataset failing fails the whole report — nothing is sent.** A PDF in an
+inbox is read detached from the app, forwarded on and quoted days later, by
+which time nobody knows that the panel showing zero was a dead connection
+rather than a quiet morning. A report that is wrong and plausible is worse than
+one that did not arrive.
+
+The recipients are **never** told that a run failed. They get the report or
+they get nothing. The failure — every broken dataset, its error and the query
+that produced it — goes to the addresses in **Admin → Admin notifications**,
+and the same detail is kept in the job's **History** tab.
+
+A failed run is retried three times, two minutes apart, before it is given up
+on; that covers the common case of a KDB server that has not finished coming up
+at 07:00. A fire time more than an hour old (the scheduler was down) is
+recorded as `missed` rather than mailed late.
+
+Two consequences worth knowing:
+
+- If the admin address is unset or unread, a failed report is silent. Admin
+  warns when schedules exist and the field is empty, and the sidebar badge
+  turns red.
+- One flaky optional dataset alongside four dependable ones will kill the
+  report every morning it misbehaves. Split the dashboard rather than expecting
+  a partial report.
+
+The scheduler logs to `logs/scheduler.log` (rotating, five files), overridable
+with `KDBMONITOR_LOG_DIR`.
+
+---
+
 ## Sharing alerts and connections
 
 Each moves from the page that owns it. Both write the same file format, so
@@ -947,6 +1041,9 @@ kdbmonitor/
     conditions.py          # trigger-condition evaluation
     rearm.py               # re-arm decision (transition / cooldown / every_tick)
     schedule.py            # an alert's active hours: is_active / next_open
+    recurrence.py          # when a scheduled report fires: pickers or cron
+    reportjob.py           # a scheduled report: dashboard, when, to whom
+    reportrun.py           # run one report: query -> PDF -> mail, or tell the admin
     notifiers.py           # in-app / email / webhook dispatch, browser payload
     evaluate.py            # evaluate one alert end-to-end
     portability.py         # export / import bundles
@@ -970,7 +1067,13 @@ kdbmonitor/
     qeditor.py             # the q box (numbers, Tab) and coloured q output
     tables.py              # a dashboard table on screen: formats, search, filters, grouping
     popup.py               # the modal a fired alert opens, with its rows in it
+    schedules.py           # scheduled reports, and the process that sends them
     engine.py              # the monitoring loop (runs in the app shell, every tab)
+  scheduler/               # the report process — no Streamlit, ever
+    __main__.py            # python -m kdbmonitor.scheduler
+    supervisor.py          # the lock, the heartbeat, start/stop, spawning
+    loop.py                # what is due, retries, recording, sleeping
+run_scheduler.bat          # start the scheduler by hand on Windows
 ```
 
 ## Testing
@@ -985,6 +1088,9 @@ The core logic is covered by unit tests against a fake KDB client, and the Strea
 
 ## Notes and limitations
 
-- Checks run only while the app is open and **Monitoring** is on — but on any tab, and the on/off state is remembered across restarts.
+- Alert checks run only while the app is open and **Monitoring** is on — but on any tab, and the on/off state is remembered across restarts. **Scheduled reports are the exception**: they run in a detached process that outlives the app.
 - KDB connections use host + port only (no authentication).
+- SMTP is host + port + sender only — no username, password or TLS. It assumes an internal relay that accepts mail from trusted hosts, which is also why no credential is ever stored in `kdbmonitor.db`.
+- The database is opened in **WAL** mode, because the app and the scheduler write to it from two processes. If you share `kdbmonitor.db` over a network mount, note that only one scheduler runs between every machine reading it — which is correct, since the alternative is duplicate mail, but the machine that happens to hold the lock is the one sending the reports, and the Schedules page names it.
+- Reports run one at a time, in name order, so a slow report delays the one behind it. At a handful of reports a day that is simpler than concurrency and easier to reason about when something is late.
 - Per-day counters, the monitoring on/off state, the "seen" state behind the NEW badge, and triggered-result daily snapshots are persisted in `kdbmonitor.db`, so they survive restarts. The *live* in-session result view is per-session; when it's gone the Result page falls back to the stored daily snapshot.
