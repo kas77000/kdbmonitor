@@ -12,8 +12,21 @@ from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.dataset import standalone_side
 from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.mock import demo_connection_specs
+from kdbmonitor.core.notifiers import parse_address_list, send_report_email
 from kdbmonitor.core.portability import export_connections_json, import_bundle_json
+from kdbmonitor.core.reportrun import ADMIN_EMAIL_KEY
 from kdbmonitor.ui.common import form_area
+
+
+def admin_problems(text: str) -> list[str]:
+    """Problems with the admin-notification list; empty when it is usable.
+
+    Pure, so the rule can be tested without building a page. An empty list is
+    fine here — the warning about having no admin while report jobs exist
+    belongs beside those jobs, not on a field nobody has reached yet.
+    """
+    return [f"{address!r} is not an email address."
+            for address in parse_address_list(text) if "@" not in address]
 
 
 def _fmt_ts(ts: str | None) -> str:
@@ -404,17 +417,66 @@ def render(store, mgr: ConnectionManager) -> None:
     # ---- SMTP ------------------------------------------------------------- #
     st.markdown("**Email (SMTP)**")
     with form_area().container(border=True):
-        st.caption("Used by alerts that select the email channel.")
+        st.caption("Used by alerts that select the email channel, and by "
+                   "scheduled reports.")
         s = st.columns([2, 1, 2], vertical_alignment="bottom")
         host = s[0].text_input("SMTP host", value=store.get_setting("smtp_host", ""))
         port = int(s[1].number_input("Port", 1, 65535,
                                      int(store.get_setting("smtp_port", "25"))))
         sender = s[2].text_input("From address", value=store.get_setting("smtp_sender", ""))
-        if st.button("Save SMTP settings", icon=":material/save:"):
+
+        b = st.columns([1, 1, 3])
+        if b[0].button("Save SMTP settings", icon=":material/save:"):
             store.set_setting("smtp_host", host)
             store.set_setting("smtp_port", str(port))
             store.set_setting("smtp_sender", sender)
             st.toast("Saved SMTP settings", icon=":material/check:")
+
+        # Verifying a relay by waiting for tomorrow's 07:00 is not a reasonable
+        # way to find out that the port is wrong.
+        test_to = st.text_input("Send a test email to", key="smtp_test_to",
+                                placeholder="you@corp.local")
+        if b[1].button("Send test email", icon=":material/outgoing_mail:",
+                       disabled=not (host and test_to)):
+            try:
+                send_report_email(host, port, sender,
+                                  parse_address_list(test_to),
+                                  "KdbMonitor test email",
+                                  "If you are reading this, SMTP is configured.")
+                st.success(f"Sent to {test_to}.")
+            except Exception as exc:      # noqa: BLE001 - the message is the point
+                st.error(f"Could not send: {exc}")
+
+    # ---- Admin notifications --------------------------------------------- #
+    st.markdown("**Admin notifications**")
+    with form_area().container(border=True):
+        st.caption("Where a failed scheduled report is reported. The people "
+                   "expecting the report are never told it failed — they get "
+                   "the report or they get nothing.")
+        admins_text = st.text_input(
+            "Admin email address(es)",
+            value=store.get_setting(ADMIN_EMAIL_KEY, "") or "",
+            placeholder="kdb-support@corp.local; alice@corp.local",
+            help="Comma or semicolon separated.")
+
+        parsed = parse_address_list(admins_text)
+        problems = admin_problems(admins_text)
+        for problem in problems:
+            st.warning(problem)
+        if parsed and not problems:
+            # Printed back as it will actually be used, so a stray separator is
+            # visible before it costs a notice rather than after.
+            st.caption(f"→ {len(parsed)} address(es): {', '.join(parsed)}")
+
+        if st.button("Save admin notifications", icon=":material/save:",
+                     disabled=bool(problems)):
+            store.set_setting(ADMIN_EMAIL_KEY, admins_text)
+            st.toast("Saved admin notifications", icon=":material/check:")
+
+        if not parsed and store.list_report_jobs():
+            st.warning("There are scheduled reports but no admin address — a "
+                       "failed run will be silent by mail.",
+                       icon=":material/warning:")
 
     # ---- Result snapshots (reports) -------------------------------------- #
     st.markdown("**Result snapshots (for reports)**")
