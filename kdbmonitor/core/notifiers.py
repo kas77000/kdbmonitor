@@ -1,9 +1,11 @@
 # kdbmonitor/core/notifiers.py
 from __future__ import annotations
 
+import re
 import smtplib
+from email.message import EmailMessage
 from email.mime.text import MIMEText
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import requests
 
@@ -27,6 +29,52 @@ def send_email(smtp_host: str, smtp_port: int, sender: str,
     msg["To"] = ", ".join(to)
     with smtplib.SMTP(smtp_host, smtp_port) as s:
         s.sendmail(sender, to, msg.as_string())
+
+
+_SEPARATORS = re.compile(r"[,;]")
+
+
+def parse_address_list(text: Optional[str]) -> list[str]:
+    """Addresses from one typed field.
+
+    Comma or semicolon, because Outlook puts semicolons on the clipboard and
+    refusing a pasted list for its separator is being wrong about something
+    that does not matter. Blank entries and a trailing separator are dropped.
+    """
+    if not text:
+        return []
+    return [part.strip() for part in _SEPARATORS.split(text) if part.strip()]
+
+
+def send_report_email(smtp_host: str, smtp_port: int, sender: str,
+                      to: list[str], subject: str, body: str,
+                      attachments: Sequence[tuple[str, bytes, str]] = ()
+                      ) -> None:
+    """A message that can carry a PDF.
+
+    ``EmailMessage`` rather than the ``MIMEText`` :func:`send_email` uses,
+    which cannot hold an attachment. The alert path keeps that function
+    unchanged — it has no attachment to carry and no reason to be touched.
+
+    ``attachments`` are ``(filename, data, mime_type)``.
+    """
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    msg.set_content(body or "")
+
+    for filename, data, mime in attachments:
+        maintype, _, subtype = mime.partition("/")
+        msg.add_attachment(data, maintype=maintype,
+                           subtype=subtype or "octet-stream",
+                           filename=filename)
+
+    with smtplib.SMTP(smtp_host, smtp_port) as s:
+        # Recipients passed explicitly rather than left to the header: one
+        # envelope for the whole list, so three admins get one conversation
+        # and can reply to each other rather than three separate threads.
+        s.send_message(msg, from_addr=sender, to_addrs=list(to))
 
 
 def post_webhook(url: str, message: str) -> None:
