@@ -16,7 +16,8 @@ from kdbmonitor.core.models import (
 from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.storage import Storage
 
-PAGES = ["monitor", "builder", "dashboards", "reports", "admin", "result"]
+PAGES = ["monitor", "builder", "dashboards", "reports", "schedules",
+         "admin", "result"]
 
 
 def _alert() -> Alert:
@@ -78,7 +79,9 @@ def _script(db_path: str, page: str, extra: str = "") -> str:
 import streamlit as st
 from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.storage import Storage
-from kdbmonitor.ui import admin, builder, dashboards, monitor, reports, result
+from kdbmonitor.ui import (
+    admin, builder, dashboards, monitor, reports, result, schedules,
+)
 
 store = Storage(r"{db_path}")
 store.init_db()
@@ -93,6 +96,8 @@ elif page == "dashboards":
     dashboards.render(store, mgr)
 elif page == "reports":
     reports.render(store, mgr)
+elif page == "schedules":
+    schedules.render(store, mgr)
 elif page == "admin":
     admin.render(store, mgr)
 else:

@@ -1,12 +1,15 @@
 # app.py
 import os
+from datetime import datetime, timezone
 
 import streamlit as st
 
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.core.client import ConnectionManager
+from kdbmonitor.scheduler import supervisor as scheduler_supervisor
 from kdbmonitor.ui import (
-    admin, builder, dashboards, monitor, popup, result, reports, engine,
+    admin, builder, dashboards, monitor, popup, result, reports, schedules,
+    engine,
 )
 
 st.set_page_config(page_title="KdbMonitor", page_icon=":material/radar:", layout="wide")
@@ -26,8 +29,22 @@ def get_manager():
     return ConnectionManager()
 
 
+@st.cache_resource
+def start_scheduler():
+    """Start the report scheduler if one should be running and none is.
+
+    In a cache_resource so this happens once per Streamlit server process —
+    which is exactly "when the UI launches", not on every rerun and not once
+    per browser session. The spawned process is detached and outlives this
+    one; the lock in the database is what stops a second copy running, so
+    reaching here from several sessions is safe.
+    """
+    return scheduler_supervisor.ensure_running(get_store(), db_path=DB_PATH)
+
+
 store = get_store()
 mgr = get_manager()
+start_scheduler()
 
 with st.sidebar:
     st.title(":material/radar: KdbMonitor")
@@ -44,6 +61,12 @@ with st.sidebar:
     _tick = engine.tick_secs(store)
     st.markdown(":green-badge[:material/sensors: Monitoring on]" if _mon_on
                 else ":gray-badge[:material/sensors_off: Monitoring paused]")
+
+    # The scheduler runs in a process of its own, so nothing else on screen
+    # would say whether it is there. Nobody visits the Schedules page on a
+    # normal morning; this badge is where its absence gets noticed.
+    _sched = scheduler_supervisor.status(store, datetime.now(timezone.utc))
+    st.markdown(schedules.BADGE.get(_sched.state, schedules.BADGE["stopped"]))
 
     @st.fragment(run_every=_tick if _mon_on else None)
     def _background_monitor():
@@ -75,6 +98,10 @@ def dashboards_page():
     dashboards.render(store, mgr)
 
 
+def schedules_page():
+    schedules.render(store, mgr)
+
+
 # No url_path: st.navigation serves the default page at "/" and never registers
 # its url_path, so declaring one promised a /monitor URL that answered
 # "Page not found". The sidebar link points at "/" either way.
@@ -86,6 +113,8 @@ reports_pg = st.Page(reports_page, title="Reports", url_path="reports",
                      icon=":material/summarize:")
 dashboards_pg = st.Page(dashboards_page, title="Dashboards", url_path="dashboards",
                         icon=":material/dashboard:")
+schedules_pg = st.Page(schedules_page, title="Schedules", url_path="schedules",
+                       icon=":material/schedule_send:")
 admin_pg = st.Page(admin_page, title="Admin", url_path="admin",
                    icon=":material/settings:")
 result_pg = st.Page(result_page, title="Result", url_path="result",
@@ -94,8 +123,8 @@ result_pg = st.Page(result_page, title="Result", url_path="result",
 # expose pages so other views can navigate programmatically (Monitor -> Result)
 st.session_state["_nav_pages"] = {"monitor": monitor_pg, "result": result_pg}
 
-nav = st.navigation([monitor_pg, builder_pg, dashboards_pg, reports_pg, admin_pg,
-                     result_pg])
+nav = st.navigation([monitor_pg, builder_pg, dashboards_pg, reports_pg,
+                     schedules_pg, admin_pg, result_pg])
 
 # "Open the full result" works from wherever it was clicked — the pop-up can be
 # on any page, so the jump can't be the Monitor's business alone.

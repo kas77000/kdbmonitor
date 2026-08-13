@@ -3,8 +3,14 @@ __pycache__/
 .venv/
 venv/
 *.db
+# WAL leaves these beside the database. "*.db" does not match them.
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# where the report scheduler writes
+logs/
 .streamlit/secrets.toml
 .env
 *.HEIC

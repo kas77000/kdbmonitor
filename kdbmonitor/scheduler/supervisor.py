@@ -187,13 +187,18 @@ def spawn_detached(db_path: Optional[str] = None) -> int:
 
 
 def ensure_running(store, now: Optional[datetime] = None,
-                   spawn: Optional[Callable[[], object]] = None) -> str:
+                   spawn: Optional[Callable[[], object]] = None,
+                   db_path: Optional[str] = None) -> str:
     """Start a scheduler if one should be running and none is.
 
     Called once per Streamlit server process. The rule reads the desired state
     rather than only the lock, and that is what makes Stop actually stop: the
     naive version — spawn whenever nothing is running — would put the process
     back the moment after somebody stopped it.
+
+    ``db_path`` is the database the *caller* has open. Passing it explicitly
+    rather than letting the child re-derive one is what stops the scheduler
+    quietly serving a different file from the app that started it.
     """
     now = now or datetime.now(timezone.utc)
     if os.environ.get("KDBMONITOR_NO_AUTOSTART"):
@@ -204,7 +209,7 @@ def ensure_running(store, now: Optional[datetime] = None,
         return state
 
     try:
-        (spawn or spawn_detached)()
+        (spawn or (lambda: spawn_detached(db_path)))()
     except Exception as exc:            # noqa: BLE001 - reported, never raised
         # A scheduler that silently declines to start is the worst available
         # outcome: everything looks normal until a report does not arrive.
