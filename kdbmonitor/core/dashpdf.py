@@ -27,6 +27,18 @@ HEADER_H_CONT = 0.15
 FOOTER_H = 0.45
 GUTTER = 0.28                      # between rows and between widgets
 
+
+def row_gutter(row) -> float:
+    """The space between this row's widgets.
+
+    One function rather than three readings of ``GUTTER``, because the width a
+    widget is *drawn* at, the width a table is *measured* against, and the
+    width that decides whether the paper turns must never disagree — that
+    disagreement is what prints a table's columns into each other.
+    """
+    return GUTTER + max(getattr(row, "col_gap_in", 0.0), 0.0)
+
+
 # Room a printed caption line costs the title band. Only page 1 carries one, so
 # only page 1's header grows — a continuation page has no caption to make room
 # for, and giving it back the space keeps a long table's page count unchanged.
@@ -222,16 +234,26 @@ def paginate(rows: list[Row], results: Optional[dict] = None,
     limit = sheet.h - MARGIN - FOOTER_H
 
     for part in split_rows(rows, results, cache):
-        if page and y + part.height_in > limit:
+        # The gap belongs to the row, not to each chunk of a long table: a
+        # table continuing over five parts asked for air before it started,
+        # not before every continuation of itself.
+        lead = part.row.gap_above_in if part.part == 0 else 0.0
+        if page and y + lead + part.height_in > limit:
             pages.append(page)
             page = []
             y = MARGIN + HEADER_H_CONT
+            # Swallowed at the top of a page: leading space separates a row
+            # from what precedes it, and here nothing does.
+            lead = 0.0
         elif page and _joins(page[-1][0], part):
             # Same table, still on this page: grow the block rather than start
             # a second one under its own repeated header.
             page[-1] = (_join(page[-1][0], part), page[-1][1])
             y += part.height_in + GUTTER
             continue
+        elif not page:
+            lead = 0.0            # the first row of page 1, for the same reason
+        y += lead
         page.append((part, y))
         y += part.height_in + GUTTER
 
@@ -321,7 +343,7 @@ def _widget_width_in(row: Row, widget, content_w: float) -> float:
     if not widgets:
         return 0.0
     total = sum(max(w.width, 0.01) for w in widgets)
-    usable = content_w - GUTTER * (len(widgets) - 1)
+    usable = content_w - row_gutter(row) * (len(widgets) - 1)
     left, _, right, _ = _INSETS.get(widget.type, _INSET_CHART)
     return max(usable * (max(widget.width, 0.01) / total) - left - right, 0.15)
 
@@ -502,7 +524,8 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
         if not widgets:
             continue
         total_w = sum(max(w.width, 0.01) for w in widgets)
-        usable = sheet.content_w - GUTTER * (len(widgets) - 1)
+        gutter = row_gutter(part.row)
+        usable = sheet.content_w - gutter * (len(widgets) - 1)
         x = MARGIN
         for position, widget in enumerate(widgets):
             w_in = usable * (max(widget.width, 0.01) / total_w)
@@ -511,7 +534,7 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
             # rather than shuffling everything left.
             carried = position in part.slices
             if part.part and not carried:
-                x += w_in + GUTTER
+                x += w_in + gutter
                 continue
 
             rect, title_h = _axes_rect(x, y_top, w_in, part.height_in, widget,
@@ -530,7 +553,7 @@ def _render_page(dashboard: Dashboard, page: list, results: dict,
                 pm = slice_table(pm, start, count, part.capacity[position])
             ax = fig.add_axes(rect)
             draw(ax, pm)
-            x += w_in + GUTTER
+            x += w_in + gutter
 
     _footer(fig, as_of, page_no, total, sheet)
     return fig
