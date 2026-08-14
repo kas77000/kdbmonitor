@@ -44,7 +44,7 @@ from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui import qeditor
 from kdbmonitor.ui import tables
 from kdbmonitor.ui.tables import WIDTHS as TABLE_WIDTHS
-from kdbmonitor.ui.common import form_area
+from kdbmonitor.ui.common import column_spec, form_area
 from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
@@ -2531,7 +2531,7 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
         _paste_row_here(draft, r_i, f"r{r_i}_rpaste")
 
         with st.container(border=True):
-            head = st.columns([2.2, 1.3, 1.1, 0.6, 0.6, 0.6, 0.6],
+            head = st.columns([1.9, 1.1, 1.1, 1.1, 1.0, 0.6, 0.6, 0.6, 0.6],
                               vertical_alignment="bottom")
             page_badge = (f" :blue-badge[page {placed.page}]" if placed else "")
             head[0].markdown(f"**Row {r_i + 1}**{page_badge} · "
@@ -2539,28 +2539,43 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
             row.height_in = float(head[1].number_input(
                 "Height (in)", 0.4, 9.0, float(row.height_in), step=0.1,
                 key=f"r{r_i}_h", help="Printed height on the A4 page."))
+            row.gap_above_in = float(head[2].number_input(
+                "Gap above", 0.0, 4.0, float(row.gap_above_in), step=0.1,
+                key=f"r{r_i}_gap",
+                help="Extra air before this row, in inches, on screen and on "
+                     "the page. 0 is the standard spacing. A gap is not "
+                     "printed when the row starts a page."))
+            # Disabled rather than hidden: a control that silently does nothing
+            # teaches the reader that the feature does not work.
+            row.col_gap_in = float(head[3].number_input(
+                "Cols gap", 0.0, 4.0, float(row.col_gap_in), step=0.1,
+                key=f"r{r_i}_cgap", disabled=len(row.widgets) < 2,
+                help="Extra air between this row's widgets, in inches."
+                     if len(row.widgets) > 1 else
+                     "This row holds one widget, so there is nothing to "
+                     "separate."))
             # A destination, beside the arrows rather than instead of them:
             # reaching the top of a long report was one click and one full
             # rerun per row passed. Blank, and blank again after each move, for
             # the reason given in _move_column — a box showing this row's
             # position belongs to the *slot*, so stepping it twice moves
             # whatever has since landed there and undoes the first move.
-            target = head[2].number_input(
+            target = head[4].number_input(
                 "Move to", 1, len(draft.rows), value=None, step=1,
                 key=f"r{r_i}_pos", placeholder=str(r_i + 1),
                 help="Type the position this row should print at — one move "
                      "however far it travels. The arrows move it one place.")
             if target is not None:
                 _move_row(draft, r_i, int(target) - 1)
-            if head[3].button("", icon=":material/arrow_upward:",
+            if head[5].button("", icon=":material/arrow_upward:",
                               key=f"r{r_i}_u", disabled=r_i == 0,
                               help="Move this row one place earlier."):
                 _move_row(draft, r_i, r_i - 1)
-            if head[4].button("", icon=":material/arrow_downward:",
+            if head[6].button("", icon=":material/arrow_downward:",
                               key=f"r{r_i}_d", disabled=r_i == len(draft.rows) - 1,
                               help="Move this row one place later."):
                 _move_row(draft, r_i, r_i + 1)
-            if head[5].button("", icon=":material/content_copy:",
+            if head[7].button("", icon=":material/content_copy:",
                               key=f"r{r_i}_c",
                               help="Copy this row, widgets and all. 'Paste row "
                                    "here' then appears between every row, so "
@@ -2569,7 +2584,7 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
                 _copy("row", row_to_dict(row),
                       f"row {r_i + 1} ({len(row.widgets)} widget(s))")
                 st.rerun()
-            if head[6].button("", icon=":material/delete:", key=f"r{r_i}_x"):
+            if head[8].button("", icon=":material/delete:", key=f"r{r_i}_x"):
                 draft.rows.pop(r_i)
                 _forget(_ROW_KEYS)
                 st.rerun()
@@ -2717,10 +2732,14 @@ def _render_preview(store, mgr, draft: Dashboard) -> None:
     for r_i, row in enumerate(draft.rows):
         if not row.widgets:
             continue
-        cols = st.columns([max(w.width, 0.01) for w in row.widgets],
-                          vertical_alignment="top")
+        # The preview shows the spacing it is previewing — same helper the live
+        # view uses, so it cannot promise a layout the page will not print.
+        if row.gap_above_in:
+            st.container(height=row_height_px(row.gap_above_in), border=False)
+        weights, slots = column_spec(row)
+        cols = st.columns(weights, vertical_alignment="top")
         for c_i, w in enumerate(row.widgets):
-            with cols[c_i]:
+            with cols[slots[c_i]]:
                 render_widget(build_plot_model(w, results),
                               row_height_px(row.height_in),
                               key=f"prev_{r_i}_{c_i}")

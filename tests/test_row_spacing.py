@@ -320,3 +320,54 @@ def test_a_column_gap_on_a_single_widget_row_is_harmless(tmp_path):
     board = _spaced_dashboard()
     board.rows[1].col_gap_in = 1.0        # a row holding one table
     assert not _render(tmp_path, board).exception
+
+
+# --- the editor --------------------------------------------------------------
+
+EDITOR_SCRIPT = '''
+import streamlit as st
+from kdbmonitor.core.client import ConnectionManager
+from kdbmonitor.core.storage import Storage
+from kdbmonitor.ui import dashboards
+
+store = Storage(r"{db}")
+store.init_db()
+st.session_state["dash_edit_id"] = 1
+st.session_state["dash_mode"] = "edit"
+# The editor opens on "Data"; the rows live under "Layout".
+st.session_state["dash_edit_section"] = "Layout"
+dashboards.render(store, ConnectionManager())
+'''
+
+
+def _editor(tmp_path, board: Dashboard) -> AppTest:
+    db = str(tmp_path / "k.db")
+    store = Storage(db)
+    store.init_db()
+    for spec in demo_connection_specs():
+        store.add_connection(spec)
+    store.add_dashboard(board)
+    return AppTest.from_string(EDITOR_SCRIPT.format(db=db),
+                               default_timeout=60).run()
+
+
+def test_the_editor_offers_a_gap_control_for_every_row(tmp_path):
+    at = _editor(tmp_path, _spaced_dashboard())
+    assert not at.exception
+    keys = {e.key for e in at.number_input}
+    for r_i in range(4):
+        assert f"r{r_i}_gap" in keys
+        assert f"r{r_i}_cgap" in keys
+
+
+def test_the_column_gap_is_disabled_where_there_is_nothing_to_separate(tmp_path):
+    at = _editor(tmp_path, _spaced_dashboard())
+    by_key = {e.key: e for e in at.number_input}
+    assert by_key["r1_cgap"].disabled          # one table
+    assert not by_key["r3_cgap"].disabled      # two tables
+
+
+def test_the_editor_shows_the_gap_that_is_stored(tmp_path):
+    at = _editor(tmp_path, _spaced_dashboard())
+    by_key = {e.key: e for e in at.number_input}
+    assert by_key["r2_gap"].value == pytest.approx(0.8)
