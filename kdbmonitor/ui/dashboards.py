@@ -29,7 +29,7 @@ from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
 )
 from kdbmonitor.ui import parameters, tables
-from kdbmonitor.ui.common import pluralize
+from kdbmonitor.ui.common import column_spec, pluralize
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
 DPI = 96
@@ -169,10 +169,18 @@ def render_rows(dashboard: Dashboard, results: dict, key_prefix: str = "v") -> N
     for r_i, row in enumerate(dashboard.rows):
         if not row.widgets:
             continue
-        cols = st.columns([max(w.width, 0.01) for w in row.widgets],
-                          vertical_alignment="top")
+        # Empty, fixed-height, and measured through the same conversion the
+        # row's own height uses — so the air on screen is the air on the page.
+        if row.gap_above_in:
+            st.container(height=row_height_px(row.gap_above_in), border=False)
+
+        weights, slots = column_spec(row)
+        cols = st.columns(weights, vertical_alignment="top")
         for c_i, widget in enumerate(row.widgets):
-            with cols[c_i]:
+            # Keyed by the widget's own index, never by its column slot: adding
+            # a gap would otherwise rename every key after it and drop the
+            # filters a reader had set on those tables.
+            with cols[slots[c_i]]:
                 waiting = getattr(results.get(widget.dataset), "waiting", False)
                 render_widget(build_plot_model(widget, results),
                               row_height_px(row.height_in),

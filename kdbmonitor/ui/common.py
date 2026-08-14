@@ -138,3 +138,41 @@ def humanize_secs(secs: int) -> str:
     return f"{minutes}m" if seconds == 0 else f"{minutes}m {seconds}s"
 
 
+
+
+def column_spec(row) -> tuple[list[float], list[int]]:
+    """``st.columns`` weights for a row, and where each widget sits in them.
+
+    ``st.columns`` takes a gap of "small", "medium" or "large" — a different
+    unit from the inches this document is measured in, and a coarser one. It
+    does not need to be used: the weights are *relative*, so an inch of gap can
+    be expressed as its share of the row's printed width and drawn as an empty
+    spacer column. One stored number then drives the screen and the page, and
+    they cannot drift apart.
+
+    Returns ``(weights, slots)`` — hand ``weights`` to ``st.columns`` and read
+    widget *i* out of ``columns[slots[i]]``.
+    """
+    from kdbmonitor.core.dashpdf import PORTRAIT
+
+    widgets = row.widgets or []
+    widths = [max(w.width, 0.01) for w in widgets]
+    gap = max(getattr(row, "col_gap_in", 0.0), 0.0)
+    if len(widgets) < 2 or not gap:
+        # Nothing to separate: no spacer, and the row is built exactly as it
+        # was before this existed.
+        return widths, list(range(len(widgets)))
+
+    # The gap as a weight: its share of the width this row occupies on the
+    # page, scaled into the same units the widths are already in.
+    content = max(PORTRAIT.content_w - gap * (len(widgets) - 1), 0.01)
+    weight = sum(widths) * (gap / content)
+
+    weights: list[float] = []
+    slots: list[int] = []
+    for i, width in enumerate(widths):
+        if i:
+            weights.append(weight)
+        slots.append(len(weights))
+        weights.append(width)
+    return weights, slots

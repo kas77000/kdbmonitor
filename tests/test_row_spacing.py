@@ -191,3 +191,132 @@ def test_a_shipped_example_paginates_by_height_alone(path):
     for part, y_top in pages[0]:
         assert y_top == pytest.approx(y)
         y += part.height_in + GUTTER
+
+
+# --- on screen ---------------------------------------------------------------
+
+from kdbmonitor.ui.common import column_spec           # noqa: E402
+
+
+def _w(width: float) -> Widget:
+    return Widget(type="table", dataset="ds", title="T", width=width)
+
+
+def test_without_a_column_gap_the_weights_are_the_widths():
+    row = Row(widgets=[_w(2.0), _w(3.0)], height_in=2.0)
+    weights, slots = column_spec(row)
+    assert weights == [2.0, 3.0]
+    assert slots == [0, 1]
+
+
+def test_a_column_gap_puts_a_spacer_between_the_widgets():
+    row = Row(widgets=[_w(2.0), _w(3.0)], height_in=2.0, col_gap_in=0.5)
+    weights, slots = column_spec(row)
+    assert len(weights) == 3
+    assert slots == [0, 2]                    # widgets sit either side of it
+
+
+def test_the_spacer_is_the_right_share_of_the_row():
+    """The weight is the gap's share of the row's printed width, so the screen
+    and the page open the same amount of space."""
+    row = Row(widgets=[_w(1.0), _w(1.0)], height_in=2.0, col_gap_in=0.5)
+    weights, _ = column_spec(row)
+    share = weights[1] / sum(weights)
+    assert share == pytest.approx(0.5 / PORTRAIT.content_w, rel=0.01)
+
+
+def test_two_gaps_for_three_widgets_and_none_on_the_ends():
+    row = Row(widgets=[_w(1.0), _w(1.0), _w(1.0)], height_in=2.0,
+              col_gap_in=0.4)
+    weights, slots = column_spec(row)
+    assert len(weights) == 5
+    assert slots == [0, 2, 4]
+
+
+def test_a_single_widget_row_gets_no_spacer():
+    """There is nothing to separate, and a trailing empty column would shrink
+    the only widget for nothing."""
+    row = Row(widgets=[_w(1.0)], height_in=2.0, col_gap_in=2.0)
+    weights, slots = column_spec(row)
+    assert weights == [1.0]
+    assert slots == [0]
+
+
+def test_a_row_with_no_widgets_has_nothing_to_lay_out():
+    weights, slots = column_spec(Row(widgets=[], height_in=2.0))
+    assert weights == [] and slots == []
+
+
+def test_a_zero_width_widget_still_gets_a_column():
+    """st.columns rejects a weight of 0, and the page already floors widths."""
+    weights, _ = column_spec(Row(widgets=[_w(0.0), _w(1.0)], height_in=2.0))
+    assert all(w > 0 for w in weights)
+
+
+# --- the page draws ----------------------------------------------------------
+
+from streamlit.testing.v1 import AppTest          # noqa: E402
+
+from kdbmonitor.core.dashboard_models import Dataset   # noqa: E402
+from kdbmonitor.core.mock import demo_connection_specs  # noqa: E402
+from kdbmonitor.core.storage import Storage             # noqa: E402
+
+VIEW_SCRIPT = '''
+import streamlit as st
+from kdbmonitor.core.client import ConnectionManager
+from kdbmonitor.core.storage import Storage
+from kdbmonitor.ui import dashboards
+
+store = Storage(r"{db}")
+store.init_db()
+st.query_params["dash"] = "1"
+dashboards.render(store, ConnectionManager())
+'''
+
+
+def _spaced_dashboard() -> Dashboard:
+    """A heading, a table, air, a second heading, a second table — the layout
+    the whole feature exists for."""
+    def text(name):
+        return Widget(type="text", dataset="ds", title="",
+                      spec={"markdown": f"### {name}"})
+
+    table = Widget(type="table", dataset="ds", title="Rows", width=1.0)
+    return Dashboard(
+        id=None, name="Sections", description="", refresh_secs=0,
+        datasets=[Dataset(name="ds", env="orders", table="target")],
+        rows=[Row(widgets=[text("Section A")], height_in=0.5),
+              Row(widgets=[table], height_in=2.0),
+              Row(widgets=[text("Section B")], height_in=0.5,
+                  gap_above_in=0.8),
+              Row(widgets=[table, table], height_in=2.0, col_gap_in=0.5)])
+
+
+def _render(tmp_path, board: Dashboard) -> AppTest:
+    db = str(tmp_path / "k.db")
+    store = Storage(db)
+    store.init_db()
+    for spec in demo_connection_specs():
+        store.add_connection(spec)
+    store.add_dashboard(board)
+    return AppTest.from_string(VIEW_SCRIPT.format(db=db),
+                               default_timeout=60).run()
+
+
+def test_a_dashboard_with_gaps_renders(tmp_path):
+    assert not _render(tmp_path, _spaced_dashboard()).exception
+
+
+def test_a_dashboard_without_gaps_still_renders(tmp_path):
+    board = _spaced_dashboard()
+    for row in board.rows:
+        row.gap_above_in = 0.0
+        row.col_gap_in = 0.0
+    assert not _render(tmp_path, board).exception
+
+
+def test_a_column_gap_on_a_single_widget_row_is_harmless(tmp_path):
+    """st.columns would reject a spec of one weight and a trailing spacer."""
+    board = _spaced_dashboard()
+    board.rows[1].col_gap_in = 1.0        # a row holding one table
+    assert not _render(tmp_path, board).exception
