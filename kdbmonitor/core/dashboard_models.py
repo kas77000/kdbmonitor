@@ -133,6 +133,12 @@ class Widget:
 class Row:
     widgets: list[Widget] = field(default_factory=list)
     height_in: float = 2.5       # printed height; screen height derives from it
+    # Air above this row, and between its widgets. Both in inches, like every
+    # other measurement here, and both *additional* to the spacing that already
+    # exists — 0.0 is what this app has always done, which is what lets a
+    # dashboard saved before they existed print to the same page breaks.
+    gap_above_in: float = 0.0
+    col_gap_in: float = 0.0
 
 
 PARAMETER_KINDS = ("choice", "column", "text", "number", "date", "toggle")
@@ -283,6 +289,19 @@ def _int(value, default: int) -> int:
         return default
 
 
+def _float(value, default: float) -> float:
+    """A stored measurement, or the default if it is not one.
+
+    Same reasoning as :func:`_int`, for the inches a row is laid out by: a bad
+    number should cost that one field its value rather than cost pagination a
+    TypeError halfway down a page.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _dict_list(value) -> list:
     """Only the dict entries of a stored list — never a whole list at once.
 
@@ -396,7 +415,9 @@ def row_from_dict(d: dict) -> Row:
     """
     return Row(
         widgets=[widget_from_dict(w) for w in _dict_list(d.get("widgets"))],
-        height_in=d.get("height_in", 2.5),
+        height_in=_float(d.get("height_in"), 2.5),
+        gap_above_in=_float(d.get("gap_above_in"), 0.0),
+        col_gap_in=_float(d.get("col_gap_in"), 0.0),
     )
 
 
