@@ -330,6 +330,41 @@ def _derived_frame(ds: Dataset, outputs: dict,
     return where, None, f"'{ds.base}' failed, so this cannot run: {why}"
 
 
+def _what_came_back(value) -> str:
+    """What the server actually handed over, in words a reader can act on."""
+    if value is None:
+        return ("nothing at all (q's ::, which is what a function with no "
+                "return value gives)")
+    if isinstance(value, pd.Series):
+        return f"a list of {len(value)} value(s)"
+    if isinstance(value, dict):
+        return "a dictionary"
+    return f"a single value ({value!r})"
+
+
+def _as_table(value):
+    """The query's result, or a ValueError saying why it cannot be one.
+
+    q does not only return tables: a function with no return gives ``::``,
+    ``count`` gives a number, ``exec sym from t`` gives a vector, and a keyed
+    lookup gives a dictionary. A dataset is built from a table's *columns* —
+    they are what widgets are drawn from — so none of those can be plotted.
+
+    Checked here, at the one point where a value from the server enters, rather
+    than left to whatever touches it first. A vector in particular has
+    ``.copy()``, ``.head()`` and a length, so it passes for a frame through the
+    whole of the transform half and only fails later, in a widget, reading
+    ``.columns`` — which is how "my query returned nothing" used to surface as
+    a Streamlit traceback instead of a message about the query.
+    """
+    if isinstance(value, pd.DataFrame):
+        return value
+    raise ValueError(
+        f"the query did not return a table — it returned "
+        f"{_what_came_back(value)}. A dataset is built from a table's "
+        f"columns, so wrap the result in one: ([] sym: exec sym from trades)")
+
+
 def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
            uploads: Optional[dict] = None,
            params: Optional[dict] = None,
@@ -405,7 +440,10 @@ def _fetch(ds: Dataset, rt: ResolvedTime, store, mgr, outputs: dict,
             held = holding.get(key)
             if held is not None:
                 return qsql, held.df, None, held.at
-        df = mgr.get(conn).query(qsql)
+        # Checked before it is cached, and before anything downstream assumes
+        # it has columns: a value that is not a table must not be held and
+        # handed out again on every later run.
+        df = _as_table(mgr.get(conn).query(qsql))
         if holding is not None:
             holding.put(key, df)
         return qsql, df, None, None

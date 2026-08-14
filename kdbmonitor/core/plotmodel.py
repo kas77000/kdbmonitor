@@ -603,5 +603,10 @@ def build_plot_model(widget: Widget, results: dict) -> PlotModel:
         if resolver is None:
             return _err(title, f"unknown widget type '{widget.type}'")
         return resolver(result.df, widget.spec, title)
-    except (KeyError, ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        # AttributeError belongs here for the same reason as the rest: this
+        # function promises never to raise, and a widget handed something that
+        # is not a frame — a q vector has .copy(), .head() and a length, so it
+        # travels a long way before anything notices — asks it for .columns and
+        # gets one. A panel may fail; the page may not.
         return _err(title, str(exc).strip("'"))
