@@ -419,11 +419,16 @@ def render(store, mgr: ConnectionManager) -> None:
     with form_area().container(border=True):
         st.caption("Used by alerts that select the email channel, and by "
                    "scheduled reports.")
+        # Keyed, because this page carries two boxes labelled "Port" — a KDB
+        # server's and this one — and a label is not enough to tell them apart.
         s = st.columns([2, 1, 2], vertical_alignment="bottom")
-        host = s[0].text_input("SMTP host", value=store.get_setting("smtp_host", ""))
+        host = s[0].text_input("SMTP host", key="smtp_host",
+                               value=store.get_setting("smtp_host", ""))
         port = int(s[1].number_input("Port", 1, 65535,
-                                     int(store.get_setting("smtp_port", "25"))))
-        sender = s[2].text_input("From address", value=store.get_setting("smtp_sender", ""))
+                                     int(store.get_setting("smtp_port", "25")),
+                                     key="smtp_port"))
+        sender = s[2].text_input("From address", key="smtp_sender",
+                                 value=store.get_setting("smtp_sender", ""))
 
         b = st.columns([1, 1, 3])
         if b[0].button("Save SMTP settings", icon=":material/save:"):
@@ -454,7 +459,7 @@ def render(store, mgr: ConnectionManager) -> None:
                    "expecting the report are never told it failed — they get "
                    "the report or they get nothing.")
         admins_text = st.text_input(
-            "Admin email address(es)",
+            "Admin email address(es)", key="scheduler_admin_emails",
             value=store.get_setting(ADMIN_EMAIL_KEY, "") or "",
             placeholder="kdb-support@corp.local; alice@corp.local",
             help="Comma or semicolon separated.")
