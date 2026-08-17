@@ -29,7 +29,7 @@ from kdbmonitor.core.timectx import (
     PRESET_LABELS, PRESETS, coerce_spec, resolve,
 )
 from kdbmonitor.ui import parameters, tables
-from kdbmonitor.ui.common import column_spec, pluralize
+from kdbmonitor.ui.common import UNGROUPED, column_spec, group_alerts, pluralize
 
 NATIVE_KINDS = {"kpi", "table", "text", "error"}   # drawn by Streamlit, not plotly
 DPI = 96
@@ -509,6 +509,61 @@ def back_to_gallery() -> None:
 
 # --- gallery ---------------------------------------------------------------
 
+# What a group picker offers besides the groups themselves. The same two
+# entries the alert builder offers, worded the same way.
+NO_GROUP = "(no group)"
+NEW_GROUP = "➕ New group…"
+
+
+def existing_groups(store) -> list[str]:
+    """Every group label some dashboard wears, alphabetically."""
+    return sorted({(d.group or "").strip() for d in store.list_dashboards()
+                   if (d.group or "").strip()})
+
+
+def group_options(existing: list[str], current: str) -> list[str]:
+    """The choices a group picker offers.
+
+    ``current`` stays selectable even when no saved dashboard uses it yet, so a
+    group typed into the editor survives the rerun that follows the typing.
+    """
+    current = (current or "").strip()
+    named = sorted(set(existing) | ({current} if current else set()))
+    return [NO_GROUP] + named + [NEW_GROUP]
+
+
+def group_buckets(saved) -> list[tuple[str, list]]:
+    """The gallery's dashboards bucketed by group, Ungrouped last.
+
+    ``group_alerts`` is duck-typed on a ``.group`` attribute and a dashboard
+    now has one, so the Monitor and the gallery bucket through the same code.
+    """
+    return group_alerts(saved)
+
+
+def shows_groups(buckets) -> bool:
+    """Whether the gallery draws group headers and a filter at all.
+
+    An empty gallery, or one nobody has grouped, is drawn flat — so somebody
+    who never uses groups never meets them.
+    """
+    names = {g for g, _ in buckets}
+    return bool(names) and names != {UNGROUPED}
+
+
+def kept_groups(held, names: list[str]) -> list[str]:
+    """The filter's effective selection.
+
+    What it holds, minus groups that have since been renamed or dissolved;
+    everything when it holds nothing, because an empty filter means "show all"
+    rather than "show none".
+    """
+    if held is None:
+        return list(names)
+    kept = [g for g in held if g in names]
+    return kept or list(names)
+
+
 def _selection_key(dashboard_id: int) -> str:
     return f"gal_pick_{dashboard_id}"
 
@@ -523,10 +578,75 @@ def _clear_selection(saved) -> None:
         st.session_state.pop(_selection_key(d.id), None)
 
 
+def _gallery_card(store, d, open_ids: list[int]) -> None:
+    """One dashboard's row in the gallery."""
+    with st.container(border=True):
+        c = st.columns([0.35, 2.5, 2.2, 1, 1, 1.2, 1.1, 0.8],
+                       vertical_alignment="center")
+        c[0].checkbox("Select", key=_selection_key(d.id),
+                      label_visibility="collapsed",
+                      help=f"Tick to open '{d.name}' with the others")
+        c = c[1:]
+        open_flag = (" :green-badge[:material/tab: Open]"
+                     if d.id in open_ids else "")
+        c[0].markdown(f"**{d.name}**{open_flag}"
+                      + (f"<br>:gray[{d.description}]" if d.description else ""),
+                      unsafe_allow_html=True)
+        envs = sorted({ds.env for ds in d.datasets if ds.env})
+        n_widgets = sum(len(r.widgets) for r in d.rows)
+        c[1].markdown(f":gray[{len(d.datasets)} dataset(s) · {n_widgets} widget(s)]"
+                      + (f"<br>:gray[env: {', '.join(envs)}]" if envs else ""),
+                      unsafe_allow_html=True)
+        if c[2].button("Open", key=f"open_{d.id}", icon=":material/open_in_new:",
+                       use_container_width=True):
+            _open(d.id, store)
+        if c[3].button("Edit", key=f"edit_{d.id}", icon=":material/edit:",
+                       use_container_width=True):
+            st.session_state["dash_edit_id"] = d.id
+            st.session_state["dash_mode"] = "edit"
+            st.session_state.pop("dash_draft", None)
+            st.rerun()
+        if c[4].button("Duplicate", key=f"dup_{d.id}",
+                       icon=":material/content_copy:", use_container_width=True):
+            copy = store.get_dashboard(d.id)
+            copy.id = None
+            copy.name = f"{copy.name} (copy)"
+            store.add_dashboard(copy)
+            st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
+            st.rerun()
+        c[5].download_button(
+            "Export", key=f"exp_{d.id}",
+            data=export_dashboards_json([d]),
+            file_name=dashboard_filename(d), mime="application/json",
+            icon=":material/download:", use_container_width=True,
+            help="Download this dashboard as JSON")
+        with c[6].popover("", icon=":material/delete:"):
+            st.warning(f"Delete '{d.name}'?")
+            if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
+                store.delete_dashboard(d.id)
+                # Its tab goes with it — parse_tabs drops an id that no
+                # longer exists, and this drops what it was holding.
+                _forget(d.id)
+                st.rerun()
+
+
 def _render_gallery(store) -> None:
     st.subheader(":material/dashboard: Dashboards")
     saved = store.list_dashboards()
     open_ids = _open_ids(store)
+
+    # Worked out before the head row is drawn, because "Open selected (n)"
+    # counts what is on the screen: a group filtered out is not drawn, so its
+    # ticks are not counted either.
+    buckets = group_buckets(saved)
+    grouped = shows_groups(buckets)
+    names = [g for g, _ in buckets]
+    held = st.session_state.get("gal_group_filter")
+    visible_names = kept_groups(held, names)
+    if held is not None and any(g not in names for g in held):
+        st.session_state["gal_group_filter"] = [g for g in held if g in names]
+    visible = ([d for g, items in buckets if g in visible_names for d in items]
+               if grouped else saved)
 
     head = st.columns([4.4, 1.6, 1.6], vertical_alignment="center")
     head[0].caption("Saved views built from KDB queries. Tick as many as you "
@@ -535,7 +655,7 @@ def _render_gallery(store) -> None:
 
     # Read from the last run's state, which is current: ticking a box reruns
     # the page, so the count on the button is always what is ticked below.
-    picked = selected_ids(saved)
+    picked = selected_ids(visible)
     if head[1].button(f"Open selected ({len(picked)})" if picked
                       else "Open selected",
                       icon=":material/open_in_new:", disabled=not picked,
@@ -559,55 +679,22 @@ def _render_gallery(store) -> None:
     if not saved:
         st.info("No dashboards yet. Create one to get started.",
                 icon=":material/dashboard:")
-    for d in saved:
-        with st.container(border=True):
-            c = st.columns([0.35, 2.5, 2.2, 1, 1, 1.2, 1.1, 0.8],
-                           vertical_alignment="center")
-            c[0].checkbox("Select", key=_selection_key(d.id),
-                          label_visibility="collapsed",
-                          help=f"Tick to open '{d.name}' with the others")
-            c = c[1:]
-            open_flag = (" :green-badge[:material/tab: Open]"
-                         if d.id in open_ids else "")
-            c[0].markdown(f"**{d.name}**{open_flag}"
-                          + (f"<br>:gray[{d.description}]" if d.description else ""),
-                          unsafe_allow_html=True)
-            envs = sorted({ds.env for ds in d.datasets if ds.env})
-            n_widgets = sum(len(r.widgets) for r in d.rows)
-            c[1].markdown(f":gray[{len(d.datasets)} dataset(s) · {n_widgets} widget(s)]"
-                          + (f"<br>:gray[env: {', '.join(envs)}]" if envs else ""),
-                          unsafe_allow_html=True)
-            if c[2].button("Open", key=f"open_{d.id}", icon=":material/open_in_new:",
-                           use_container_width=True):
-                _open(d.id, store)
-            if c[3].button("Edit", key=f"edit_{d.id}", icon=":material/edit:",
-                           use_container_width=True):
-                st.session_state["dash_edit_id"] = d.id
-                st.session_state["dash_mode"] = "edit"
-                st.session_state.pop("dash_draft", None)
-                st.rerun()
-            if c[4].button("Duplicate", key=f"dup_{d.id}",
-                           icon=":material/content_copy:", use_container_width=True):
-                copy = store.get_dashboard(d.id)
-                copy.id = None
-                copy.name = f"{copy.name} (copy)"
-                store.add_dashboard(copy)
-                st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
-                st.rerun()
-            c[5].download_button(
-                "Export", key=f"exp_{d.id}",
-                data=export_dashboards_json([d]),
-                file_name=dashboard_filename(d), mime="application/json",
-                icon=":material/download:", use_container_width=True,
-                help="Download this dashboard as JSON")
-            with c[6].popover("", icon=":material/delete:"):
-                st.warning(f"Delete '{d.name}'?")
-                if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
-                    store.delete_dashboard(d.id)
-                    # Its tab goes with it — parse_tabs drops an id that no
-                    # longer exists, and this drops what it was holding.
-                    _forget(d.id)
-                    st.rerun()
+    if grouped:
+        chosen = st.multiselect(
+            "Filter groups", names, default=names, key="gal_group_filter",
+            help="Show only the chosen groups. Collapse a group with its ▸ "
+                 "header; filter one out and its ticks go with it.")
+        visible_names = kept_groups(chosen, names)
+        for gname, items in buckets:
+            if gname not in visible_names:
+                continue
+            with st.expander(f"**{gname}** · {len(items)}", expanded=True,
+                             icon=":material/folder:"):
+                for d in items:
+                    _gallery_card(store, d, open_ids)
+    else:
+        for d in saved:
+            _gallery_card(store, d, open_ids)
 
     st.divider()
     st.markdown("**Share dashboards**")
