@@ -281,3 +281,53 @@ def test_the_choice_the_editor_makes_is_what_save_would_store(editable_db):
     store = Storage(editable_db)
     store.update_dashboard(at.session_state["dash_draft"])
     assert store.get_dashboard(2).group == "Equities"
+
+
+# --- moving one dashboard ----------------------------------------------------
+
+def test_a_card_offers_to_move_its_dashboard(grouped_db):
+    at = _run(grouped_db)
+    assert sum(1 for b in at.button if b.key and b.key.startswith("gmv_go_")) == 4
+
+
+def test_moving_a_dashboard_into_another_group(grouped_db):
+    at = _run(grouped_db)
+    store = Storage(grouped_db)
+    scratch = next(d for d in store.list_dashboards() if d.name == "Scratch")
+    at.selectbox(key=f"gmv_sel_{scratch.id}").set_value("Ops").run()
+    at.button(key=f"gmv_go_{scratch.id}").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert Storage(grouped_db).get_dashboard(scratch.id).group == "Ops"
+
+
+def test_moving_a_dashboard_out_of_its_group(grouped_db):
+    at = _run(grouped_db)
+    store = Storage(grouped_db)
+    flow = next(d for d in store.list_dashboards() if d.name == "Order flow")
+    at.selectbox(key=f"gmv_sel_{flow.id}").set_value("(no group)").run()
+    at.button(key=f"gmv_go_{flow.id}").click().run()
+    assert Storage(grouped_db).get_dashboard(flow.id).group == ""
+
+
+def test_moving_a_dashboard_into_a_group_that_does_not_exist_yet(grouped_db):
+    at = _run(grouped_db)
+    store = Storage(grouped_db)
+    scratch = next(d for d in store.list_dashboards() if d.name == "Scratch")
+    at.selectbox(key=f"gmv_sel_{scratch.id}").set_value("➕ New group…").run()
+    at.text_input(key=f"gmv_new_{scratch.id}").set_value("Rates").run()
+    at.button(key=f"gmv_go_{scratch.id}").click().run()
+    assert Storage(grouped_db).get_dashboard(scratch.id).group == "Rates"
+
+
+def test_a_move_picker_holding_a_group_that_has_gone_does_not_break_the_page(
+        grouped_db):
+    """Pick a group in one card's popover, dissolve it elsewhere, and the page
+    still draws: Streamlit refuses a selectbox whose stored value is not an
+    option any more."""
+    at = _run(grouped_db)
+    store = Storage(grouped_db)
+    scratch = next(d for d in store.list_dashboards() if d.name == "Scratch")
+    at.selectbox(key=f"gmv_sel_{scratch.id}").set_value("Ops").run()
+    store.rename_dashboard_group("Ops", "")          # dissolved behind its back
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]

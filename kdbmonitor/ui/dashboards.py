@@ -532,6 +532,18 @@ def group_options(existing: list[str], current: str) -> list[str]:
     return [NO_GROUP] + named + [NEW_GROUP]
 
 
+def _safe_select(container, label, options, key, **kw):
+    """selectbox that won't crash when a persisted value leaves the option set.
+
+    A group picked in a popover and then dissolved from Manage groups is exactly
+    that case. Twin of the helper in ui/builder.py, which guards the alert
+    pickers for the same reason.
+    """
+    if key in st.session_state and st.session_state[key] not in options:
+        del st.session_state[key]
+    return container.selectbox(label, options, key=key, **kw)
+
+
 def group_buckets(saved) -> list[tuple[str, list]]:
     """The gallery's dashboards bucketed by group, Ungrouped last.
 
@@ -578,10 +590,36 @@ def _clear_selection(saved) -> None:
         st.session_state.pop(_selection_key(d.id), None)
 
 
+def _move_to_group(store, dashboard) -> None:
+    """Popover body: reassign one dashboard's group without opening the editor."""
+    st.caption(f"Move **{dashboard.name}** to")
+    current = (dashboard.group or "").strip()
+    options = group_options(existing_groups(store), current)
+    sel = _safe_select(st, "Group", options, key=f"gmv_sel_{dashboard.id}",
+                       index=options.index(current) if current in options else 0,
+                       label_visibility="collapsed")
+    if sel == NEW_GROUP:
+        target = st.text_input("New group name", key=f"gmv_new_{dashboard.id}",
+                               placeholder="e.g. Equities").strip()
+    elif sel == NO_GROUP:
+        target = ""
+    else:
+        target = sel
+    if st.button("Move", key=f"gmv_go_{dashboard.id}", type="primary",
+                 icon=":material/check:"):
+        if target != current:
+            store.set_dashboard_group(dashboard.id, target)
+        st.rerun()
+
+
 def _gallery_card(store, d, open_ids: list[int]) -> None:
-    """One dashboard's row in the gallery."""
+    """One dashboard's row in the gallery.
+
+    The card does not print its own group: it is already inside that group's
+    expander, and when the gallery is flat there is no group to print.
+    """
     with st.container(border=True):
-        c = st.columns([0.35, 2.5, 2.2, 1, 1, 1.2, 1.1, 0.8],
+        c = st.columns([0.35, 2.3, 2.0, 1, 1, 1.15, 1.0, 1.05, 0.8],
                        vertical_alignment="center")
         c[0].checkbox("Select", key=_selection_key(d.id),
                       label_visibility="collapsed",
@@ -614,13 +652,17 @@ def _gallery_card(store, d, open_ids: list[int]) -> None:
             store.add_dashboard(copy)
             st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
             st.rerun()
-        c[5].download_button(
+        with c[5].popover("Move", icon=":material/drive_file_move:",
+                          use_container_width=True,
+                          help="Move this dashboard to another group"):
+            _move_to_group(store, d)
+        c[6].download_button(
             "Export", key=f"exp_{d.id}",
             data=export_dashboards_json([d]),
             file_name=dashboard_filename(d), mime="application/json",
             icon=":material/download:", use_container_width=True,
             help="Download this dashboard as JSON")
-        with c[6].popover("", icon=":material/delete:"):
+        with c[7].popover("", icon=":material/delete:"):
             st.warning(f"Delete '{d.name}'?")
             if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
                 store.delete_dashboard(d.id)
