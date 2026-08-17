@@ -124,3 +124,10 @@ def test_a_text_widgets_markdown_is_not_mistaken_for_a_column(demo_store):
     assert any(w.type == "text" for r in dash.rows for w in r.widgets), \
         "the demo example should still contain a text widget"
     assert not [m for m in validate(dash, demo_store) if "is not produced by" in m]
+
+
+def test_the_shipped_examples_predate_groups_and_import_as_ungrouped():
+    """The four bundles in docs/examples were written before the field existed
+    and are not to be re-exported for it."""
+    for path in sorted(EXAMPLES.glob("*.json")):
+        assert _load(path).group == "", path.name

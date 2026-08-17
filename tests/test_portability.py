@@ -265,3 +265,26 @@ def test_an_alert_bundle_still_imports_unchanged():
         '{"kind": "kdbmonitor-export", "version": 2, "alerts": [], '
         '"connections": []}')
     assert conns == [] and alerts == []
+
+
+def test_a_dashboards_group_survives_an_export_import_roundtrip():
+    from kdbmonitor.core.portability import (export_dashboards_json,
+                                             import_dashboards_json)
+    dash = _dash()
+    dash.group = "Equities"
+    back = import_dashboards_json(export_dashboards_json([dash]))
+    assert back[0].group == "Equities"
+
+
+def test_a_dashboard_exported_before_groups_existed_arrives_ungrouped():
+    """The requirement this feature was asked for: an export file written by
+    yesterday's build imports, and its dashboards are Ungrouped."""
+    from kdbmonitor.core.portability import import_dashboards_json
+    raw = json.dumps({"kind": "kdbmonitor-export", "version": 2,
+                      "exported_at": None, "connections": [], "alerts": [],
+                      "dashboards": [{"name": "old", "description": "",
+                                      "refresh_secs": 15, "periods": "both",
+                                      "datasets": [], "rows": []}]})
+    imported = import_dashboards_json(raw)
+    assert len(imported) == 1
+    assert imported[0].name == "old" and imported[0].group == ""

@@ -67,3 +67,24 @@ def test_a_dataset_without_extra_connections_in_json_defaults_to_empty():
     d = dashboard_from_json(
         '{"id": null, "name": "x", "datasets": [{"name": "d", "env": "orders"}]}')
     assert d.datasets[0].extra_connections == []
+
+
+# --- groups ------------------------------------------------------------------
+
+def test_a_dashboard_carries_its_group_through_a_json_roundtrip():
+    d = _sample()
+    d.group = "Equities"
+    assert dashboard_from_json(dashboard_to_json(d)).group == "Equities"
+
+
+def test_a_dashboard_stored_before_groups_existed_is_ungrouped():
+    """The one rule the whole feature rests on: an old document has no 'group'
+    key, and comes back as what it was — Ungrouped."""
+    assert dashboard_from_json('{"id": null, "name": "Old"}').group == ""
+
+
+def test_a_group_that_is_not_text_costs_that_field_and_nothing_else():
+    for junk in ("null", "42", "[]", '{"a": 1}', '""'):
+        d = dashboard_from_json('{"id": null, "name": "Odd", "group": %s}' % junk)
+        assert d.group == "", junk
+        assert d.name == "Odd", junk

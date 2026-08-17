@@ -203,6 +203,11 @@ class Dashboard:
     id: Optional[int]
     name: str
     description: str = ""
+    # Which bucket it sits in on the gallery. A label, not a thing: a group
+    # exists while some dashboard wears its name and is gone when the last one
+    # leaves it, exactly as an alert's group does. Blank is Ungrouped, which is
+    # what every dashboard saved or exported before this existed comes back as.
+    group: str = ""
     refresh_secs: int = 15
     # Which periods this dashboard offers: both (switch between a real-time
     # server and its historical twin), or the one it is built for. Switching is
@@ -433,6 +438,7 @@ def dashboard_from_dict(d: dict) -> Dashboard:
         periods=d.get("periods", "both"),
         orientation=d.get("orientation", "auto"),
         source=d.get("source", "kdb"),
+        group=_text_or(d.get("group"), ""),
         time_context=d.get("time_context") or _default_time_context(),
         datasets=[_dataset_from_dict(x) for x in d.get("datasets", [])],
         rows=[_row_from_dict(x) for x in d.get("rows", [])],
