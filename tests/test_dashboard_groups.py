@@ -154,3 +154,130 @@ def test_a_ticked_dashboard_that_is_filtered_out_is_not_offered_to_open(grouped_
 def test_the_gallery_renders_with_no_dashboards_at_all(tmp_path):
     at = _run(_seeded(tmp_path, []))
     assert not _filter(at)
+
+
+# --- what a group picker offers ----------------------------------------------
+
+def test_the_picker_offers_none_the_groups_in_use_and_a_new_one():
+    assert dashboards.group_options(["Ops", "Equities"], "") == [
+        "(no group)", "Equities", "Ops", "➕ New group…"]
+
+
+def test_a_group_only_this_draft_uses_is_still_selectable():
+    """Type a new group in the editor and the rerun that follows must find it
+    in the options, or the picker jumps off the choice just made."""
+    assert dashboards.group_options([], "Ops") == [
+        "(no group)", "Ops", "➕ New group…"]
+
+
+def test_a_group_already_in_use_is_not_offered_twice():
+    assert dashboards.group_options(["Ops"], "Ops") == [
+        "(no group)", "Ops", "➕ New group…"]
+
+
+def test_a_blank_current_group_adds_nothing():
+    assert dashboards.group_options([], "   ") == ["(no group)", "➕ New group…"]
+
+
+def test_the_groups_in_use_are_the_ones_dashboards_wear(tmp_path):
+    path = _seeded(tmp_path, [("a", "Ops"), ("b", "  Ops  "), ("c", ""),
+                              ("d", "Equities")])
+    store = Storage(path)
+    assert dashboards.existing_groups(store) == ["Equities", "Ops"]
+
+
+# --- the picker in the editor ------------------------------------------------
+
+def _editor_script(db_path: str, dash_id: int) -> str:
+    """The editor, on whichever dashboard `_want` names.
+
+    `_draft` reloads whenever the id it holds is not the one asked for, so
+    switching dashboards is one session-state write and a rerun — which is
+    exactly what the Edit button does from the gallery.
+
+    The Section control is stubbed for the same reason the tab strip's pills
+    are elsewhere in this suite: AppTest cannot round-trip a segmented_control
+    across a rerun, and every test here reruns. conftest puts it back.
+    """
+    return f'''
+import streamlit as st
+from kdbmonitor.core.client import ConnectionManager
+from kdbmonitor.core.storage import Storage
+from kdbmonitor.ui import dashboard_editor
+
+st.segmented_control = lambda *a, **k: "Data"
+store = Storage(r"{db_path}")
+store.init_db()
+st.session_state["dash_mode"] = "edit"
+st.session_state["dash_edit_id"] = st.session_state.get("_want", {dash_id})
+dashboard_editor.render(store, ConnectionManager())
+'''
+
+
+def _run_editor(db_path: str, dash_id: int) -> AppTest:
+    at = AppTest.from_string(_editor_script(db_path, dash_id),
+                             default_timeout=90).run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def _group_box(at):
+    return next(el for el in at.selectbox if el.label == "Group")
+
+
+@pytest.fixture()
+def editable_db(tmp_path):
+    """Dashboard 1 is in Equities, dashboard 2 is in no group."""
+    return _seeded(tmp_path, [("Order flow", "Equities"), ("Scratch", "")])
+
+
+def test_the_editor_shows_the_group_a_dashboard_is_in(editable_db):
+    assert _group_box(_run_editor(editable_db, 1)).value == "Equities"
+
+
+def test_a_dashboard_with_no_group_shows_no_group(editable_db):
+    assert _group_box(_run_editor(editable_db, 2)).value == "(no group)"
+
+
+def test_opening_a_second_dashboard_does_not_carry_the_firsts_group(editable_db):
+    """The picker reads the draft rather than a session key. A keyed one would
+    still say 'Equities' here and write it into the dashboard that has none."""
+    at = _run_editor(editable_db, 1)
+    assert _group_box(at).value == "Equities"
+    at.session_state["_want"] = 2
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _group_box(at).value == "(no group)"
+    assert at.session_state["dash_draft"].group == ""
+
+
+def test_choosing_a_group_writes_it_into_the_draft(editable_db):
+    at = _run_editor(editable_db, 2)
+    _group_box(at).set_value("Equities").run()
+    assert at.session_state["dash_draft"].group == "Equities"
+
+
+def test_choosing_no_group_clears_the_draft_group(editable_db):
+    at = _run_editor(editable_db, 1)
+    _group_box(at).set_value("(no group)").run()
+    assert at.session_state["dash_draft"].group == ""
+
+
+def test_a_new_group_is_typed_and_lands_in_the_draft(editable_db):
+    at = _run_editor(editable_db, 2)
+    _group_box(at).set_value("➕ New group…").run()
+    box = next(el for el in at.text_input if el.label == "New group name")
+    box.set_value("  Rates  ").run()
+    assert at.session_state["dash_draft"].group == "Rates"
+
+
+def test_the_choice_the_editor_makes_is_what_save_would_store(editable_db):
+    """Save is `store.update_dashboard(draft)` and nothing else, so the draft
+    holding the group is the whole of the guarantee. Asserted this way rather
+    than by clicking Save, which a dashboard with no datasets cannot reach —
+    validate() disables it until there is something to draw."""
+    at = _run_editor(editable_db, 2)
+    _group_box(at).set_value("Equities").run()
+    store = Storage(editable_db)
+    store.update_dashboard(at.session_state["dash_draft"])
+    assert store.get_dashboard(2).group == "Equities"

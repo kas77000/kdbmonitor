@@ -45,7 +45,10 @@ from kdbmonitor.ui import qeditor
 from kdbmonitor.ui import tables
 from kdbmonitor.ui.tables import WIDTHS as TABLE_WIDTHS
 from kdbmonitor.ui.common import column_spec, form_area
-from kdbmonitor.ui.dashboards import back_to_gallery, render_widget, row_height_px
+from kdbmonitor.ui.dashboards import (
+    NEW_GROUP, NO_GROUP, back_to_gallery, existing_groups, group_options,
+    render_widget, row_height_px,
+)
 
 OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 
@@ -2765,17 +2768,42 @@ def _render_problems(problems: list[str]) -> None:
             st.markdown(f":red[·] {p}")
 
 
+def _group_picker(container, store, draft: Dashboard) -> None:
+    """The Group control: a group already in use, none, or a new one.
+
+    Keyless on purpose, like the name and description beside it: the value is
+    read from the draft and written straight back. A keyed picker would carry
+    one dashboard's group into the next one opened and quietly write it there —
+    Streamlit hands an unkeyed selectbox back to `index` when `index` changes,
+    which is precisely when the draft changed underneath it.
+    """
+    current = (draft.group or "").strip()
+    options = group_options(existing_groups(store), current)
+    choice = container.selectbox(
+        "Group", options,
+        index=options.index(current) if current in options else 0,
+        help="Bucket related dashboards together in the gallery.")
+    if choice == NEW_GROUP:
+        draft.group = container.text_input(
+            "New group name", value="", placeholder="e.g. Equities").strip()
+    elif choice == NO_GROUP:
+        draft.group = ""
+    else:
+        draft.group = choice
+
+
 def render(store, mgr) -> None:
     draft = _draft(store)
 
     with form_area():
-        head = st.columns([2.6, 2.6, 1.8, 1.4, 1.2, 1.2],
+        head = st.columns([2.4, 2.4, 1.6, 1.6, 1.4, 1.2, 1.2],
                           vertical_alignment="bottom")
         draft.name = head[0].text_input("Dashboard name", value=draft.name)
         draft.description = head[1].text_input("Description",
                                                value=draft.description)
+        _group_picker(head[2], store, draft)
         sources = ["kdb", "file"]
-        draft.source = head[2].selectbox(
+        draft.source = head[3].selectbox(
             "Data from", sources,
             index=sources.index(draft.source if draft.source in sources
                                 else "kdb"),
@@ -2817,7 +2845,7 @@ def render(store, mgr) -> None:
     # visible while you build rather than only when you try to leave.
     problems = validate(draft, store)
 
-    if head[3].button(f"Save ({len(problems)})" if problems else "Save",
+    if head[4].button(f"Save ({len(problems)})" if problems else "Save",
                       icon=":material/save:", type="primary",
                       use_container_width=True, disabled=bool(problems),
                       help="Fix the listed problems first" if problems else None):
@@ -2829,14 +2857,14 @@ def render(store, mgr) -> None:
         _close()
         st.rerun()
 
-    if head[4].button("Open", icon=":material/open_in_new:",
+    if head[5].button("Open", icon=":material/open_in_new:",
                       use_container_width=True, disabled=draft.id is None):
         dashboard_id = draft.id
         _close()
         st.query_params["dash"] = str(dashboard_id)
         st.rerun()
 
-    if head[5].button("Back", icon=":material/arrow_back:",
+    if head[6].button("Back", icon=":material/arrow_back:",
                       use_container_width=True,
                       help="Leave the editor and return to the dashboard list"):
         _close()
