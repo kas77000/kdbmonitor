@@ -2796,14 +2796,13 @@ def render(store, mgr) -> None:
     draft = _draft(store)
 
     with form_area():
-        head = st.columns([2.4, 2.4, 1.6, 1.6, 1.4, 1.2, 1.2],
+        head = st.columns([2.6, 2.6, 1.8, 1.4, 1.2, 1.2],
                           vertical_alignment="bottom")
         draft.name = head[0].text_input("Dashboard name", value=draft.name)
         draft.description = head[1].text_input("Description",
                                                value=draft.description)
-        _group_picker(head[2], store, draft)
         sources = ["kdb", "file"]
-        draft.source = head[3].selectbox(
+        draft.source = head[2].selectbox(
             "Data from", sources,
             index=sources.index(draft.source if draft.source in sources
                                 else "kdb"),
@@ -2813,6 +2812,14 @@ def render(store, mgr) -> None:
                  "their own file of the shape you profile here, and sees their "
                  "own numbers. It has no environment, no period and no refresh "
                  "interval — those describe a server, and there is none.")
+
+        # A line of its own. It was a seventh control in the head row above for
+        # about an hour, where the box was too narrow to read its own contents —
+        # "US Equities" rendered as "U…", and it took "KDB queries" down to "K…"
+        # beside it. Not the period row below either: that row is written twice,
+        # once per source, and this control is the same on both.
+        _group_picker(st.columns([2.4, 6.2], vertical_alignment="bottom")[0],
+                      store, draft)
 
         # One row either way, and the printed-page control keeps its place in
         # both. It used to sit last on a query dashboard and first on a file
@@ -2845,7 +2852,7 @@ def render(store, mgr) -> None:
     # visible while you build rather than only when you try to leave.
     problems = validate(draft, store)
 
-    if head[4].button(f"Save ({len(problems)})" if problems else "Save",
+    if head[3].button(f"Save ({len(problems)})" if problems else "Save",
                       icon=":material/save:", type="primary",
                       use_container_width=True, disabled=bool(problems),
                       help="Fix the listed problems first" if problems else None):
@@ -2857,14 +2864,14 @@ def render(store, mgr) -> None:
         _close()
         st.rerun()
 
-    if head[5].button("Open", icon=":material/open_in_new:",
+    if head[4].button("Open", icon=":material/open_in_new:",
                       use_container_width=True, disabled=draft.id is None):
         dashboard_id = draft.id
         _close()
         st.query_params["dash"] = str(dashboard_id)
         st.rerun()
 
-    if head[6].button("Back", icon=":material/arrow_back:",
+    if head[5].button("Back", icon=":material/arrow_back:",
                       use_container_width=True,
                       help="Leave the editor and return to the dashboard list"):
         _close()

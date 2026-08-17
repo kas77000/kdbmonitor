@@ -563,16 +563,26 @@ def shows_groups(buckets) -> bool:
     return bool(names) and names != {UNGROUPED}
 
 
-def kept_groups(held, names: list[str]) -> list[str]:
-    """The filter's effective selection.
+def kept_groups(held, names: list[str], known) -> list[str]:
+    """Which groups the filter leaves on the screen.
 
-    What it holds, minus groups that have since been renamed or dissolved;
-    everything when it holds nothing, because an empty filter means "show all"
-    rather than "show none".
+    Read as "everything except what the reader unticked", not as "only what the
+    reader ticked" — ``known`` is the groups that existed when the filter was
+    last drawn, so what was excluded is ``known - held``.
+
+    Which way round this is read only matters when the set of groups changes
+    underneath the filter, and then it matters a lot: renaming a group, or
+    moving a dashboard into a new one, invents a name nobody has had the chance
+    to tick. Read the other way, the reader renames Equities and watches its
+    two dashboards vanish.
+
+    An empty selection shows everything, because a filter holding nothing means
+    "no filter" rather than "no dashboards".
     """
     if held is None:
         return list(names)
-    kept = [g for g in held if g in names]
+    excluded = {g for g in (known or ()) if g not in held}
+    kept = [g for g in names if g not in excluded]
     return kept or list(names)
 
 
@@ -729,9 +739,22 @@ def _render_gallery(store) -> None:
     grouped = shows_groups(buckets)
     names = [g for g, _ in buckets]
     held = st.session_state.get("gal_group_filter")
-    visible_names = kept_groups(held, names)
-    if held is not None and any(g not in names for g in held):
-        st.session_state["gal_group_filter"] = [g for g in held if g in names]
+    visible_names = kept_groups(held, names,
+                                st.session_state.get("gal_group_known"))
+    st.session_state["gal_group_known"] = list(names)
+    # Put the widget back in step with what is about to be drawn, so the pills
+    # never say "Ops" beside three open groups — and so Streamlit is not handed
+    # a selection holding a group that has since been renamed away, which it
+    # refuses to draw at all. An empty selection is left empty: it already
+    # means "no filter", and refilling it would undo the reader's click.
+    #
+    # This is also where the filter's opening selection comes from. Seeded here
+    # rather than passed as the multiselect's `default`, because a widget given
+    # both a default and a session-state value makes Streamlit print a warning
+    # on the page — which is not an exception, so it sits there in yellow above
+    # the gallery with nothing failing anywhere.
+    if grouped and (held is None or (held and list(held) != visible_names)):
+        st.session_state["gal_group_filter"] = visible_names
     visible = ([d for g, items in buckets if g in visible_names for d in items]
                if grouped else saved)
 
@@ -768,10 +791,10 @@ def _render_gallery(store) -> None:
                 icon=":material/dashboard:")
     if grouped:
         chosen = st.multiselect(
-            "Filter groups", names, default=names, key="gal_group_filter",
+            "Filter groups", names, key="gal_group_filter",
             help="Show only the chosen groups. Collapse a group with its ▸ "
                  "header; filter one out and its ticks go with it.")
-        visible_names = kept_groups(chosen, names)
+        visible_names = kept_groups(chosen, names, names)
         for gname, items in buckets:
             if gname not in visible_names:
                 continue

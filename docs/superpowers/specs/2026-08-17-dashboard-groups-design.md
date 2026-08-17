@@ -131,18 +131,23 @@ a reason to.
 
 ## 6. The editor
 
-A **Group** picker joins the head row of `dashboard_editor.render()`, offering
-the groups already in use, plus `(no group)` and `➕ New group…`. Choosing the
-last one reveals a text box; whatever is settled on is written to `draft.group`
-and saved with the rest of the dashboard.
+A **Group** picker joins the top of `dashboard_editor.render()`, offering the
+groups already in use, plus `(no group)` and `➕ New group…`. Choosing the last
+one reveals a text box; whatever is settled on is written to `draft.group` and
+saved with the rest of the dashboard.
 
 Two decisions worth recording:
 
-**It goes in the head row, not the period row.** The period row is written
-twice — once for a kdb dashboard, once for a file one. The comment already
-standing there records what putting a control in both branches cost the last
-time: two copies that drifted until their help text disagreed. The head row is
-drawn once for both sources.
+**It goes on a line of its own, drawn once for both sources.** Not the period
+row below: that row is written twice, once for a kdb dashboard and once for a
+file one, and the comment already standing there records what putting a control
+in both branches cost the last time — two copies that drifted until their help
+text disagreed.
+
+It was a seventh control in the head row first, which is what the design said,
+and running the app is what corrected it: at 1500px the box was too narrow to
+read its own contents, showing "US Equities" as "U…" and taking "KDB queries"
+down to "K…" beside it. The head row keeps its original six columns.
 
 **It reads from the draft, not from a session key.** The head row's name and
 description fields take `value=draft.x` and carry no explicit key, and the
@@ -150,12 +155,10 @@ picker follows them. A keyed picker would survive the move from a dashboard in
 "Ops" to one with no group, show "Ops" still selected, and write it into the
 second dashboard — a silent regrouping nobody asked for.
 
-The head row's six columns become seven,
-`[2.4, 2.4, 1.6, 1.6, 1.4, 1.2, 1.2]`: name, description, group, data source,
-Save, Open, Back.
-
 A group the draft is in but no saved dashboard uses yet stays selectable, the
-way the alert builder keeps an edit-loaded group in its list.
+way the alert builder keeps an edit-loaded group in its list. Typing a new name
+leaves the picker reading "➕ New group…" with the name still in its box, which
+is where a name still being typed belongs.
 
 ---
 
@@ -173,10 +176,25 @@ never sees it. This is the same test the Monitor makes
 
 Otherwise:
 
-- A `Filter groups` multiselect, defaulting to every group, keyed
-  `gal_group_filter`.
+- A `Filter groups` multiselect over every group, keyed `gal_group_filter`, its
+  opening selection seeded into session state rather than passed as `default=`.
+  A widget given both a default and a session-state value makes Streamlit print
+  a warning **on the page**; it is not an exception, so it sat there in yellow
+  above the gallery with every test still green. Only running the app found it.
 - One `st.expander` per group, headed `**Equities** · 3` with the folder icon,
   open by default, holding that group's cards unchanged.
+
+**Which way the filter is read.** As *everything except what you unticked*, not
+as *only what you ticked* — the groups that existed when it was last drawn are
+remembered beside it (`gal_group_known`), so what was excluded is
+`known - held`.
+
+This only matters when the set of groups changes underneath the filter, and
+then it matters a great deal, which running the app is what showed: renaming
+Equities to US Equities invents a name nobody has had the chance to tick, and
+read the other way round the reader renames a group and watches its two
+dashboards leave the screen. Moving a dashboard into a brand-new group had the
+same fault. A group the reader deliberately unticked stays hidden across both.
 
 **Ticks and the filter.** A collapsed expander still runs its body, so
 collapsing a group keeps its ticks and its contribution to
