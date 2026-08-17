@@ -331,3 +331,45 @@ def test_a_move_picker_holding_a_group_that_has_gone_does_not_break_the_page(
     store.rename_dashboard_group("Ops", "")          # dissolved behind its back
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
+
+
+# --- renaming and dissolving whole groups ------------------------------------
+
+def test_an_ungrouped_gallery_offers_nothing_to_manage(flat_db):
+    at = _run(flat_db)
+    assert not [t for t in at.text_input if t.key and
+                t.key.startswith("dgrp_ren_")]
+
+
+def test_a_grouped_gallery_lists_its_groups_to_manage(grouped_db):
+    at = _run(grouped_db)
+    keys = sorted(t.key for t in at.text_input if t.key and
+                  t.key.startswith("dgrp_ren_"))
+    assert keys == ["dgrp_ren_Equities", "dgrp_ren_Ops"]
+
+
+def test_renaming_a_group_relabels_every_dashboard_in_it(grouped_db):
+    at = _run(grouped_db)
+    at.text_input(key="dgrp_ren_Equities").set_value("US Equities").run()
+    at.button(key="dgrp_renbtn_Equities").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    groups = {d.name: d.group for d in Storage(grouped_db).list_dashboards()}
+    assert groups == {"Order flow": "US Equities", "Fill quality": "US Equities",
+                      "Feed latency": "Ops", "Scratch": ""}
+
+
+def test_dissolving_a_group_sends_its_dashboards_back_to_ungrouped(grouped_db):
+    at = _run(grouped_db)
+    at.button(key="dgrp_dis_Ops").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    latency = next(d for d in Storage(grouped_db).list_dashboards()
+                   if d.name == "Feed latency")
+    assert latency.group == ""
+
+
+def test_renaming_a_group_onto_another_merges_them(grouped_db):
+    at = _run(grouped_db)
+    at.text_input(key="dgrp_ren_Ops").set_value("Equities").run()
+    at.button(key="dgrp_renbtn_Ops").click().run()
+    groups = {d.group for d in Storage(grouped_db).list_dashboards()}
+    assert groups == {"Equities", ""}

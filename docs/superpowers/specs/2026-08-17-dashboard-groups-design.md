@@ -1,6 +1,6 @@
 # Dashboard groups — design
 
-**Status:** design agreed, not built.
+**Status:** built.
 **Date:** 2026-08-17
 
 ---

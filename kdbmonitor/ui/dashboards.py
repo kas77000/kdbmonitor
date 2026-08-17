@@ -672,6 +672,51 @@ def _gallery_card(store, d, open_ids: list[int]) -> None:
                 st.rerun()
 
 
+def _manage_groups(store) -> None:
+    """Rename or dissolve whole groups — bulk work across their dashboards.
+
+    Draws nothing when no group exists, so it only appears once somebody has
+    made one. Twin of the alerts one in ui/builder.py.
+    """
+    counts: dict[str, int] = {}
+    for d in store.list_dashboards():
+        g = (d.group or "").strip()
+        if g:
+            counts[g] = counts.get(g, 0) + 1
+    if not counts:
+        return
+    groups = sorted(counts)
+    with st.expander(f"Manage groups ({len(groups)})",
+                     icon=":material/folder_managed:"):
+        st.caption("Rename a group to re-label every dashboard in it, or "
+                   "dissolve it to send them back to Ungrouped. Renaming onto "
+                   "an existing group merges them.")
+        for g in groups:
+            with st.container(border=True):
+                gc = st.columns([3, 1.2, 1.1, 1.3], vertical_alignment="bottom")
+                new_name = gc[0].text_input("Group name", value=g,
+                                            key=f"dgrp_ren_{g}")
+                gc[1].markdown(f":gray[{pluralize(counts[g], 'dashboard')}]")
+                if gc[2].button("Rename", key=f"dgrp_renbtn_{g}",
+                                icon=":material/edit:",
+                                disabled=not new_name.strip()
+                                or new_name.strip() == g):
+                    n = store.rename_dashboard_group(g, new_name.strip())
+                    st.toast(f"Renamed '{g}' → '{new_name.strip()}' "
+                             f"({pluralize(n, 'dashboard')})",
+                             icon=":material/check:")
+                    st.rerun()
+                with gc[3].popover("Dissolve", icon=":material/folder_off:"):
+                    st.warning(f"Dissolve '{g}'? Its "
+                               f"{pluralize(counts[g], 'dashboard')} will "
+                               "become Ungrouped.")
+                    if st.button("Confirm dissolve", key=f"dgrp_dis_{g}",
+                                 type="primary"):
+                        store.rename_dashboard_group(g, "")
+                        st.toast(f"Dissolved '{g}'", icon=":material/check:")
+                        st.rerun()
+
+
 def _render_gallery(store) -> None:
     st.subheader(":material/dashboard: Dashboards")
     saved = store.list_dashboards()
@@ -737,6 +782,8 @@ def _render_gallery(store) -> None:
     else:
         for d in saved:
             _gallery_card(store, d, open_ids)
+
+    _manage_groups(store)
 
     st.divider()
     st.markdown("**Share dashboards**")
