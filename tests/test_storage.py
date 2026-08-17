@@ -416,3 +416,59 @@ def test_dashboards_are_listed_by_name(tmp_path):
     s.add_dashboard(_dash("Zulu"))
     s.add_dashboard(_dash("Alpha"))
     assert [d.name for d in s.list_dashboards()] == ["Alpha", "Zulu"]
+
+
+# --- dashboard groups --------------------------------------------------------
+
+def _named_dashboard(name: str, group: str = ""):
+    from kdbmonitor.core.dashboard_models import Dashboard
+    return Dashboard(id=None, name=name, group=group)
+
+
+def test_set_dashboard_group():
+    store = Storage(":memory:")
+    store.init_db()
+    did = store.add_dashboard(_named_dashboard("Order flow"))
+    assert store.get_dashboard(did).group == ""
+    store.set_dashboard_group(did, "Equities")
+    assert store.get_dashboard(did).group == "Equities"
+    store.set_dashboard_group(did, "  Fx  ")          # trimmed
+    assert store.get_dashboard(did).group == "Fx"
+    store.set_dashboard_group(did, "")                # back to Ungrouped
+    assert store.get_dashboard(did).group == ""
+    store.set_dashboard_group(9999, "x")              # unknown id: no-op, no crash
+
+
+def test_rename_dashboard_group():
+    store = Storage(":memory:")
+    store.init_db()
+    store.add_dashboard(_named_dashboard("d1", group="Equities"))
+    store.add_dashboard(_named_dashboard("d2", group="Equities"))
+    store.add_dashboard(_named_dashboard("d3", group="Orders"))
+
+    assert store.rename_dashboard_group("Equities", "US Equities") == 2
+    groups = {d.name: d.group for d in store.list_dashboards()}
+    assert groups == {"d1": "US Equities", "d2": "US Equities", "d3": "Orders"}
+
+    assert store.rename_dashboard_group("Orders", "") == 1       # dissolve
+    assert {d.group for d in store.list_dashboards()} == {"US Equities", ""}
+
+    assert store.rename_dashboard_group("nope", "x") == 0        # no members
+    assert store.rename_dashboard_group("A", "A") == 0           # same name
+
+
+def test_rename_dashboard_group_merges():
+    store = Storage(":memory:")
+    store.init_db()
+    store.add_dashboard(_named_dashboard("d1", group="Fx"))
+    store.add_dashboard(_named_dashboard("d2", group="Rates"))
+    store.rename_dashboard_group("Fx", "Rates")
+    assert {d.group for d in store.list_dashboards()} == {"Rates"}
+
+
+def test_a_dashboards_group_survives_being_stored():
+    store = Storage(":memory:")
+    store.init_db()
+    did = store.add_dashboard(_named_dashboard("d1", group="Equities"))
+    assert store.list_dashboards()[0].group == "Equities"
+    assert store.get_dashboard(did).group == "Equities"

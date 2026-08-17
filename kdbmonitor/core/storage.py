@@ -287,6 +287,35 @@ class Storage:
         self.conn.execute("DELETE FROM dashboards WHERE id=?", (dashboard_id,))
         self.conn.commit()
 
+    # --- dashboard groups (a group is just the `group` label on each dashboard) ---
+    def set_dashboard_group(self, dashboard_id: int, group: str) -> None:
+        """Move a single dashboard into ``group`` ('' = Ungrouped)."""
+        d = self.get_dashboard(dashboard_id)
+        if d is None:
+            return
+        d.group = (group or "").strip()
+        self.update_dashboard(d)
+
+    def rename_dashboard_group(self, old: str, new: str) -> int:
+        """Re-label every dashboard whose group is ``old`` to ``new`` (blank =
+        dissolve into Ungrouped). Returns how many dashboards were changed.
+        Renaming onto an existing name merges the two groups.
+
+        The alert twin is ``rename_group``; this one says which it renames
+        because that name is taken.
+        """
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if old == new:
+            return 0
+        changed = 0
+        for d in self.list_dashboards():
+            if (d.group or "").strip() == old:
+                d.group = new
+                self.update_dashboard(d)
+                changed += 1
+        return changed
+
     # --- reusable components (saved transforms and widgets) ---
     def save_component(self, kind: str, name: str, payload: dict) -> int:
         """Store a component under ``name``, replacing one already saved there.
