@@ -1,6 +1,7 @@
 from kdbmonitor.core.dashboard_models import (
     ColumnSpec, Dashboard, Dataset, FileShape, Row, Widget,
 )
+from kdbmonitor.core.models import Connection
 from kdbmonitor.ui.dashboard_editor import _file_dataset_problems, validate
 
 
@@ -165,6 +166,64 @@ def test_a_kdb_dataset_is_still_asked_about_its_connections():
     dash = _file_dash(datasets=[kdb])
     dash.source = "kdb"
     assert any("GHOST" in p for p in validate(dash, _Store()))
+
+
+# --- {{conn:...}}, in all three of the forms resolve_handle takes -------------
+
+
+class _EnvStore:
+    """One environment with both sides, and the connections behind it — what
+    ``resolve_handle`` needs in order to answer every form of the token."""
+
+    _CONNS = (
+        Connection(id=1, name="prod-rdb", host="h1", port=5010,
+                   kind="realtime", env="prod"),
+        Connection(id=2, name="prod-hdb", host="h2", port=5011,
+                   kind="historical", env="prod"),
+    )
+
+    def list_environments(self):
+        return {"prod": {c.kind: c for c in self._CONNS}}
+
+    def list_connections(self):
+        return list(self._CONNS)
+
+
+_DATED = "select from t where date within ({{date_from}};{{date_to}})"
+
+
+def _conn_dash(handle: str) -> Dashboard:
+    return Dashboard(
+        id=1, name="Orders", source="kdb",
+        datasets=[Dataset(name="orders", env="prod", source="kdb", mode="raw",
+                          raw_qsql=f"{_DATED}; hopen {handle}")],
+        rows=[Row(widgets=[Widget(type="table", dataset="orders")])])
+
+
+def test_a_handle_naming_one_side_of_an_environment_is_accepted():
+    """{{conn:ENV:realtime}} is how a historical query reaches today's rows off
+    the live server, and resolve_handle has always taken it. The editor checked
+    the token against environment names alone, so the form it documents made
+    Save impossible to press."""
+    problems = validate(_conn_dash("{{conn:prod:realtime}}"), _EnvStore())
+    assert not any("conn:prod:realtime" in p for p in problems)
+
+
+def test_a_handle_naming_a_connection_by_its_own_name_is_accepted():
+    problems = validate(_conn_dash("{{conn:prod-hdb}}"), _EnvStore())
+    assert not any("conn:prod-hdb" in p for p in problems)
+
+
+def test_a_handle_naming_a_kind_of_server_that_does_not_exist_is_a_problem():
+    """The check has to keep catching what it was there to catch, and say which
+    kinds there are rather than that the whole token is unknown."""
+    problems = validate(_conn_dash("{{conn:prod:banana}}"), _EnvStore())
+    assert any("banana" in p for p in problems)
+
+
+def test_a_handle_naming_no_environment_at_all_is_still_a_problem():
+    problems = validate(_conn_dash("{{conn:GHOST}}"), _EnvStore())
+    assert any("GHOST" in p for p in problems)
 
 
 # --- parameters ---------------------------------------------------------------

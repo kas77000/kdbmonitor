@@ -22,7 +22,8 @@ from kdbmonitor.core.dashpdf import (
     ORIENTATION_LABELS, ORIENTATIONS, choose_page, plan_rows,
 )
 from kdbmonitor.core.dataset import (
-    is_marketdata_env, run_datasets, standalone_side, trace_datasets,
+    is_marketdata_env, resolve_handle, run_datasets, standalone_side,
+    trace_datasets,
 )
 from kdbmonitor.core.models import KIND_LABELS, Filter
 from kdbmonitor.core import paramrules
@@ -106,7 +107,9 @@ RAW_HELP = (
     "dataset with `{{name.column}}` for one column's values, or "
     "`{{table:name}}` for the whole thing as a table you can join against. To "
     "query a second KDB process in the same query, list it under *Also "
-    "connect* below and `hopen` it via `{{conn:ENV}}`."
+    "connect* below and `hopen` it via `{{conn:ENV}}` — or "
+    "`{{conn:ENV:realtime}}` for one named side of it whatever period is "
+    "running, or `{{conn:name}}` for one connection in particular."
 )
 
 _REF = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
@@ -853,10 +856,20 @@ def validate(draft: Dashboard, store) -> list[str]:
                 if env not in envs:
                     problems.append(f"Dataset '{ds.name}' also-connects to unknown "
                                     f"environment '{env}'.")
-            for env in _CONN_REF.findall(ds.raw_qsql or ""):
-                if env.strip() not in envs:
-                    problems.append(f"Dataset '{ds.name}' opens {{{{conn:{env.strip()}}}}}"
-                                    f", which is not a known environment.")
+            # Asked of the same resolver run_dataset will use, so the editor
+            # cannot refuse a handle the run would have accepted. {{conn:...}}
+            # takes three forms — an environment, one named side of one
+            # (ENV:realtime), or a connection by its own name — and checking
+            # only the first turned the other two into a Save nobody could
+            # press. resolve_handle raises with what it was given, which says
+            # more than this could: which kinds exist, which environments do.
+            for ref in _CONN_REF.findall(ds.raw_qsql or ""):
+                try:
+                    resolve_handle(store, ref, dashboard_time)
+                except ValueError as exc:
+                    problems.append(
+                        f"Dataset '{ds.name}' opens "
+                        f"{{{{conn:{ref.strip()}}}}}: {exc}")
         seen.append(ds.name)
 
     by_name = {ds.name: ds for ds in draft.datasets}
