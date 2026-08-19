@@ -9,10 +9,17 @@ from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.scheduler import supervisor as scheduler_supervisor
 from kdbmonitor.ui import (
     admin, builder, dashboards, monitor, popup, result, reports, schedules,
-    engine,
+    engine, layout,
 )
 
 st.set_page_config(page_title="KdbMonitor", page_icon=":material/radar:", layout="wide")
+
+# The type scale, the grid's spacing rhythm and the sidebar's ordering, applied
+# once for the whole app. It has to come before anything is drawn, and before
+# the pages run, so no page can render at Streamlit's default heading sizes for
+# a frame. See ui/layout.py for why the scale cannot live in config.toml.
+layout.inject_css()
+layout.brand()
 
 DB_PATH = os.environ.get("KDBMONITOR_DB", "kdbmonitor.db")
 
@@ -47,27 +54,31 @@ mgr = get_manager()
 start_scheduler()
 
 with st.sidebar:
-    st.title(":material/radar: KdbMonitor")
-    st.caption("KDB query-chain alerting")
-    n_alerts = len(store.list_alerts())
-    n_conns = len(store.list_connections())
-    st.markdown(f":gray[{n_alerts} alert(s) · {n_conns} server(s)]")
+    # Identity is above the navigation now (layout.brand), so what is left down
+    # here is one thing: whether the two background processes are alive. It is
+    # grouped into a single panel under one label rather than left as four
+    # paragraphs of loose markdown separated by Streamlit's default gap.
+    _mon_on = engine.monitoring_on(store)
+    _tick = engine.tick_secs(store)
+    _sched = scheduler_supervisor.status(store, datetime.now(timezone.utc))
+
+    st.markdown("##### Status")
+    with st.container(border=True):
+        st.markdown(":green-badge[:material/sensors: Monitoring on]" if _mon_on
+                    else ":gray-badge[:material/sensors_off: Monitoring paused]")
+        # The scheduler runs in a process of its own, so nothing else on screen
+        # would say whether it is there. Nobody visits the Schedules page on a
+        # normal morning; this badge is where its absence gets noticed.
+        st.markdown(schedules.BADGE.get(_sched.state, schedules.BADGE["stopped"]))
+        st.markdown(
+            f'<div class="kdb-measure">{len(store.list_alerts())} alerts · '
+            f'{len(store.list_connections())} servers</div>',
+            unsafe_allow_html=True)
 
     # The monitoring loop runs here in the shell (not on the Monitor page) so
     # checks keep firing on every tab and after a restart. run_every is fixed at
     # definition time; toggling monitoring triggers a full rerun that redefines
     # this fragment with the right cadence.
-    _mon_on = engine.monitoring_on(store)
-    _tick = engine.tick_secs(store)
-    st.markdown(":green-badge[:material/sensors: Monitoring on]" if _mon_on
-                else ":gray-badge[:material/sensors_off: Monitoring paused]")
-
-    # The scheduler runs in a process of its own, so nothing else on screen
-    # would say whether it is there. Nobody visits the Schedules page on a
-    # normal morning; this badge is where its absence gets noticed.
-    _sched = scheduler_supervisor.status(store, datetime.now(timezone.utc))
-    st.markdown(schedules.BADGE.get(_sched.state, schedules.BADGE["stopped"]))
-
     @st.fragment(run_every=_tick if _mon_on else None)
     def _background_monitor():
         engine.run_tick(store, mgr)
@@ -123,8 +134,18 @@ result_pg = st.Page(result_page, title="Result", url_path="result",
 # expose pages so other views can navigate programmatically (Monitor -> Result)
 st.session_state["_nav_pages"] = {"monitor": monitor_pg, "result": result_pg}
 
-nav = st.navigation([monitor_pg, builder_pg, dashboards_pg, reports_pg,
-                     schedules_pg, admin_pg, result_pg])
+# Grouped by the object each page is about, because that is the only ordering a
+# user can predict: everything to do with an alert, then everything to do with a
+# dashboard, then the servers both of them query. A flat list of seven put
+# Dashboards between Builder and Reports — two alert pages with a dashboard page
+# wedged between them — and gave Result, which is a detail view of a single
+# alert, the same standing as the Monitor. Result stays registered so
+# `st.switch_page` can reach it and is hidden from the list in ui/layout.py.
+nav = st.navigation({
+    "Alerts": [monitor_pg, builder_pg, reports_pg, result_pg],
+    "Dashboards": [dashboards_pg, schedules_pg],
+    "Setup": [admin_pg],
+})
 
 # "Open the full result" works from wherever it was clicked — the pop-up can be
 # on any page, so the jump can't be the Monitor's business alone.

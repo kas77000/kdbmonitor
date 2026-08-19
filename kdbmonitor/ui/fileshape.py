@@ -11,6 +11,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
+
 from kdbmonitor.core.dashboard_models import (
     COLUMN_TYPES, ColumnSpec, Dataset, FileShape, NamedCell,
 )
@@ -162,7 +164,7 @@ def _columns_form(shape: FileShape, key: str) -> None:
                "integer-looking order IDs is text and only you know that.")
     types = list(COLUMN_TYPES)
     for i, spec in enumerate(list(shape.columns)):
-        c = st.columns([3, 2, 1.4, 1.4, 0.7], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW, L.FIELD_NARROW, L.ICON_SPAN)
         spec.name = c[0].text_input("Name", value=spec.name, key=f"{key}_cn{i}")
         spec.type = c[1].selectbox(
             "Type", types, key=f"{key}_ct{i}",
@@ -192,7 +194,7 @@ def _cells_form(shape: FileShape, key: str) -> None:
                    "is written, so switching the headers to run downwards does "
                    "not move it.")
         for i, cell in enumerate(list(shape.cells)):
-            c = st.columns([3, 1.4, 1.4, 1.6, 0.7], vertical_alignment="bottom")
+            c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW, L.FIELD_NARROW, L.ICON_SPAN)
             cell.name = c[0].text_input("Name", value=cell.name,
                                         key=f"{key}_kn{i}")
             cell.row = int(c[1].number_input("Line", 1, 10_000, cell.row + 1,

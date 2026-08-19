@@ -7,7 +7,7 @@ import streamlit as st
 
 from kdbmonitor.core import schedule as sched
 from kdbmonitor.core.client import ConnectionManager
-from kdbmonitor.ui import engine
+from kdbmonitor.ui import engine, layout as L
 from kdbmonitor.ui.common import (
     STATUS_META, INTERVAL_PRESETS, secs_until_due, humanize_secs,
     condition_summary, group_label, sort_group_names, pluralize,
@@ -15,41 +15,30 @@ from kdbmonitor.ui.common import (
 )
 
 
-def _kpi(col, label: str, value: int, color: str | None = None,
-         caption: str | None = None) -> None:
-    """Metric-style tile whose number turns `color` when it's non-zero."""
-    with col.container(border=True):
-        st.caption(label)
-        if color and value:
-            st.markdown(f"### :{color}[{value}]")
-        else:
-            st.markdown(f"### {value}")
-        if caption:
-            st.caption(caption)
-
-
 def _today_strip(store) -> None:
     """Durable per-day totals, derived from the persisted run log so they don't
     reset when the app is restarted. Additive to the live 'now' KPIs below."""
     today = datetime.now(timezone.utc).date().isoformat()
     d = store.daily_stats(today)
-    st.markdown(f":gray[**Today** · {today} UTC — cumulative, survives restarts]")
+    # A real section heading. This was gray bold body text, the same size and
+    # weight as everything under it, so the page had no ladder to read down.
+    L.section("Today", level=5,
+              description=f"{today} UTC — cumulative, survives restarts.")
     # No "Armed today": a count of checks that found nothing is the day doing
     # what it should, and it crowded out the three totals worth reading.
-    k = st.columns(3)
-    _kpi(k[0], "Triggered today", d["triggered_events"], color="red",
-         caption=f"{pluralize(d['triggered_alerts'], 'alert')}")
-    _kpi(k[1], "Errors today", d["error_events"], color="orange",
-         caption=f"{pluralize(d['error_alerts'], 'alert')}")
-    _kpi(k[2], "Notifications today", d["notifications"],
-         caption=f"{d['total_checks']} checks run")
+    L.kpi_row([
+        ("Triggered today", d["triggered_events"], "red",
+         pluralize(d["triggered_alerts"], "alert")),
+        ("Errors today", d["error_events"], "orange",
+         pluralize(d["error_alerts"], "alert")),
+        ("Notifications today", d["notifications"], None,
+         f"{d['total_checks']} checks run"),
+    ])
 
 
 def render(store, mgr: ConnectionManager) -> None:
     if st.session_state.pop("_open_result", False) and "_nav_pages" in st.session_state:
         st.switch_page(st.session_state["_nav_pages"]["result"])
-
-    st.subheader(":material/monitoring: Live monitor")
 
     # --- monitoring controls (state persists in the DB, so it keeps running on
     #     other tabs and auto-resumes after a restart; the loop itself lives in
@@ -57,9 +46,21 @@ def render(store, mgr: ConnectionManager) -> None:
     running = engine.monitoring_on(store)
     gran = engine.granularity_label(store)
 
-    ctl = st.columns([1.4, 2.4, 1.2], vertical_alignment="center")
-    new_running = ctl[0].toggle(
-        "Monitoring", value=running,
+    # Whether monitoring is on is the page's headline fact, so it goes in the
+    # header where a page-level state belongs. The badge used to float in a
+    # third column of the control row, aligned neither to the controls on its
+    # left nor to the content's right edge — some 250px short of both.
+    L.page_header(
+        "Live monitor", icon=":material/monitoring:",
+        subtitle=("Checks run on every tab and resume after a restart. "
+                  + ("Monitoring is on." if running else "Monitoring is paused.")))
+
+    # Two controls, each at its own width, on one baseline: the toggle now
+    # carries a label above it like the segmented control beside it, instead of
+    # one label to the right and one above, 16px apart.
+    ctl = L.toolbar(L.FIELD_NARROW, L.FIELD_WIDE)
+    new_running = L.switch(
+        ctl[0], "Monitoring", running,
         help="Checks keep running on every tab and after a restart while this is on.")
     if new_running != running:
         engine.set_monitoring(store, new_running)
@@ -70,10 +71,6 @@ def render(store, mgr: ConnectionManager) -> None:
     if new_gran and new_gran != gran:
         engine.set_granularity(store, new_gran)
         st.rerun()
-    ctl[2].markdown(
-        (":green-badge[:material/sensors: Active]" if running
-         else ":gray-badge[:material/sensors_off: Paused]")
-    )
 
     tick = INTERVAL_PRESETS.get(gran, 15)
 
@@ -118,16 +115,19 @@ def render(store, mgr: ConnectionManager) -> None:
         n_err = sum(1 for d in display if d["status"] == "error")
         n_armed = sum(1 for d in display if d["status"] == "armed")
         n_off = sum(1 for d in display if d["status"] == "off_hours")
-        st.markdown(":gray[**Now** — current state of each alert]")
+        L.section("Now", level=5, description="Current state of each alert.")
         # The Off-hours tile only appears once something is actually parked;
         # a desk with no scheduled alerts shouldn't carry a column of zeroes.
-        k = st.columns(5 if n_off else 4)
-        _kpi(k[0], "Alerts", len(display))
-        _kpi(k[1], "Armed", n_armed, color="green")
-        _kpi(k[2], "Triggered", n_trig, color="red")
-        _kpi(k[3], "Errors", n_err, color="orange")
+        tiles = [("Alerts", len(display), None, None),
+                 ("Armed", n_armed, "green", None),
+                 ("Triggered", n_trig, "red", None),
+                 ("Errors", n_err, "orange", None)]
         if n_off:
-            _kpi(k[4], "Off-hours", n_off, caption="outside their windows")
+            tiles.append(("Off-hours", n_off, None, "outside their windows"))
+        # Both tile rows fill the content column, so the three above and the
+        # four or five here start and finish on the same two edges. They used to
+        # be st.columns(3) over st.columns(5), which shared only a left margin.
+        L.kpi_row(tiles)
 
         # Active triggers surfaced first
         for d in display:
@@ -143,8 +143,7 @@ def render(store, mgr: ConnectionManager) -> None:
             a = d["a"]
             label, color, icon = STATUS_META[d["status"]]
             unseen = store.has_unseen_trigger(a.id)
-            with st.container(border=True):
-                row = st.columns([1.4, 3.4, 1, 2.1, 1.1], vertical_alignment="center")
+            with L.list_row(spans=L.ROW_SPANS_DETAIL) as row:
                 row[0].badge(label, icon=icon, color=color)
                 # A red "NEW" badge stays next to an alert that has fired until
                 # the user opens it with View (persisted, so it survives restarts).
@@ -184,6 +183,7 @@ def render(store, mgr: ConnectionManager) -> None:
                     btn_type = "primary" if unseen else "secondary"
                     if row[4].button("View", key=f"view_{a.id}",
                                      icon=":material/open_in_full:", type=btn_type,
+                                     
                                      help="Open the result and clear the NEW flag"):
                         store.mark_triggers_seen(a.id)
                         st.session_state["result_alert_id"] = a.id
@@ -199,7 +199,10 @@ def render(store, mgr: ConnectionManager) -> None:
         grouped_view = len(buckets) > 1 or set(buckets) != {"Ungrouped"}
 
         if grouped_view:
-            chosen = st.multiselect(
+            # A filter is a toolbar control, not content: four short chips do not
+            # need the full content column, and stretching them there is what put
+            # the help icon 800px from its own label.
+            chosen = L.toolbar(L.FIELD_WIDE)[0].multiselect(
                 "Filter groups", ordered, default=ordered, key="mon_group_filter",
                 help="Show only the chosen groups. Collapse a group with its ▸ header.")
             visible = chosen or ordered            # empty selection = show all

@@ -19,6 +19,8 @@ import re
 import pandas as pd
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
+
 from kdbmonitor.core import tablefilter as tf
 from kdbmonitor.core import tablegroup as tg
 from kdbmonitor.core.plotmodel import format_time_of_day
@@ -618,20 +620,19 @@ def render(pm, height_px: int, key: str) -> None:
     # to gather the rows under, or where somebody has already asked for one.
     offered = tg.groupable(against)
     if offered or asked:
-        box, tree, opener = st.columns([3, 1.5, 1], vertical_alignment="bottom")
+        box, tree, opener = L.grid(L.FIELD, L.FIELD_NARROW, L.BUTTON)
         _group_control(tree, offered, key, asked)
     else:
-        box, opener = st.columns([4, 1], vertical_alignment="bottom")
+        box, opener = L.grid(L.GRID - L.BUTTON, L.BUTTON, pad=False)
     with opener:
         # The count rides on the button, so a table that is being narrowed says
         # so before anybody opens anything. A popover is a closed door, and a
         # closed door cannot report what is behind it.
-        with st.popover(f"Filters ({live})" if live else "Filters",
-                        use_container_width=True):
+        with st.popover(f"Filters ({live})" if live else "Filters"):
             _controls(against, key, stored)
             if live:
                 st.button("Clear all", key=f"tbl_clear_{key}",
-                          use_container_width=True,
+                          
                           on_click=_clear, args=(against, key))
     with box:
         query = st.text_input(
@@ -674,12 +675,12 @@ def render(pm, height_px: int, key: str) -> None:
         # through the popover meant opening the filters to stop filtering, and
         # then clearing them one column at a time if you did not spot the
         # button at the bottom.
-        note, undo = st.columns([5, 1], vertical_alignment="center")
+        note, undo = L.grid(L.GRID - L.ICON_SPAN, L.ICON_SPAN, align="center", pad=False)
         note.caption(f":gray[{' · '.join(said)}]")
         if narrowing:
             undo.button("Clear all", key=f"tbl_clearall_{key}", type="tertiary",
                         icon=":material/filter_alt_off:",
-                        use_container_width=True,
+                        
                         help="Put every row back — clears every column filter "
                              "and the search box",
                         on_click=_clear, args=(against, key))

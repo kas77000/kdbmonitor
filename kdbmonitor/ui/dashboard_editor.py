@@ -12,6 +12,8 @@ from datetime import date, datetime
 
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
+
 from kdbmonitor.core.dashboard_models import (
     Component, Dashboard, Dataset, PARAMETER_KINDS, Parameter, Q_TYPES, Row,
     Transform, Widget, parameter_from_dict, parameter_to_dict, transform_from_dict,
@@ -45,7 +47,7 @@ from kdbmonitor.ui import parameters as ui_parameters
 from kdbmonitor.ui import qeditor
 from kdbmonitor.ui import tables
 from kdbmonitor.ui.tables import WIDTHS as TABLE_WIDTHS
-from kdbmonitor.ui.common import column_spec, form_area
+from kdbmonitor.ui.common import column_spec
 from kdbmonitor.ui.dashboards import (
     NEW_GROUP, NO_GROUP, back_to_gallery, existing_groups, group_options,
     render_widget, row_height_px,
@@ -1112,7 +1114,7 @@ def _insert_reference(column_tokens: list[str], table_tokens: list[str],
                                     ("table", table_tokens)) if available]
     if not kinds:
         return
-    rc = st.columns([1.8, 3, 1], vertical_alignment="bottom")
+    rc = L.grid(L.FIELD, L.FIELD_WIDE, L.BUTTON)
     kind = rc[0].selectbox("Insert", kinds,
                            format_func=lambda k: REFERENCE_KINDS[k],
                            key=f"{key}_refkind")
@@ -1131,7 +1133,7 @@ def _filters_form(ds: Dataset, columns: list[str], key: str,
                   ref_tokens: list[str] | None = None) -> None:
     st.caption("Filters — combined with AND, sent to KDB as the where clause.")
     for i, f in enumerate(list(ds.filters)):
-        c = st.columns([1.7, 1, 1.7, 1.3, 0.8, 0.6, 0.6], vertical_alignment="bottom")
+        c = L.grid(5, 3, 5, 4, 3, L.ICON_SPAN, L.ICON_SPAN)
         f.column = _pick(c[0], "Column", columns, f.column, f"{key}_fc_{i}")
         f.op = c[1].selectbox("Op", OPS, index=OPS.index(f.op) if f.op in OPS else 0,
                               key=f"{key}_fo_{i}")
@@ -1175,13 +1177,18 @@ def _filters_form(ds: Dataset, columns: list[str], key: str,
             key=f"{key}_ft_{i}")
         f.value = ([v.strip() for v in raw.split(",")] if f.op == "in"
                    else _coerce(raw, f.value_type))
-        f.negated = c[4].checkbox("not", value=f.negated, key=f"{key}_fn_{i}")
+        # Same treatment as every other checkbox sharing a row with inputs:
+        # a label row of its own, so it sits on their baseline rather than
+        # 30px above it.
+        f.negated = L.check(c[4], "not", value=f.negated, key=f"{key}_fn_{i}",
+                            help="Prefix this condition with q 'not'.")
         if c[6].button("", icon=":material/close:", key=f"{key}_fx_{i}"):
             ds.filters.pop(i)
             _forget(rf"{key}_f")               # every filter below shuffles up
             st.rerun()
 
-    if st.button("Add filter", icon=":material/add:", key=f"{key}_addf"):
+    if L.grid(L.BUTTON_LONG)[0].button("Add filter", icon=":material/add:",
+                                      key=f"{key}_addf"):
         ds.filters.append(Filter(column=columns[0] if columns else "", op="=",
                                  value="", value_type="symbol"))
         st.rerun()
@@ -1190,7 +1197,7 @@ def _filters_form(ds: Dataset, columns: list[str], key: str,
 def _transform_form(t: Transform, columns: list[str], key: str) -> None:
     p = t.params
     if t.kind == "derive":
-        c = st.columns([1.6, 1.4, 3], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD_WIDE)
         p["column"] = c[0].text_input("New column", value=p.get("column", ""),
                                       key=f"{key}_dc")
         kinds = ["arithmetic", "suffix_map"]
@@ -1208,7 +1215,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
                 "Suffix = label (one per line, e.g. `.HK = Hong Kong`)",
                 value="\n".join(f"{k} = {v}" for k, v in p.get("mapping", {}).items()),
                 key=f"{key}_dm", height=90))
-            cc = st.columns([1.4, 2], vertical_alignment="bottom")
+            cc = L.grid(L.FIELD_NARROW, L.FIELD)
             # Default from the map itself, so a map written before this setting
             # existed keeps matching exactly what it matched before.
             current = int(p.get("length") or suffix_length(p["mapping"]) or 3)
@@ -1227,7 +1234,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
                            f"characters, so nothing will match {them}.]")
 
     elif t.kind == "filter":
-        c = st.columns([2, 1, 2], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD)
         p["column"] = _pick(c[0], "Column", columns, p.get("column", ""),
                             f"{key}_fc")
         ops = ["=", "!=", "<", "<=", ">", ">="]
@@ -1242,7 +1249,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
                                f"{key}_gk")
         st.caption("Aggregations")
         for i, a in enumerate(list(p.get("aggs", []))):
-            c = st.columns([2, 1.4, 2, 0.6], vertical_alignment="bottom")
+            c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD, L.ICON_SPAN)
             a["column"] = _pick(c[0], "Column", columns, a["column"],
                                 f"{key}_gc_{i}")
             a["func"] = c[1].selectbox("Func", AGG_FUNCS,
@@ -1260,7 +1267,7 @@ def _transform_form(t: Transform, columns: list[str], key: str) -> None:
             st.rerun()
 
     elif t.kind == "sort":
-        c = st.columns([3, 1.4], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW)
         p["columns"] = _pick_many(c[0], "Sort by", columns,
                                   p.get("columns", []), f"{key}_sc")
         p["ascending"] = c[1].selectbox(
@@ -1313,7 +1320,7 @@ def _component_summary(c: Component) -> str:
 
 
 def _save_to_library(container, store, kind: str, payload: dict, key: str,
-                     suggested: str = "") -> None:
+                     suggested: str = "", label: str = "Library") -> None:
     """The 'keep this for next time' popover.
 
     One control for the name, because saving something new and saving back a
@@ -1322,7 +1329,11 @@ def _save_to_library(container, store, kind: str, payload: dict, key: str,
     """
     names = [c.name for c in store.list_components(kind)]
     noun = LIBRARY_KINDS[kind]
-    with container.popover("", icon=":material/bookmark_add:",
+    # ``label`` is empty where this sits in a row of icon buttons: a two-unit
+    # slot is 57px at 1024px and "Library" needs about 110px, so the label ran
+    # straight over the ✕ next to it. The help text carries the meaning there.
+    with container.popover(label, icon=":material/bookmark_add:",
+                           
                            help=f"Save this {noun} to the library, to reuse in "
                                 f"this or any other dashboard"):
         name = st.selectbox(
@@ -1375,7 +1386,7 @@ def _render_library(store) -> None:
 
     for c in saved:
         with st.container(border=True):
-            cc = st.columns([2.4, 1, 3.4, 1, 0.8], vertical_alignment="bottom")
+            cc = L.grid(6, 3, 8, 4, L.ICON_SPAN)
             cc[0].markdown(f"**{c.name}**")
             cc[1].markdown(f":blue-badge[{LIBRARY_KINDS.get(c.kind, c.kind)}]")
             cc[2].caption(_component_summary(c))
@@ -1436,8 +1447,13 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                               or {}) if ds.env else "no environment")
     with st.expander(f"**{ds.name}** · {subtitle}", expanded=True):
         if ds.source == "derived":
-            head = st.columns([2.4, 2.4, 1.8, ICON_COL],
-                              vertical_alignment="bottom")
+            # All three kinds of dataset card lay their header on the same
+            # grid, so a derived one, a file one and a query one line up down
+            # the page instead of each starting its fields somewhere new.
+            head = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW,
+                          L.GRID - 2 * L.FIELD - L.FIELD_NARROW - L.ICON_SPAN,
+                          L.ICON_SPAN, align="bottom", pad=False)
+            head = [head[0], head[1], head[2], head[4]]
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             # Only the datasets above it: frames are fed forward in declaration
             # order, so one declared below has not run when this one needs it.
@@ -1454,7 +1470,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             ds.max_rows = int(head[2].number_input(
                 "Max rows", 1, 1_000_000, ds.max_rows, step=100,
                 key=f"{key}_mr"))
-            if head[3].button("", icon=":material/delete:", key=f"{key}_del"):
+            if head[3].button("", icon=":material/delete:", key=f"{key}_del",
+                              help="Delete dataset"):
                 draft.datasets.pop(index)
                 _forget(r"ds\d+")              # every card below renumbers
                 st.rerun()
@@ -1469,7 +1486,10 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         elif ds.source == "file":
             from kdbmonitor.ui import fileshape
 
-            head = st.columns([3, 1.8, ICON_COL], vertical_alignment="bottom")
+            head = L.grid(L.FIELD, L.FIELD_NARROW,
+                          L.GRID - L.FIELD - L.FIELD_NARROW - L.ICON_SPAN,
+                          L.ICON_SPAN, align="bottom", pad=False)
+            head = [head[0], head[1], head[3]]
             was = ds.name
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             # The held sample is filed under the dataset's name, and the box
@@ -1480,15 +1500,24 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             ds.max_rows = int(head[1].number_input(
                 "Max rows", 1, 1_000_000, ds.max_rows, step=100,
                 key=f"{key}_mr"))
-            if head[2].button("", icon=":material/delete:", key=f"{key}_del"):
+            if head[2].button("", icon=":material/delete:", key=f"{key}_del",
+                              help="Delete dataset"):
                 fileshape.forget_sample(ds.name)
                 draft.datasets.pop(index)
                 _forget(r"ds\d+")              # every card below renumbers
                 st.rerun()
             fileshape.render(ds, key=key)
         else:
-            head = st.columns([2, 2, 1.7, 1.4, 1.3, ICON_COL],
-                              vertical_alignment="bottom")
+            # Four fields and the delete icon, with the spare units left as a
+            # gap in front of the icon so a destructive control is not flush
+            # against a field. Static used to be a fifth field squeezed in here,
+            # which at 1024px left it 52px for a label, a help marker and a box
+            # — so it overflowed onto the bin beside it and floated clear of the
+            # row's baseline. It is a whole sentence of behaviour; it gets its
+            # own line below.
+            head = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW,
+                          L.GRID - 2 * L.FIELD - 2 * L.FIELD_NARROW - L.ICON_SPAN,
+                          L.ICON_SPAN, align="bottom", pad=False)
             ds.name = head[0].text_input("Name", value=ds.name, key=f"{key}_n")
             pairs = store.list_environments()
             envs = sorted(pairs)
@@ -1524,7 +1553,7 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                           "stays live — or the other way around.")
             ds.max_rows = int(head[3].number_input("Max rows", 1, 1_000_000,
                                                    ds.max_rows, step=100, key=f"{key}_mr"))
-            ds.static = head[4].checkbox(
+            ds.static = L.field_row(1, span=L.FIELD_WIDE)[0].checkbox(
                 "Static", value=ds.static, key=f"{key}_st",
                 help="This query answers the same thing every time — an "
                      "instrument list, a book mapping, a universe loaded at "
@@ -1533,7 +1562,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                      "Change the query, a parameter in it or the period and it "
                      "is asked again; 'Reload static' on the dashboard asks "
                      "again on demand.")
-            if head[5].button("", icon=":material/delete:", key=f"{key}_del"):
+            if head[5].button("", icon=":material/delete:", key=f"{key}_del",
+                              help="Delete dataset"):
                 draft.datasets.pop(index)
                 _forget(r"ds\d+")                  # every card below renumbers
                 st.rerun()
@@ -1545,7 +1575,11 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
             if ds.time_mode == "custom":
                 rng = ((ds.time_context or {}).get("range") or {})
                 kinds = ["preset", "absolute"]
-                kind = st.selectbox(
+                # A preset picker at the card's full width was 750px beside
+                # a 95px Name box in the same card. Both are fields; both are a
+                # field's width.
+                tc = L.field_row(2)
+                kind = tc[0].selectbox(
                     "Its own period", kinds,
                     index=kinds.index(rng.get("kind"))
                     if rng.get("kind") in kinds else 0,
@@ -1554,15 +1588,15 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 if kind == "preset":
                     labels = [PRESET_LABELS[p] for p in PRESETS]
                     current = rng.get("name", "last_30d")
-                    chosen = st.selectbox("Range", labels,
-                                          index=list(PRESETS).index(current)
-                                          if current in PRESETS else 3,
-                                          key=f"{key}_tc")
+                    chosen = tc[1].selectbox("Range", labels,
+                                             index=list(PRESETS).index(current)
+                                             if current in PRESETS else 3,
+                                             key=f"{key}_tc")
                     ds.time_context = {"mode": "historical",
                                        "range": {"kind": "preset",
                                                  "name": PRESETS[labels.index(chosen)]}}
                 else:
-                    cc = st.columns(2, vertical_alignment="bottom")
+                    cc = L.field_row(2)
                     d1 = cc[0].date_input(
                         "From", value=date.fromisoformat(rng["from"])
                         if rng.get("from") else date.today(), key=f"{key}_tcf")
@@ -1578,14 +1612,20 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 st.caption(":violet[Market data] — reference tables, queried the "
                            "same way whatever period the dashboard is showing.")
 
-            ds.mode = st.radio("Query", ["guided", "raw"], horizontal=True,
-                               index=0 if ds.mode == "guided" else 1, key=f"{key}_m")
+            # A horizontal radio, the same as the Builder's step mode. See
+            # layout.MODE_CONTROL for why this and not a segmented control.
+            # FIELD, not FIELD_NARROW: at 1024px four units is 104px and a
+            # horizontal radio with two options folds into a vertical one.
+            ds.mode = L.field_row(1, span=L.FIELD)[0].radio(
+                "Query", ["guided", "raw"], horizontal=True,
+                index=0 if ds.mode == "guided" else 1, key=f"{key}_m")
 
             if ds.mode == "guided":
                 tables = sorted(getattr(conn, "schema", {}) or {})
-                ds.table = st.selectbox("Table", tables or [ds.table],
-                                        index=tables.index(ds.table)
-                                        if ds.table in tables else 0, key=f"{key}_t")
+                ds.table = L.field_row(1)[0].selectbox(
+                    "Table", tables or [ds.table],
+                    index=tables.index(ds.table) if ds.table in tables else 0,
+                    key=f"{key}_t")
                 # Filters are the query's where clause, so they address the table
                 # as KDB holds it — not the shape the transforms leave behind.
                 _filters_form(ds, table_columns(ds, conn), key,
@@ -1614,11 +1654,10 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
         # reads a base: renaming this dataset moves every dataset built on it.
         _rebase(draft, was_named, ds.name)
 
-        st.markdown("**Transforms**")
+        L.section("Transforms", level=5)
         for i, t in enumerate(list(ds.transforms)):
             with st.container(border=True):
-                c = st.columns([2, 4.4, 0.6, 0.6, 0.6, 0.6],
-                               vertical_alignment="bottom")
+                c = L.grid(6, 10, 2, 2, 2, 2)
                 t.kind = c[0].selectbox("Kind", TRANSFORM_KINDS,
                                         index=option_index(TRANSFORM_KINDS, t.kind),
                                         key=f"{key}_tk_{i}")
@@ -1629,16 +1668,18 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                     _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
                 if c[3].button("", icon=":material/arrow_downward:",
-                               key=f"{key}_td_{i}",
+                               key=f"{key}_td_{i}", 
                                disabled=i == len(ds.transforms) - 1):
                     ds.transforms[i + 1], ds.transforms[i] = \
                         ds.transforms[i], ds.transforms[i + 1]
                     _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
                 _save_to_library(c[4], store, "transform", transform_to_dict(t),
-                                 f"{key}_t{i}",
+                                 f"{key}_t{i}", label="",
                                  suggested=str(t.params.get("column") or ""))
-                if c[5].button("", icon=":material/close:", key=f"{key}_tx_{i}"):
+                if c[5].button("", icon=":material/delete:", key=f"{key}_tx_{i}",
+                               
+                               help="Remove this transform"):
                     ds.transforms.pop(i)
                     _forget(_TRANSFORM_KEYS % key)
                     st.rerun()
@@ -1651,7 +1692,8 @@ def _dataset_card(store, ds: Dataset, index: int, draft: Dashboard) -> None:
                 _transform_form(t, produced_columns(draft, upstream, store),
                                 f"{key}_t{i}")
 
-        add = st.columns([1.6, 1.6, 4.8], vertical_alignment="bottom")
+        add = L.grid(L.BUTTON_LONG, L.BUTTON_LONG,
+                     L.GRID - 2 * L.BUTTON_LONG, pad=False)
         if add[0].button("Add transform", icon=":material/add:",
                          key=f"{key}_taddb"):
             ds.transforms.append(Transform(
@@ -1675,8 +1717,7 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
     """
     key = f"pm{index}"
     with st.expander(f"**{p.name or '(unnamed)'}** · {p.kind}", expanded=True):
-        head = st.columns([2, 2, 1.6, ICON_COL, ICON_COL],
-                          vertical_alignment="bottom")
+        head = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW, L.ICON_SPAN, L.ICON_SPAN)
         was = p.name
         p.name = head[0].text_input("Name", value=p.name, key=f"{key}_n")
         # Session state remembers a reader's pick by name — follow a rename the
@@ -1691,8 +1732,9 @@ def _parameter_card(store, p: Parameter, index: int, draft: Dashboard) -> None:
             index=PARAMETER_KINDS.index(p.kind) if p.kind in PARAMETER_KINDS
             else 0, key=f"{key}_k")
         _save_to_library(head[3], store, "parameter", parameter_to_dict(p),
-                         key, suggested=p.name)
-        if head[4].button("", icon=":material/delete:", key=f"{key}_del"):
+                         key, label="", suggested=p.name)
+        if head[4].button("", icon=":material/delete:", key=f"{key}_del",
+                          help="Delete parameter"):
             ui_parameters.forget_one(draft, p.name)
             draft.parameters.pop(index)
             _forget(r"pm\d+")              # every card below renumbers
@@ -1736,7 +1778,7 @@ def _parameter_query_form(p: Parameter, key: str, draft: Dashboard) -> None:
     """
     reads = {ds.name for ds in draft.datasets
              if p.name and p.name in core_parameters.params_in_query(ds)}
-    c = st.columns([2, 3], vertical_alignment="bottom")
+    c = L.grid(L.FIELD, L.FIELD_WIDE)
     kinds = list(Q_TYPES)
     current = paramrules.q_type_of(p)
     p.q_type = c[0].selectbox(
@@ -1763,11 +1805,12 @@ def _parameter_rules_form(p: Parameter, key: str) -> None:
     # A bordered block rather than an expander: the card around it is already
     # one, and Streamlit will not nest them.
     with st.container(border=True):
-        st.markdown("**:material/rule: Rules** — what a valid value looks like")
-        st.caption("Checked before anything is sent. A value that fails one is "
-                   "reported on the form, and the query does not run.")
+        L.section("Rules", level=5,
+                  description="What a valid value looks like. Checked before "
+                              "anything is sent: a value that fails one is "
+                              "reported on the form, and the query does not run.")
         kind = paramrules.q_type_of(p)
-        top = st.columns([1.2, 3], vertical_alignment="center")
+        top = L.grid(L.FIELD_NARROW, L.FIELD_WIDE, align="center")
         p.required = top[0].checkbox("Required", value=p.required,
                                      key=f"{key}_req",
                                      help="A blank value blocks the run.")
@@ -1796,7 +1839,7 @@ def _parameter_rules_form(p: Parameter, key: str) -> None:
                 help="A Saturday has no partition in most HDBs, so asking for "
                      "one returns nothing and explains nothing.")
         if kind in ("symbol", "string", "expression"):
-            t = st.columns([2, 3], vertical_alignment="bottom")
+            t = L.grid(L.FIELD, L.FIELD_WIDE)
             p.pattern = t[0].text_input(
                 "Must match", value=p.pattern, key=f"{key}_pat",
                 placeholder="^[A-Z]+$",
@@ -1822,14 +1865,15 @@ def _render_parameters(store, draft: Dashboard) -> None:
     which dataset and which column it reads is a fact about the dashboard,
     settled here while it is built.
     """
-    st.markdown("**Parameters**")
-    st.caption("Controls the reader sets when viewing this dashboard. A "
-               "parameter never reaches a query — only the transforms "
-               "downstream of it re-shape when it changes.")
+    L.section("Parameters",
+              description="Controls the reader sets when viewing this "
+                          "dashboard. A parameter never reaches a query — only "
+                          "the transforms downstream of it re-shape when it "
+                          "changes.")
     for i, p in enumerate(list(draft.parameters)):
         _parameter_card(store, p, i, draft)
 
-    add = st.columns([1.6, 1.6, 4.8], vertical_alignment="bottom")
+    add = L.grid(L.ACTION_SPAN, L.ACTION_SPAN, L.GRID - 2 * L.ACTION_SPAN, pad=False)
     if add[0].button("Add parameter", icon=":material/add:",
                      key="dash_param_addb"):
         draft.parameters.append(Parameter(
@@ -1853,7 +1897,7 @@ def _render_data(store, mgr, draft: Dashboard) -> None:
     for i, ds in enumerate(list(draft.datasets)):
         _dataset_card(store, ds, i, draft)
 
-    add = st.columns([1.5, 2.1, 4.4], vertical_alignment="bottom")
+    add = L.grid(L.ACTION_SPAN, L.ACTION_SPAN, L.GRID - 2 * L.ACTION_SPAN, pad=False)
     if add[0].button("Add dataset", icon=":material/add:", type="primary",
                      key="dash_ds_add"):
         envs = sorted(store.list_environments())
@@ -2152,7 +2196,7 @@ def _references_bands_form(s: dict, columns: list[str], key: str) -> None:
                    "value far off the chart is named as off-scale rather "
                    "than stretching the real data flat to make room for it.")
         for i, ref in enumerate(list(s.get("references", []))):
-            c = st.columns([1.5, 1.8, 1.8, 0.6], vertical_alignment="bottom")
+            c = L.grid(L.FIELD_NARROW, L.FIELD, L.FIELD, L.ICON_SPAN)
             kind = ref.get("kind", "constant")
             ref["kind"] = c[0].selectbox(
                 "Kind", REFERENCE_KINDS,
@@ -2191,7 +2235,7 @@ def _references_bands_form(s: dict, columns: list[str], key: str) -> None:
                    "axis; an end not found in the data is dropped rather "
                    "than drawn wrong.")
         for i, band in enumerate(list(s.get("bands", []))):
-            c = st.columns([1.6, 1.6, 1.8, 0.6], vertical_alignment="bottom")
+            c = L.grid(L.FIELD_NARROW, L.FIELD_NARROW, L.FIELD, L.ICON_SPAN)
             band["from"] = c[0].text_input(
                 "From", value=str(band.get("from", "")), key=f"{key}_bandf_{i}")
             band["to"] = c[1].text_input(
@@ -2211,7 +2255,7 @@ def _references_bands_form(s: dict, columns: list[str], key: str) -> None:
 def _widget_form(w: Widget, columns: list[str], key: str) -> None:
     s = w.spec
     if w.type == "kpi":
-        c = st.columns([2, 1.4, 1.2, 1.2], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW, L.FIELD_NARROW)
         s["column"] = _pick(c[0], "Column", columns, s.get("column", ""), f"{key}_c")
         s["agg"] = c[1].selectbox("Aggregate", AGG_FUNCS,
                                   index=option_index(AGG_FUNCS, s.get("agg", "sum")),
@@ -2235,7 +2279,8 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         # meant "all", which read the same on the page and quite differently
         # here.
         stored = s.get("columns") or list(columns)
-        s["columns"] = _pick_many(st, "Columns", columns, stored, f"{key}_cols",
+        s["columns"] = _pick_many(L.field_row(1, span=L.FIELD_WIDE)[0],
+                                  "Columns", columns, stored, f"{key}_cols",
                                   help_text="Every column the dataset produces, "
                                             "in the order they print. Remove "
                                             "the ones this table does not need.")
@@ -2249,8 +2294,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
             formats = dict(s.get("formats", {}))
             widths = dict(s.get("widths", {}))
             for i, col in enumerate(shown):
-                cc = st.columns([1.1, 1.7, 1.9, 1.2, 0.9, ICON_COL, ICON_COL],
-                                vertical_alignment="bottom")
+                cc = L.grid(3, 5, 5, 3, 3, L.ICON_SPAN, L.ICON_SPAN)
                 cc[0].markdown(f"`{col}`")
                 # Keyed by column name, never by row number: drop a column and
                 # every remaining row keeps its own header and format instead of
@@ -2301,7 +2345,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         # point of the caption underneath.
         stored_group = s.get("group_by", "")
         group_opts = [tables.NO_GROUP] + with_stored(columns, stored_group)
-        chosen = st.selectbox(
+        chosen = L.field_row(1)[0].selectbox(
             "Group rows by", group_opts,
             index=group_opts.index(stored_group)
             if stored_group in group_opts else 0,
@@ -2320,7 +2364,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         current = (s.get("highlight") or [{}])[0].get("column", "(none)")
         hl_opts = ["(none)"] + with_stored(columns, current if current != "(none)"
                                            else "")
-        hl = st.selectbox("Highlight when above zero", hl_opts,
+        hl = L.field_row(1)[0].selectbox("Highlight when above zero", hl_opts,
                           index=hl_opts.index(current) if current in hl_opts else 0,
                           key=f"{key}_hl", accept_new_options=True,
                           help=COLUMN_HELP)
@@ -2335,7 +2379,10 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                  "{{by_market.sum.n_orders}}")
 
     elif w.type in ("bar", "line", "scatter"):
-        c = st.columns([2, 2, 1.6, 1.4], vertical_alignment="bottom")
+        # The same spans as the widget header above it (Type, Dataset, Title),
+        # so the card's two rows share their column edges rather than starting
+        # each field somewhere new.
+        c = L.grid(5, 5, 6, 6, align="bottom")
         s["x"] = _pick(c[0], "X", columns, s.get("x", ""), f"{key}_x")
         current_y = s.get("y") if isinstance(s.get("y"), str) else ""
         s["y"] = _pick(c[1], "Y", columns, current_y, f"{key}_y")
@@ -2362,7 +2409,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         _references_bands_form(s, columns, key)
 
     elif w.type == "hist":
-        c = st.columns([2, 1.4], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD_NARROW)
         s["x"] = _pick(c[0], "Value", columns, s.get("x", ""), f"{key}_x")
         s["bins"] = int(c[1].number_input("Bins", 2, 200, int(s.get("bins", 20)),
                                           key=f"{key}_b"))
@@ -2373,7 +2420,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
         s["y"] = _pick(c[1], "Value", columns, s.get("y", ""), f"{key}_y")
 
     elif w.type == "heatmap":
-        c = st.columns([2, 2, 2, 1.4], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD, L.FIELD, L.FIELD_NARROW)
         s["rows"] = _pick(c[0], "Rows", columns, s.get("rows", ""), f"{key}_r")
         s["cols"] = _pick(c[1], "Columns", columns, s.get("cols", ""), f"{key}_c")
         s["value"] = _pick(c[2], "Value", columns, s.get("value", ""), f"{key}_v")
@@ -2383,7 +2430,7 @@ def _widget_form(w: Widget, columns: list[str], key: str) -> None:
                                   key=f"{key}_a")
 
     elif w.type == "pie":
-        c = st.columns([2, 2, 1.2], vertical_alignment="bottom")
+        c = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW)
         s["by"] = _pick(c[0], "Slice by", columns, s.get("by", ""), f"{key}_b")
         s["value"] = _pick(c[1], "Value", columns, s.get("value", ""), f"{key}_v")
         s["donut"] = c[2].checkbox("Donut", value=bool(s.get("donut")),
@@ -2458,7 +2505,7 @@ def _render_clipboard() -> None:
             if (clip := _clipboard(kind)) is not None]
     if not held:
         return
-    c = st.columns([6, 1.4], vertical_alignment="bottom")
+    c = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, pad=False)
     what = " and ".join(f"{kind} **{clip['label']}**" for kind, clip in held)
     c[0].caption(f":material/content_paste: Holding {what} — paste with the "
                  f"buttons below. It stays here until it is cleared, so it can "
@@ -2484,7 +2531,7 @@ def _render_unknown_columns(store, mgr, draft: Dashboard) -> None:
     if not unknown:
         return
 
-    c = st.columns([6, 1.8], vertical_alignment="bottom")
+    c = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, pad=False)
     c[0].caption(f":orange[No columns known yet for "
                  f"{', '.join(f'**{n}**' for n in unknown)} — a query's shape "
                  f"is only knowable by running it. The pickers below take a "
@@ -2547,8 +2594,12 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
         _paste_row_here(draft, r_i, f"r{r_i}_rpaste")
 
         with st.container(border=True):
-            head = st.columns([1.9, 1.1, 1.1, 1.1, 1.0, 0.6, 0.6, 0.6, 0.6],
-                              vertical_alignment="bottom")
+            # Nine columns, four of them unlabelled icon buttons. Now: the row's
+            # identity, its four printed measurements, the two arrows that move
+            # it, and a menu — the same shape the widget header below uses, so
+            # the two levels of this editor stop looking like two editors.
+            head = L.grid(5, 3, 3, 3, 4, L.ICON_SPAN, L.ICON_SPAN, L.ICON_SPAN,
+                          align="bottom", pad=False)
             page_badge = (f" :blue-badge[page {placed.page}]" if placed else "")
             head[0].markdown(f"**Row {r_i + 1}**{page_badge} · "
                              f"{len(row.widgets)} widget(s)")
@@ -2585,31 +2636,36 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
                 _move_row(draft, r_i, int(target) - 1)
             if head[5].button("", icon=":material/arrow_upward:",
                               key=f"r{r_i}_u", disabled=r_i == 0,
+                              
                               help="Move this row one place earlier."):
                 _move_row(draft, r_i, r_i - 1)
             if head[6].button("", icon=":material/arrow_downward:",
                               key=f"r{r_i}_d", disabled=r_i == len(draft.rows) - 1,
+                              
                               help="Move this row one place later."):
                 _move_row(draft, r_i, r_i + 1)
-            if head[7].button("", icon=":material/content_copy:",
-                              key=f"r{r_i}_c",
-                              help="Copy this row, widgets and all. 'Paste row "
-                                   "here' then appears between every row, so "
-                                   "the copy lands where you want it rather "
-                                   "than only below the original."):
-                _copy("row", row_to_dict(row),
-                      f"row {r_i + 1} ({len(row.widgets)} widget(s))")
-                st.rerun()
-            if head[8].button("", icon=":material/delete:", key=f"r{r_i}_x"):
-                draft.rows.pop(r_i)
-                _forget(_ROW_KEYS)
-                st.rerun()
+            with head[7]:
+                with L.overflow(help=f"More actions for row {r_i + 1}"):
+                    if st.button("Duplicate", icon=":material/content_copy:",
+                                 key=f"r{r_i}_c", 
+                                 help="Copy this row, widgets and all. 'Paste "
+                                      "row here' then appears between every "
+                                      "row, so the copy lands where you want it "
+                                      "rather than only below the original."):
+                        _copy("row", row_to_dict(row),
+                              f"row {r_i + 1} ({len(row.widgets)} widget(s))")
+                        st.rerun()
+                    if st.button("Delete row", icon=":material/delete:",
+                                 key=f"r{r_i}_x"):
+                        draft.rows.pop(r_i)
+                        _forget(_ROW_KEYS)
+                        st.rerun()
 
             for w_i, w in enumerate(list(row.widgets)):
                 key = f"r{r_i}w{w_i}"
                 with st.container(border=True):
-                    c = st.columns([1.5, 1.7, 2.0, 0.9, 0.6, 0.6, 0.6, 0.6],
-                                   vertical_alignment="bottom")
+                    c = L.grid(5, 5, 6, 2, L.ICON_SPAN, L.ICON_SPAN, L.ICON_SPAN,
+                               align="bottom", pad=False)
                     w.type = c[0].selectbox("Type", WIDGET_TYPES,
                                             index=option_index(WIDGET_TYPES, w.type),
                                             key=f"{key}_t")
@@ -2627,33 +2683,46 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
                     # last of four to the front was three clicks, none of them
                     # on the thing being moved.
                     if c[4].button("", icon=":material/arrow_back:", key=f"{key}_l",
-                                   disabled=w_i == 0, help="Move left."):
+                                   disabled=w_i == 0, 
+                                   help="Move left."):
                         row.widgets[w_i - 1], row.widgets[w_i] = \
                             row.widgets[w_i], row.widgets[w_i - 1]
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
                     if c[5].button("", icon=":material/arrow_forward:",
-                                   key=f"{key}_r",
+                                   key=f"{key}_r", 
                                    disabled=w_i == len(row.widgets) - 1,
                                    help="Move right."):
                         row.widgets[w_i + 1], row.widgets[w_i] = \
                             row.widgets[w_i], row.widgets[w_i + 1]
                         _forget(rf"r{r_i}w\d+")
                         st.rerun()
-                    if c[6].button("", icon=":material/content_copy:",
-                                   key=f"{key}_dup",
-                                   help="Copy this widget. 'Paste' then "
-                                        "appears on every row that has room — "
-                                        "including this one — so two tables "
-                                        "laid out the same way over different "
-                                        "datasets are one change apart, "
-                                        "wherever on the page they belong."):
-                        _copy("widget", widget_to_dict(w), w.title or w.type)
-                        st.rerun()
-                    if c[7].button("", icon=":material/close:", key=f"{key}_del"):
-                        row.widgets.pop(w_i)
-                        _forget(rf"r{r_i}w\d+")
-                        st.rerun()
+                    with c[6]:
+                        with L.overflow(help="More actions for this widget"):
+                            if st.button("Duplicate",
+                                         icon=":material/content_copy:",
+                                         key=f"{key}_dup",
+                                         
+                                         help="Copy this widget. 'Paste' then "
+                                              "appears on every row that has "
+                                              "room — including this one — so "
+                                              "two tables laid out the same way "
+                                              "over different datasets are one "
+                                              "change apart, wherever on the "
+                                              "page they belong."):
+                                _copy("widget", widget_to_dict(w),
+                                      w.title or w.type)
+                                st.rerun()
+                            # Delete says delete at both levels now. A row was
+                            # removed with a bin and a widget with a cross, so
+                            # the same action wore two glyphs one nesting level
+                            # apart.
+                            if st.button("Delete widget",
+                                         icon=":material/delete:",
+                                         key=f"{key}_del"):
+                                row.widgets.pop(w_i)
+                                _forget(rf"r{r_i}w\d+")
+                                st.rerun()
 
                     ds = by_name.get(w.dataset)
                     # Namespaced: the card's own controls live under "{key}_*",
@@ -2666,11 +2735,12 @@ def _render_layout(store, mgr, draft: Dashboard) -> None:
                     # under the settings rather than taking a place in the row
                     # of controls, which had grown to eight and was squeezing
                     # the title field it sat beside.
-                    lib = st.columns([1.8, 6.2], vertical_alignment="bottom")
+                    lib = L.grid(L.FIELD, L.GRID - L.FIELD, pad=False)
                     _save_to_library(lib[0], store, "widget", widget_to_dict(w),
                                      key, suggested=w.title)
 
-            add = st.columns([1.4, 1.6, 1.9, 3.1], vertical_alignment="bottom")
+            add = L.grid(L.BUTTON_LONG, L.BUTTON_LONG, L.FIELD,
+                         L.GRID - 2 * L.BUTTON_LONG - L.FIELD, pad=False)
             full = len(row.widgets) >= 4
             if add[0].button("Add widget", icon=":material/add:",
                              key=f"r{r_i}_add", disabled=full):
@@ -2808,64 +2878,42 @@ def _group_picker(container, store, draft: Dashboard) -> None:
 def render(store, mgr) -> None:
     draft = _draft(store)
 
-    with form_area():
-        head = st.columns([2.6, 2.6, 1.8, 1.4, 1.2, 1.2],
-                          vertical_alignment="bottom")
-        draft.name = head[0].text_input("Dashboard name", value=draft.name)
-        draft.description = head[1].text_input("Description",
-                                               value=draft.description)
-        sources = ["kdb", "file"]
-        draft.source = head[2].selectbox(
-            "Data from", sources,
-            index=sources.index(draft.source if draft.source in sources
-                                else "kdb"),
-            format_func=lambda s: "KDB queries" if s == "kdb"
-            else "An uploaded file",
-            help="A file dashboard is a template: whoever opens it uploads "
-                 "their own file of the shape you profile here, and sees their "
-                 "own numbers. It has no environment, no period and no refresh "
-                 "interval — those describe a server, and there is none.")
-
-        # A line of its own. It was a seventh control in the head row above for
-        # about an hour, where the box was too narrow to read its own contents —
-        # "US Equities" rendered as "U…", and it took "KDB queries" down to "K…"
-        # beside it. Not the period row below either: that row is written twice,
-        # once per source, and this control is the same on both.
-        _group_picker(st.columns([2.4, 6.2], vertical_alignment="bottom")[0],
-                      store, draft)
-
-        # One row either way, and the printed-page control keeps its place in
-        # both. It used to sit last on a query dashboard and first on a file
-        # one, so changing the source made it jump the width of the screen —
-        # and it was written out twice, which is how the two copies of its
-        # help text had already come to say different things.
-        if draft.source != "file":
-            p = st.columns([2.4, 4.2, 2.4], vertical_alignment="bottom")
-            modes = list(PERIOD_MODES)
-            draft.periods = p[0].selectbox(
-                "Periods offered", modes,
-                index=modes.index(draft.periods if draft.periods in modes else "both"),
-                format_func=lambda m: PERIOD_LABELS[m],
-                help="Switching period switches server, so 'both' needs every "
-                     "environment this reads to have a real-time server and its "
-                     "historical twin. A dashboard built over one side alone says "
-                     "so here, and is never offered the period it cannot answer.")
-            p[1].caption(_periods_hint(draft, store))
-            _orientation_picker(p[2], draft)
-        else:
-            p = st.columns([6.6, 2.4], vertical_alignment="bottom")
-            p[0].caption(
-                "This dashboard reads an uploaded file, so it has no "
-                "environment, no period and no refresh interval — its numbers "
-                "change when somebody uploads a different file, and at no "
-                "other moment.")
-            _orientation_picker(p[1], draft)
-
     # Validate on every rerun, not just on Save, so a half-filled field is
     # visible while you build rather than only when you try to leave.
     problems = validate(draft, store)
 
-    if head[3].button(f"Save ({len(problems)})" if problems else "Save",
+    # The editor had no page title, no breadcrumb and no context of any kind —
+    # it opened straight into a row of form fields, so the one screen in the app
+    # where you can lose work was also the one that did not say where you were.
+    # It gets the same header every other page has: the trail back, the title,
+    # and the page's one commitment top-right.
+    if st.button("All dashboards", icon=":material/arrow_back:",
+                 key="dash_edit_back", type="tertiary",
+                 help="Leave the editor and return to the dashboard list"):
+        _close()
+        back_to_gallery()
+
+    head = L.page_header(
+        draft.name or "New dashboard", icon=":material/edit_document:",
+        actions=2,
+        subtitle="Datasets and their transforms, then the rows and widgets they "
+                 "print into.")
+
+    with head[0]:
+        with L.overflow(help="More actions for this dashboard"):
+            if st.button("Open", icon=":material/open_in_new:",
+                         disabled=draft.id is None):
+                dashboard_id = draft.id
+                _close()
+                st.query_params["dash"] = str(dashboard_id)
+                st.rerun()
+            if st.button("Discard changes", icon=":material/undo:",
+                         key="dash_edit_discard", 
+                         help="Leave without saving"):
+                _close()
+                back_to_gallery()
+
+    if head[1].button(f"Save ({len(problems)})" if problems else "Save",
                       icon=":material/save:", type="primary",
                       use_container_width=True, disabled=bool(problems),
                       help="Fix the listed problems first" if problems else None):
@@ -2877,39 +2925,75 @@ def render(store, mgr) -> None:
         _close()
         st.rerun()
 
-    if head[4].button("Open", icon=":material/open_in_new:",
-                      use_container_width=True, disabled=draft.id is None):
-        dashboard_id = draft.id
-        _close()
-        st.query_params["dash"] = str(dashboard_id)
-        st.rerun()
+    L.section("Dashboard")
+    with L.card():
+        # Three rows on one grid rather than three grids: [2.6, 2.6, 1.8, ...],
+        # then [2.4, 6.2], then [2.4, 4.2, 2.4] shared only their left margin,
+        # so a field in row three lined up with nothing above it.
+        head_row = L.field_row(4)
+        draft.name = head_row[0].text_input("Dashboard name", value=draft.name)
+        draft.description = head_row[1].text_input("Description",
+                                                   value=draft.description)
+        sources = ["kdb", "file"]
+        draft.source = head_row[2].selectbox(
+            "Data from", sources,
+            index=sources.index(draft.source if draft.source in sources
+                                else "kdb"),
+            format_func=lambda s: "KDB queries" if s == "kdb"
+            else "An uploaded file",
+            help="A file dashboard is a template: whoever opens it uploads "
+                 "their own file of the shape you profile here, and sees their "
+                 "own numbers. It has no environment, no period and no refresh "
+                 "interval — those describe a server, and there is none.")
+        _group_picker(head_row[3], store, draft)
 
-    if head[5].button("Back", icon=":material/arrow_back:",
-                      use_container_width=True,
-                      help="Leave the editor and return to the dashboard list"):
-        _close()
-        back_to_gallery()
+        # One row either way, and the printed-page control keeps its place in
+        # both. It used to sit last on a query dashboard and first on a file
+        # one, so changing the source made it jump the width of the screen —
+        # and it was written out twice, which is how the two copies of its
+        # help text had already come to say different things.
+        p = L.field_row(2) if draft.source != "file" else L.field_row(1)
+        if draft.source != "file":
+            modes = list(PERIOD_MODES)
+            draft.periods = p[0].selectbox(
+                "Periods offered", modes,
+                index=modes.index(draft.periods if draft.periods in modes else "both"),
+                format_func=lambda m: PERIOD_LABELS[m],
+                help="Switching period switches server, so 'both' needs every "
+                     "environment this reads to have a real-time server and its "
+                     "historical twin. A dashboard built over one side alone says "
+                     "so here, and is never offered the period it cannot answer.")
+            _orientation_picker(p[1], draft)
+            st.caption(_periods_hint(draft, store))
+        else:
+            _orientation_picker(p[0], draft)
+            st.caption(
+                "This dashboard reads an uploaded file, so it has no "
+                "environment, no period and no refresh interval — its numbers "
+                "change when somebody uploads a different file, and at no "
+                "other moment.")
 
-    with form_area():
-        _render_problems(problems)
+    _render_problems(problems)
 
+    # The editor's own navigation, drawn as navigation. It was a segmented
+    # control with the field label "Section" above it, so the thing that
+    # switches between four whole screens looked like a minor form input.
+    st.markdown("##### Section")
     section = st.segmented_control("Section",
                                    ["Data", "Layout", "Preview", "Library"],
-                                   default="Data", key="dash_edit_section")
+                                   default="Data", key="dash_edit_section",
+                                   label_visibility="collapsed")
     st.divider()
     if section == "Preview":
         # The preview IS the dashboard — it must match the real thing's width.
         _render_preview(store, mgr, draft)
     elif section == "Library":
-        with form_area():
-            _render_library(store)
+        _render_library(store)
     elif section == "Layout":
-        with form_area():
-            _render_layout(store, mgr, draft)
+        _render_layout(store, mgr, draft)
     else:
         # Run first, draw second: the forms above the results are built from
         # what the run just learned about each query.
         traces = run_preview(store, mgr, draft)
-        with form_area():
-            _render_data(store, mgr, draft)
+        _render_data(store, mgr, draft)
         _render_dataset_results(traces)

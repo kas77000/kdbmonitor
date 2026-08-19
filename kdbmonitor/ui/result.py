@@ -6,6 +6,7 @@ import re
 import pandas as pd
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
 from kdbmonitor.core.exporting import (
     column_as_text, df_to_excel_bytes, df_to_csv, df_to_tsv,
 )
@@ -35,11 +36,12 @@ def snapshot_from_store(store, aid: int):
 
 
 def render(store) -> None:
-    st.subheader(":material/table_view: Alert result")
-
+    # A detail view opens with the trail back to the list it came from. It used
+    # to be a lone button *below* the page title, which read as an action the
+    # page offers rather than as where the page sits.
     nav = st.session_state.get("_nav_pages", {})
     if nav.get("monitor") is not None:
-        st.page_link(nav["monitor"], label="Back to monitor", icon=":material/arrow_back:")
+        st.page_link(nav["monitor"], label="Alerts", icon=":material/arrow_back:")
 
     aid = st.session_state.get("result_alert_id")
     last_results = st.session_state.get("last_results", {})
@@ -47,6 +49,7 @@ def render(store) -> None:
     if (stored is None or stored.get("df") is None) and aid is not None:
         stored = snapshot_from_store(store, aid)    # fall back to the DB snapshot
     if stored is None or stored.get("df") is None:
+        L.page_header("Alert result", icon=":material/table_view:")
         st.info("No result yet. Open one from the Monitor with the View button that "
                 "appears once an alert captures a triggered result.",
                 icon=":material/monitoring:")
@@ -58,28 +61,31 @@ def render(store) -> None:
     when = stored["when"]
     when_txt = (when.strftime("%H:%M:%S") if hasattr(when, "strftime") else str(when))
 
-    st.markdown(f"**{name}**")
     cap = (f"`{len(df)}` rows · `{len(df.columns)}` cols · captured {when_txt} UTC "
            f"· {stored.get('mode', 'latest')} retention")
     if stored.get("truncated"):
         cap += f" · showing {len(df)} of {stored.get('row_count', len(df))} (capped)"
-    st.caption(cap)
+    # The alert's name is the page's subject, so it is the page title — rather
+    # than a bold line under a generic "Alert result" heading of its own.
+    L.page_header(name, icon=":material/table_view:", subtitle=cap)
 
-    st.dataframe(df, use_container_width=True, height=480)
-
-    # Narrow columns rather than a horizontal container, which needs Streamlit
-    # 1.46. Each control still prints at the width of its own label; the last
-    # column is the empty remainder that keeps them packed to the left.
-    act = st.columns([1, 1, 1.1, 1.1, 5], vertical_alignment="bottom")
+    # Export sits above the data it exports, right-aligned, which is where a
+    # table toolbar goes in every product this is modelled on. Below the table
+    # it was a left-packed strip whose widths were chosen one column at a time.
+    act = L.grid(L.GRID - 4 * L.BUTTON_TIGHT, L.BUTTON_TIGHT,
+             L.BUTTON_TIGHT, L.BUTTON_TIGHT, L.BUTTON_TIGHT,
+             align="bottom", pad=False)[1:]
     act[0].download_button("Excel", data=df_to_excel_bytes(df),
                            file_name=f"{_slug(name)}.xlsx", mime=_XLSX_MIME,
                            icon=":material/download:")
     act[1].download_button("CSV", data=df_to_csv(df), file_name=f"{_slug(name)}.csv",
                            mime="text/csv", icon=":material/download:")
+    clear = act[3].button("Clear", icon=":material/delete:",
+                          help="Forget this result")
     with act[2].popover("Copy", icon=":material/content_copy:"):
         by_col, by_table = st.tabs(["Column", "Whole table"])
         with by_col:
-            c = st.columns([2, 2], vertical_alignment="bottom")
+            c = L.field_row(2)
             col = c[0].selectbox("Column", list(df.columns), key="res_col")
             fmt = c[1].selectbox("Format", list(_FMT_LABELS),
                                  format_func=lambda f: _FMT_LABELS[f], key="res_fmt")
@@ -88,6 +94,9 @@ def render(store) -> None:
                     language=None)
         with by_table:
             st.code(df_to_tsv(df), language=None)
-    if act[3].button("Clear", icon=":material/delete:", help="Forget this result"):
+
+    st.dataframe(df, use_container_width=True, height=480)
+
+    if clear:
         last_results.pop(aid, None)
         st.rerun()

@@ -19,9 +19,8 @@ from kdbmonitor.core.portability import (
 from kdbmonitor.core.schedule import (
     DAY_NAMES, parse_hhmm, validate as validate_schedule,
 )
-from kdbmonitor.ui import qeditor
+from kdbmonitor.ui import layout as L, qeditor
 from kdbmonitor.ui.common import (
-    form_area,
     STATUS_META, INTERVAL_PRESETS, channels_summary, condition_summary,
     humanize_secs, make_client_for, group_label, group_alerts, pluralize,
     schedule_summary,
@@ -265,20 +264,27 @@ def _load_clone(store, alert: Alert) -> None:
 # step / trigger / channel widgets  (return live model objects)
 # --------------------------------------------------------------------------- #
 def _step_block(store, i: int, servers: list[str]) -> Step:
-    with st.container(border=True):
-        head = st.columns([6, 1], vertical_alignment="center")
-        head[0].markdown(f"**Step {i + 1}**")
+    with L.card():
+        head = L.grid(L.GRID - L.BUTTON, L.BUTTON, align="center", pad=False)
+        head[0].markdown(f"##### Step {i + 1}")
         if st.session_state["b_nsteps"] > 1:
-            if head[1].button("Remove", key=f"b_rmstep_{i}", icon=":material/close:"):
+            if head[1].button("Remove", key=f"b_rmstep_{i}",
+                              icon=":material/close:"):
                 _remove_step(i)
                 st.rerun()
 
-        top = st.columns([2, 2.6, 1.8, 1.8], vertical_alignment="bottom")
+        # Four fields of a quarter each: the row now shares its column edges
+        # with the filter rows below it, which is what a form built out of
+        # [2, 2.6, 1.8, 1.8] and then [0.8, 3, 2, 3, 2, 1] could never do.
+        top = L.field_row(4)
         server = _safe_select(top[0], "Server", servers, key=f"b_srv_{i}")
         schema = _schema_for(store, server)
         tables = list(schema.keys())
-        mode = top[3].segmented_control("Mode", ["Guided", "Raw"], key=f"b_mode_{i}")
-        mode = mode or "Guided"
+        # See layout.MODE_CONTROL: a binary form choice is a radio here and in
+        # the dashboard editor, which used to spell the identical guided/raw
+        # decision with a different widget one page away.
+        mode = top[3].radio("Mode", ["Guided", "Raw"], horizontal=True,
+                            key=f"b_mode_{i}") or "Guided"
         cache_secs = _cache_control(top[2], i)
 
         filters: list[Filter] = []
@@ -293,9 +299,9 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
             cols = schema.get(table, [])
             nf = int(st.session_state.get(f"b_nf_{i}", 0))
             for j in range(nf):
-                fc = st.columns([0.8, 3, 2, 3, 2, 1], vertical_alignment="bottom")
-                negated = fc[0].checkbox("Not", key=f"b_fnot_{i}_{j}",
-                                         help="Prefix this condition with q 'not'.")
+                fc = L.grid(2, 6, 4, 6, 4, L.ICON_SPAN)
+                negated = L.check(fc[0], "Not", key=f"b_fnot_{i}_{j}",
+                                  help="Prefix this condition with q 'not'.")
                 col = _safe_select(fc[1], "Column", cols or ["<col>"], key=f"b_fcol_{i}_{j}")
                 op = fc[2].selectbox("Op", _OPS, key=f"b_fop_{i}_{j}")
                 raw_val = fc[3].text_input(
@@ -319,7 +325,8 @@ def _step_block(store, i: int, servers: list[str]) -> Step:
                              else _safe_float(raw_val))
                 filters.append(Filter(column=col, op=op, value=value,
                                       value_type=vtype, negated=negated))
-            if st.button("Add filter", key=f"b_addf_{i}", icon=":material/add:"):
+            if L.grid(L.ACTION_SPAN)[0].button(
+                    "Add filter", key=f"b_addf_{i}", icon=":material/add:"):
                 st.session_state[f"b_nf_{i}"] = nf + 1
                 st.rerun()
         else:
@@ -374,7 +381,7 @@ def _raw_ref_helper(i: int) -> None:
     if i == 0:
         return
     refs = [f"{{{{step{k + 1}.col}}}}" for k in range(i)]
-    rc = st.columns([4, 1], vertical_alignment="bottom")
+    rc = L.grid(L.FIELD_WIDE, L.BUTTON)
     token = rc[0].selectbox("Insert reference", refs, key=f"b_refsel_{i}")
     if rc[1].button("Insert", key=f"b_refins_{i}", icon=":material/add:"):
         st.session_state[f"b_raw_{i}"] = (st.session_state.get(f"b_raw_{i}", "") + " " + token).strip()
@@ -382,30 +389,34 @@ def _raw_ref_helper(i: int) -> None:
 
 
 def _trigger_block() -> TriggerCondition:
-    with st.container(border=True):
-        st.markdown("**:material/bolt: Trigger** — fire the alert when the final "
-                    "result matches")
-        ctype = st.selectbox("Condition", list(_COND_LABELS.keys()),
-                             format_func=lambda k: _COND_LABELS[k], key="b_ctype")
+    L.section("Trigger", level=4,
+              description="Fire the alert when the final result matches.")
+    with L.card():
+        ctype = L.field_row(1, span=L.FIELD_WIDE)[0].selectbox(
+            "Condition", list(_COND_LABELS.keys()),
+            format_func=lambda k: _COND_LABELS[k], key="b_ctype")
         column = op = value = agg = None
         n = None
         vtype = "number"
         if ctype == "row_count_gte":
-            n = int(st.number_input("N (minimum rows)", 1, 1_000_000, key="b_cn"))
+            n = int(L.field_row(1)[0].number_input(
+                "N (minimum rows)", 1, 1_000_000, key="b_cn"))
         elif ctype in ("any_row", "all_rows", "aggregate"):
-            wc = st.columns([3, 2, 3] if ctype != "aggregate" else [2, 2, 2, 3],
-                            vertical_alignment="bottom")
             if ctype == "aggregate":
+                wc = L.grid(L.FIELD_NARROW, L.FIELD, L.FIELD_NARROW, L.FIELD)
                 agg = wc[0].selectbox("Aggregate", _AGGS, key="b_cagg")
                 column = wc[1].text_input("Column", key="b_ccol")
                 op = wc[2].selectbox("Op", _CMP_OPS, key="b_cop")
                 value = _safe_float(wc[3].text_input("Value", key="b_cval"))
                 vtype = "number"
             else:
+                # Value type used to sit on a line of its own below the row it
+                # belongs to, full width, while its three siblings shared one.
+                wc = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD, L.FIELD_NARROW)
                 column = wc[0].text_input("Column", key="b_ccol")
                 op = wc[1].selectbox("Op", _CMP_OPS, key="b_cop")
                 value = wc[2].text_input("Value", key="b_cval")
-                vtype = st.selectbox("Value type", _VALUE_TYPES, key="b_cvtype")
+                vtype = wc[3].selectbox("Value type", _VALUE_TYPES, key="b_cvtype")
                 if vtype == "number":
                     value = _safe_float(value)
         trig = TriggerCondition(type=ctype, column=column, op=op, value=value,
@@ -415,11 +426,11 @@ def _trigger_block() -> TriggerCondition:
 
 
 def _notify_block() -> tuple[Channels, RearmPolicy]:
-    with st.container(border=True):
-        st.markdown("**:material/notifications: Notify & re-arm** — chosen per alert")
-        st.caption("Pick as many as you want; they all happen. Email and webhook "
-                   "fields appear once you choose them.")
-        chosen = st.multiselect(
+    L.section("Notify & re-arm", level=4,
+              description="Pick as many as you want; they all happen. Email and "
+                          "webhook fields appear once you choose them.")
+    with L.card():
+        chosen = L.field_row(1, span=L.FIELD_WIDE)[0].multiselect(
             "How this alert reaches you", _DELIVERY_OPTIONS,
             format_func=lambda k: DELIVERY_LABELS[k], key="b_delivery",
             help="In-app message: a toast on whatever page you're on. "
@@ -439,12 +450,14 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
         email_raw = st.session_state.get("b_email", "")
         hooks_raw = st.session_state.get("b_hooks", "")
         if "email" in picked:
-            email_raw = st.text_input("Email recipients", key="b_email",
-                                      help="Comma-separated. Needs SMTP set in Admin.")
+            email_raw = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
+                "Email recipients", key="b_email",
+                help="Comma-separated. Needs SMTP set in Admin.")
         if "webhook" in picked:
-            hooks_raw = st.text_input("Teams / Slack webhook URLs", key="b_hooks",
-                                      help="Comma-separated incoming webhook URLs.")
-        rc = st.columns([2, 2], vertical_alignment="bottom")
+            hooks_raw = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
+                "Teams / Slack webhook URLs", key="b_hooks",
+                help="Comma-separated incoming webhook URLs.")
+        rc = L.field_row(2)
         mode = rc[0].selectbox("Re-arm",
                                ["transition", "cooldown", "every_tick", "on_change"],
                                key="b_rmode",
@@ -483,9 +496,10 @@ def _schedule_block() -> Schedule:
     false positives for the other 23 hours, so the answer is to stop running it
     rather than to filter what it says.
     """
-    with st.container(border=True):
-        st.markdown("**:material/schedule: Active hours** — when this alert runs")
-        scoped = st.toggle(
+    L.section("Active hours", level=4,
+              description="When this alert is allowed to run at all.")
+    with L.card():
+        scoped = L.field_row(1)[0].toggle(
             "Only run during set hours", key="b_sched_on",
             help="Off: the alert runs whenever monitoring is on. On: it is "
                  "parked outside its windows — no query, no trigger, no "
@@ -505,11 +519,12 @@ def _schedule_block() -> Schedule:
         # its own: an unseeded selectbox silently starts on the first option,
         # which is alphabetical and has nothing to do with anybody.
         st.session_state.setdefault("b_sched_tz", zones.local_iana())
+        when = L.field_row(2)
         zone = _safe_select(
-            st, "Timezone", zones_offered, key="b_sched_tz",
+            when[0], "Timezone", zones_offered, key="b_sched_tz",
             help="Type to search. Daylight saving is computed on the day the "
                  "window is read, not assumed.")
-        days = st.multiselect(
+        days = when[1].multiselect(
             "Days", list(range(7)), format_func=lambda d: DAY_NAMES[d],
             key="b_sched_days",
             help="Leave empty for every day. A window that crosses midnight "
@@ -518,7 +533,7 @@ def _schedule_block() -> Schedule:
         nw = int(st.session_state.get("b_sched_n", 1))
         windows: list[Window] = []
         for i in range(nw):
-            wc = st.columns([2, 2, 1.6, 1], vertical_alignment="bottom")
+            wc = L.grid(L.FIELD_NARROW, L.FIELD_NARROW, L.BUTTON + 1, L.ICON_SPAN)
             # Pickers rather than text boxes: a window is a time of day, and
             # typing one is how "16.30" and "4:30pm" got as far as validation.
             # Seeded empty, because a picker left on the current time is a
@@ -532,6 +547,7 @@ def _schedule_block() -> Schedule:
             # A single moment ("alert me at 16:30") is a window one minute
             # wide; this writes it so nobody has to work that out.
             if wc[2].button("At a moment", key=f"b_sched_mom_{i}",
+                            
                             help="Turn 'From' into a one-minute window at that time"):
                 _moment_window(i)
                 st.rerun()
@@ -541,8 +557,8 @@ def _schedule_block() -> Schedule:
                 _remove_window(i)
                 st.rerun()
             windows.append(Window(start=_hhmm(start), end=_hhmm(end)))
-        if nw < 6 and st.button("Add window", key="b_sched_add",
-                                icon=":material/add:"):
+        if nw < 6 and L.grid(L.ACTION_SPAN)[0].button(
+                "Add window", key="b_sched_add", icon=":material/add:"):
             st.session_state["b_sched_n"] = nw + 1
             st.rerun()
 
@@ -652,43 +668,53 @@ def _manage_alerts(store) -> None:
             if len(grouped) > 1 or gname != "Ungrouped":
                 st.markdown(f":gray[:material/folder: **{gname}** · {len(galerts)}]")
             for a in galerts:
-                with st.container(border=True):
-                    c = st.columns([1.1, 3.0, 0.85, 1.05, 1.0, 1.05, 1.1],
-                                   vertical_alignment="center")
+                # Seven columns, five of them controls, overlapped each other at
+                # 1024px — measured six colliding pairs. The switch that enables
+                # the alert is the lead (it is the status, so the badge beside
+                # the name only has to name it), Edit is the one action worth a
+                # button, and Move/Clone/Delete go behind the menu at the end.
+                with L.list_row(spans=L.ROW_SPANS_SELECT) as c:
                     lbl, color, icon = (STATUS_META["armed"] if a.enabled
                                         else STATUS_META["disabled"])
-                    c[0].badge("Enabled" if a.enabled else "Disabled",
-                               icon=icon, color=color)
-                    hours = ("" if a.schedule.mode != "windows"
-                             else f" · :material/schedule: {schedule_summary(a.schedule)}")
-                    c[1].markdown(
-                        f"**{a.name}**  \n:gray[:material/folder: {group_label(a)} · "
-                        f"{pluralize(len(a.steps), 'step')} · every "
-                        f"{humanize_secs(a.poll_interval_secs)} · triggers when "
-                        f"{condition_summary(a.trigger)}{hours}  \n"
-                        f":material/notifications: {channels_summary(a.channels)}]")
-                    new_en = c[2].toggle("On", value=a.enabled, key=f"mg_en_{a.id}")
+                    new_en = c[0].toggle("On", value=a.enabled, key=f"mg_en_{a.id}",
+                                         label_visibility="collapsed",
+                                         help="Enable or disable this alert")
                     if new_en != a.enabled:
                         store.set_alert_enabled(a.id, new_en)
                         st.rerun()
-                    with c[3].popover("Move", icon=":material/drive_file_move:",
-                                      help="Move this alert to another group"):
-                        _move_to_group(store, a)
-                    if c[4].button("Edit", key=f"mg_edit_{a.id}", icon=":material/edit:"):
+                    hours = ("" if a.schedule.mode != "windows"
+                             else f" · :material/schedule: {schedule_summary(a.schedule)}")
+                    badge = (":green-badge[Enabled]" if a.enabled
+                             else ":gray-badge[Disabled]")
+                    c[1].markdown(
+                        f"**{a.name}** {badge}  \n:gray[:material/folder: "
+                        f"{group_label(a)} · {pluralize(len(a.steps), 'step')} · "
+                        f"every {humanize_secs(a.poll_interval_secs)} · triggers "
+                        f"when {condition_summary(a.trigger)}{hours}]")
+                    c[2].markdown(f":gray[:material/notifications: "
+                                  f"{channels_summary(a.channels)}]")
+                    if c[3].button("Edit", key=f"mg_edit_{a.id}",
+                                   icon=":material/edit:"):
                         _load_edit(a)
                         st.rerun()
-                    if c[5].button("Clone", key=f"mg_clone_{a.id}",
-                                   icon=":material/content_copy:",
-                                   help="Copy this alert into the builder as a new "
-                                        "draft — tweak the query, then Save."):
-                        _load_clone(store, a)
-                        st.rerun()
-                    with c[6].popover("Delete", icon=":material/delete:"):
-                        st.warning(f"Delete '{a.name}'?")
-                        if st.button("Confirm delete", key=f"mg_del_{a.id}",
-                                     type="primary"):
-                            store.delete_alert(a.id)
-                            st.rerun()
+                    with c[4]:
+                        with L.overflow(help=f"More actions for '{a.name}'"):
+                            if st.button("Clone", key=f"mg_clone_{a.id}",
+                                         icon=":material/content_copy:",
+                                         
+                                         help="Copy this alert into the builder as "
+                                              "a new draft — tweak the query, then "
+                                              "Save."):
+                                _load_clone(store, a)
+                                st.rerun()
+                            st.divider()
+                            _move_to_group(store, a)
+                            st.divider()
+                            st.warning(f"Delete '{a.name}'?")
+                            if st.button("Confirm delete", key=f"mg_del_{a.id}",
+                                         type="primary", icon=":material/delete:"):
+                                store.delete_alert(a.id)
+                                st.rerun()
 
 
 def _move_to_group(store, alert) -> None:
@@ -732,7 +758,7 @@ def _manage_groups(store) -> None:
                    "group merges them.")
         for g in groups:
             with st.container(border=True):
-                gc = st.columns([3, 1.2, 1.1, 1.3], vertical_alignment="bottom")
+                gc = L.grid(L.FIELD, L.FIELD_NARROW, L.BUTTON, L.BUTTON + 1)
                 new_name = gc[0].text_input("Group name", value=g, key=f"grp_ren_{g}")
                 gc[1].markdown(f":gray[{pluralize(counts[g], 'alert')}]")
                 if gc[2].button("Rename", key=f"grp_renbtn_{g}",
@@ -758,10 +784,15 @@ def _import_export(store) -> None:
     connections on their own belongs where they are registered."""
     alerts = store.list_alerts()
     conns = store.list_connections()
-    with st.expander("Import / export alerts", icon=":material/import_export:"):
-        exp, imp = st.columns(2)
+    # A page-level action, so it lives in the page-level action zone. It used to
+    # be the third of three stacked expanders of wildly different importance —
+    # "Your alerts", "Manage groups", "Import / export alerts" — all drawn at the
+    # same weight above the form that is the reason to visit this page.
+    with st.popover("Share", icon=":material/import_export:",
+                    use_container_width=True):
+        exp, imp = L.grid(L.FIELD_WIDE, L.FIELD_WIDE, align="top", pad=False)
         with exp:
-            st.markdown("**Export**")
+            L.section("Export", level=5)
             st.caption("Alerts travel with the connections they query, so they "
                        "import cleanly on a machine that has neither.")
             if not alerts:
@@ -778,7 +809,7 @@ def _import_export(store) -> None:
                     file_name="kdbmonitor-export.json", mime="application/json",
                     disabled=not selected)
         with imp:
-            st.markdown("**Import**")
+            L.section("Import", level=5)
             nonce = st.session_state.get("io_import_nonce", 0)
             up = st.file_uploader("Upload an export file", type=["json"],
                                   key=f"io_import_file_{nonce}")
@@ -854,7 +885,7 @@ def _run_preview(store, mgr, steps: list[Step], trigger: TriggerCondition) -> No
 
 def _render_preview() -> None:
     p = st.session_state["b_preview"]
-    v = st.columns([5, 1], vertical_alignment="center")
+    v = L.grid(L.GRID - L.ICON_SPAN, L.ICON_SPAN, align="center", pad=False)
     v[0].caption(f":material/schedule: snapshot at {p['when']}")
     if v[1].button("Clear", key="b_preview_clear"):
         del st.session_state["b_preview"]
@@ -884,7 +915,8 @@ def _render_preview() -> None:
 
 def _preview_panel(store, mgr, steps: list[Step], trigger: TriggerCondition) -> None:
     with st.container(border=True):
-        head = st.columns([5, 1.4], vertical_alignment="center")
+        head = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, align="center",
+                      pad=False)
         head[0].markdown("**Check result** — run these queries now against the live "
                          "data (nothing is saved, no notification sent)")
         if head[1].button("Run now", icon=":material/play_arrow:", key="b_preview_run"):
@@ -897,10 +929,14 @@ def render(store, mgr) -> None:
     # First, before a single widget exists: what the last run's buttons asked
     # to change can only be written now. See _queue_value.
     _apply_pending()
-    st.subheader(":material/build: Alert builder")
+    head = L.page_header(
+        "Alert builder", icon=":material/build:", actions=1,
+        subtitle="Create, edit, clone and group the alerts the Monitor watches.")
+    with head[0]:
+        _import_export(store)
+
     _manage_alerts(store)
     _manage_groups(store)
-    _import_export(store)
 
     servers = _servers(store)
     if not servers:
@@ -911,64 +947,62 @@ def render(store, mgr) -> None:
 
     editing = st.session_state.get("b_edit_id") is not None
 
-    st.divider()
-    # The form sits in a bounded column: stretched-out inputs are
-    # harder to fill in, not easier. The preview below stays full
-    # width, where the extra room actually helps read result rows.
-    with form_area():
-        hdr = st.columns([6, 1.7], vertical_alignment="center")
-        hdr[0].markdown(
-            f"### :material/{'edit_note' if editing else 'add_circle'}: "
-            f"{'Edit alert' if editing else 'Create a new alert'}")
-        if editing and hdr[1].button("Start new", icon=":material/add:"):
-            _clear_builder()
-            st.rerun()
-        st.caption("Name it and pick a group, build the query chain, set the trigger, "
-                   "then choose how you're notified.")
+    # One content width for the whole page. The form used to sit in a narrower
+    # column than the list above it, so the page had two right edges 350px apart
+    # with a hard visual break between them — and the section heading was drawn
+    # at the wide one while its own body was at the narrow one. Inputs are kept
+    # to a sensible size by their grid *span* now, inside full-width cards.
+    hdr = L.section(
+        "Edit alert" if editing else "Create a new alert", level=3,
+        actions=1 if editing else 0,
+        description="Name it and pick a group, build the query chain, set the "
+                    "trigger, then choose how you're notified.")
+    if editing and hdr[0].button("Start new", icon=":material/add:"):
+        _clear_builder()
+        st.rerun()
 
-        # 1 · Basics — name, group, cadence
-        with st.container(border=True):
-            st.markdown("**:material/tune: Basics**")
-            top = st.columns([3, 2, 2], vertical_alignment="top")
-            name = top[0].text_input("Alert name", key="b_name",
-                                     placeholder="e.g. AAPL bid breakout")
-            group = _group_selector(top[1], store)
-            interval = int(top[2].number_input(
-                "Check interval (seconds)", 5, 3600, key="b_interval",
-                help="How often this alert runs. Presets: "
-                     + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
-            st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while "
-                       "monitoring is on.  ·  :material/folder: Group buckets this alert "
-                       "on the Monitor.")
+    # 1 · Basics — name, group, cadence
+    L.section("Basics", level=4)
+    with L.card():
+        top = L.field_row(3)
+        name = top[0].text_input("Alert name", key="b_name",
+                                 placeholder="e.g. AAPL bid breakout")
+        group = _group_selector(top[1], store)
+        interval = int(top[2].number_input(
+            "Check interval (seconds)", 5, 3600, key="b_interval",
+            help="How often this alert runs. Presets: "
+                 + ", ".join(f"{k}={v}s" for k, v in INTERVAL_PRESETS.items())))
+        st.caption(f":material/schedule: Runs every {humanize_secs(interval)} while "
+                   "monitoring is on.  ·  :material/folder: Group buckets this alert "
+                   "on the Monitor.")
 
-        # 2 · Query steps — the chain
-        with st.container(border=True):
-            st.markdown("**:material/account_tree: Query steps**")
-            st.caption("Each step queries a server; later steps can reference earlier "
-                       "outputs with `{{stepN.col}}`.")
-            nsteps = int(st.session_state["b_nsteps"])
-            steps = [_step_block(store, i, servers) for i in range(nsteps)]
-            sc = st.columns([1.4, 5])
-            if nsteps < 8 and sc[0].button("Add step", icon=":material/add:"):
-                st.session_state[f"b_nf_{nsteps}"] = 0
-                st.session_state["b_nsteps"] = nsteps + 1
-                st.rerun()
+    # 2 · Query steps — the chain
+    L.section("Query steps", level=4,
+              description="Each step queries a server; later steps can reference "
+                          "earlier outputs with {{stepN.col}}.")
+    nsteps = int(st.session_state["b_nsteps"])
+    steps = [_step_block(store, i, servers) for i in range(nsteps)]
+    if nsteps < 8 and L.grid(L.ACTION_SPAN)[0].button(
+            "Add step", icon=":material/add:"):
+        st.session_state[f"b_nf_{nsteps}"] = 0
+        st.session_state["b_nsteps"] = nsteps + 1
+        st.rerun()
 
-        # 3 · Trigger   4 · Notify & re-arm   5 · Active hours
-        trigger = _trigger_block()
-        channels, rearm = _notify_block()
-        schedule = _schedule_block()
+    # 3 · Trigger   4 · Notify & re-arm   5 · Active hours
+    trigger = _trigger_block()
+    channels, rearm = _notify_block()
+    schedule = _schedule_block()
 
-        # 6 · Result capture
-        with st.container(border=True):
-            st.markdown("**:material/table_view: Result capture**")
-            retention = st.selectbox(
-                "Keep result on trigger", ["latest", "snapshot"],
-                format_func=lambda m: {"latest": "Latest — refresh each triggered check",
-                                       "snapshot": "Snapshot — freeze at the trigger moment"}[m],
-                key="b_retention",
-                help="What the Monitor's Result view keeps for this alert. Data is only "
-                     "captured while the alert is triggered.")
+    # 6 · Result capture
+    L.section("Result capture", level=4)
+    with L.card():
+        retention = L.field_row(1, span=L.FIELD_WIDE)[0].selectbox(
+            "Keep result on trigger", ["latest", "snapshot"],
+            format_func=lambda m: {"latest": "Latest — refresh each triggered check",
+                                   "snapshot": "Snapshot — freeze at the trigger moment"}[m],
+            key="b_retention",
+            help="What the Monitor's Result view keeps for this alert. Data is only "
+                 "captured while the alert is triggered.")
 
     _preview_panel(store, mgr, steps, trigger)
 
@@ -984,7 +1018,9 @@ def render(store, mgr) -> None:
     errors += validate_schedule(schedule)
 
     st.divider()
-    foot = st.columns([2, 4], vertical_alignment="center")
+    # Submit bottom-left of the form it commits, with its validation line beside
+    # it — the same place, and the same shape, as the Schedules editor's.
+    foot = L.grid(L.ACTION_SPAN, L.GRID - L.ACTION_SPAN, align="center", pad=False)
     save = foot[0].button("Save alert" if not editing else "Update alert",
                           type="primary", icon=":material/save:")
     if editing:

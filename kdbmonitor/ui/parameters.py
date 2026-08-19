@@ -27,6 +27,8 @@ from datetime import date
 
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
+
 from kdbmonitor.core import paramrules
 from kdbmonitor.core.dashboard_models import Dashboard, Parameter
 from kdbmonitor.core.parameters import query_params
@@ -184,7 +186,8 @@ def _form(dashboard: Dashboard, choices: dict, on_apply, today: date) -> bool:
             st.caption(":material/tune: Set these, then Apply — the query runs "
                        "with the values you applied.")
             _controls(dashboard, choices, None, problems=problems)
-            buttons = st.columns([1.1, 1.1, 5.8], vertical_alignment="center")
+            buttons = L.grid(L.BUTTON, L.BUTTON, L.GRID - 2 * L.BUTTON,
+                             align="center", pad=False)
             applied = buttons[0].form_submit_button(
                 "Apply", type="primary", icon=":material/play_arrow:",
                 use_container_width=True)

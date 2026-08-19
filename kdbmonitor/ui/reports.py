@@ -8,26 +8,33 @@ import streamlit as st
 from kdbmonitor.core.reporting import (
     build_report_model, report_to_excel_bytes, report_filename, _result_df,
 )
+from kdbmonitor.ui import layout as L
 from kdbmonitor.ui.common import make_client_for
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def render(store, mgr) -> None:
-    st.subheader(":material/summarize: Alert reports")
-    st.caption("A shareable record of which alerts triggered on a given day — for "
-               "handing to other teams. Result rows come from the stored daily "
-               "snapshot (retention & row cap set in Admin); today, with no "
-               "snapshot yet, they're re-fetched live.")
+    # Generate is the page's one commitment, so it sits where every page-level
+    # action now sits: the top right of the header. It used to float mid-page
+    # with 400px of empty column beside it, level with the day picker but
+    # aligned to nothing.
+    act = L.page_header(
+        "Alert reports", icon=":material/summarize:", actions=1,
+        subtitle="A shareable record of which alerts triggered on a given day. Rows "
+                 "come from the stored daily snapshot; today's are re-fetched live.")
+    generate = act[0].button("Generate", type="primary",
+                             icon=":material/play_arrow:", use_container_width=True)
 
-    c = st.columns([1.4, 1, 2], vertical_alignment="bottom")
+    # Two controls of their own width, left-aligned, the rest of the row left
+    # empty — rather than a three-column split that stretched a toggle across a
+    # third of the page and put its label on a different baseline to the date.
+    c = L.toolbar(L.FIELD, L.FIELD_NARROW)
     day = c[0].date_input("Day", value=datetime.now(timezone.utc).date(),
                           format="YYYY-MM-DD")
-    fetch = c[1].toggle("Live fallback", value=True,
-                        help="For today with no stored snapshot yet, re-run each "
-                             "triggered alert to include its current rows.")
-    generate = c[2].button("Generate report", type="primary",
-                           icon=":material/play_arrow:")
+    fetch = L.switch(c[1], "Live fallback", True,
+                     help="For today with no stored snapshot yet, re-run each "
+                          "triggered alert to include its current rows.")
 
     if not generate:
         return
@@ -38,21 +45,22 @@ def render(store, mgr) -> None:
                                    now=datetime.now(timezone.utc))
 
     s = model["summary"]
-    m = st.columns(3)
-    m[0].metric("Alerts triggered", s["alerts"])
-    m[1].metric("Total triggers", s["triggers"])
-    m[2].metric("Day", model["day"])
+    L.section("Summary")
+    L.kpi_row([("Alerts triggered", s["alerts"], None, None),
+               ("Total triggers", s["triggers"], None, None),
+               ("Day", model["day"], None, None)])
 
     if not model["alerts"]:
         st.info(f"No alerts triggered on {model['day']}.", icon=":material/info:")
         return
 
     xlsx = report_to_excel_bytes(model)
-    st.download_button("Download Excel workbook", data=xlsx,
-                       file_name=report_filename(model["day"]), mime=_XLSX_MIME,
-                       icon=":material/download:", type="primary")
+    dl = L.section(f"Triggered alerts ({len(model['alerts'])})", actions=1,
+                   description="One panel per alert, with the rows it captured.")
+    dl[0].download_button("Excel", data=xlsx,
+                          file_name=report_filename(model["day"]), mime=_XLSX_MIME,
+                          icon=":material/download:")
 
-    st.divider()
     for a in model["alerts"]:
         title = (f"**{a['name']}** · {a['triggers']} trigger(s) · "
                  f"last {a['last_ts'][11:19]} UTC")

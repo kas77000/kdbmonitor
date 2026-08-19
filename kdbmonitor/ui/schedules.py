@@ -24,7 +24,8 @@ from kdbmonitor.core.reportrun import run_job
 from kdbmonitor.core.schedule import DAY_NAMES
 from kdbmonitor.core.zones import iana_names
 from kdbmonitor.scheduler import supervisor as sup
-from kdbmonitor.ui.common import form_area, pluralize
+from kdbmonitor.ui import layout as L
+from kdbmonitor.ui.common import pluralize
 
 BADGE = {
     "running": ":green-badge[:material/schedule_send: Scheduler running]",
@@ -119,13 +120,16 @@ def _render_process(store) -> None:
     now = datetime.now(timezone.utc)
     state = sup.status(store, now)
 
-    with form_area().container(border=True):
+    # Full width, like every other card on every other page. It used to be the
+    # only narrow block on this page and sat directly above a full-width job
+    # list, so the two ended 390px apart with nothing to explain the step.
+    with L.card():
         st.markdown(BADGE.get(state.state, BADGE["stopped"]))
         st.caption(status_line(state))
         if state.spawn_error:
             st.error(f"The last attempt to start it failed: {state.spawn_error}")
 
-        cols = st.columns([1, 1, 1, 3])
+        cols = L.grid(L.BUTTON, L.BUTTON, L.BUTTON)
         if state.state in ("running", "stopping", "not_responding"):
             if cols[0].button("Stop", icon=":material/stop:", key="sched_stop"):
                 sup.request_stop(store, datetime.now(timezone.utc))
@@ -193,29 +197,32 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
     index = next((i for i, d in enumerate(dashboards)
                   if d.id == job.dashboard_id), 0)
 
-    job.name = st.text_input("Name", value=job.name, key=f"{key}_name")
-    chosen_name = st.selectbox("Dashboard", names, index=index,
-                               key=f"{key}_dash")
+    top = L.field_row(2)
+    job.name = top[0].text_input("Name", value=job.name, key=f"{key}_name")
+    chosen_name = top[1].selectbox("Dashboard", names, index=index,
+                                   key=f"{key}_dash")
     if chosen_name:
         job.dashboard_id = next(d.id for d in dashboards
                                 if d.name == chosen_name)
 
     # --- when ---
-    st.markdown("**When**")
+    L.section("When", level=5)
     advanced = st.toggle("Advanced (cron)", value=job.recurrence.mode == "cron",
                          key=f"{key}_adv")
     job.recurrence.mode = "cron" if advanced else "times"
     if advanced:
-        job.recurrence.cron = st.text_input(
+        when = L.grid(L.FIELD_WIDE, L.FIELD)
+        job.recurrence.cron = when[0].text_input(
             "Cron expression", value=job.recurrence.cron or "0 7 * * 1-5",
             key=f"{key}_cron",
             help="minute hour day-of-month month day-of-week. Sunday is 0 or 7.")
     else:
-        times = st.text_input("Run at", value=", ".join(job.recurrence.times),
-                              key=f"{key}_times",
-                              help="HH:MM, comma separated — e.g. 07:00, 16:35")
+        when = L.grid(L.FIELD, L.FIELD_WIDE, L.FIELD)
+        times = when[0].text_input("Run at", value=", ".join(job.recurrence.times),
+                                   key=f"{key}_times",
+                                   help="HH:MM, comma separated — e.g. 07:00, 16:35")
         job.recurrence.times = [t.strip() for t in times.split(",") if t.strip()]
-        picked = st.multiselect(
+        picked = when[1].multiselect(
             "On days", options=list(range(7)),
             default=job.recurrence.days or list(range(5)),
             format_func=lambda d: DAY_NAMES[d], key=f"{key}_days")
@@ -224,14 +231,15 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
     zone_options = ["local"] + iana_names()
     zone_index = (zone_options.index(job.recurrence.tz)
                   if job.recurrence.tz in zone_options else 0)
-    job.recurrence.tz = st.selectbox("Timezone", zone_options, index=zone_index,
-                                     key=f"{key}_tz")
+    job.recurrence.tz = when[-1].selectbox("Timezone", zone_options,
+                                           index=zone_index, key=f"{key}_tz")
 
     # --- what ---
-    st.markdown("**What**")
+    L.section("What", level=5)
     options = _period_options()
     current = _period_label(job.period)
-    job.period = _period_spec(st.selectbox(
+    what = L.field_row(2)
+    job.period = _period_spec(what[0].selectbox(
         "Period", options,
         index=options.index(current) if current in options else 0,
         key=f"{key}_period",
@@ -239,8 +247,10 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
              "'Yesterday' means yesterday every morning."))
 
     dashboard = store.get_dashboard(job.dashboard_id)
-    for parameter in (dashboard.parameters if dashboard else []):
-        value = st.text_input(
+    params = list(dashboard.parameters) if dashboard else []
+    pcols = L.field_row(min(len(params), 3)) if params else []
+    for i, parameter in enumerate(params):
+        value = pcols[i % 3].text_input(
             f"Parameter · {parameter.name}",
             value=job.parameters.get(parameter.name, ""),
             placeholder=f"(default: {parameter.default})",
@@ -251,15 +261,17 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
             job.parameters.pop(parameter.name, None)
 
     # --- to whom ---
-    st.markdown("**To whom**")
-    job.recipients = parse_address_list(st.text_input(
+    L.section("To whom", level=5)
+    to = L.grid(L.FIELD_WIDE, L.FIELD_WIDE)
+    job.recipients = parse_address_list(to[0].text_input(
         "Recipients", value=", ".join(job.recipients), key=f"{key}_to",
         help="Comma or semicolon separated."))
-    job.subject = st.text_input("Subject", value=job.subject or DEFAULT_SUBJECT,
-                                key=f"{key}_subject",
-                                help="{dashboard} {date} {time} {job}")
-    job.body = st.text_area("Body", value=job.body, key=f"{key}_body",
-                            placeholder="(a default is used when this is empty)")
+    job.subject = to[1].text_input("Subject", value=job.subject or DEFAULT_SUBJECT,
+                                   key=f"{key}_subject",
+                                   help="{dashboard} {date} {time} {job}")
+    job.body = L.grid(L.FIELD_WIDE * 2)[0].text_area(
+        "Body", value=job.body, key=f"{key}_body",
+        placeholder="(a default is used when this is empty)")
 
     problems = validate_job(job)
     for problem in problems:
@@ -271,7 +283,9 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
         st.caption(f"{summary} · next run {upcoming:%a %d %b %Y, %H:%M} UTC"
                    if upcoming else f"{summary} · no next run")
 
-    actions = st.columns([1, 1, 1, 2])
+    # Submit sits bottom-left of the form it commits — the rule the whole app
+    # now follows for a form's own actions.
+    actions = L.grid(L.BUTTON, L.BUTTON, L.BUTTON)
     if actions[0].button("Save", icon=":material/save:", key=f"{key}_save",
                          type="primary", disabled=bool(problems)):
         if job.id is None:
@@ -321,9 +335,21 @@ def _render_history(store, job: ReportJob) -> None:
 
 
 def render(store, mgr) -> None:
-    st.title(":material/schedule_send: Schedules")
-    st.caption("Dashboards run on a clock and mailed as PDF.")
+    # An h2 like every other page. This was the app's only `st.title` — an h1 at
+    # 28px against everyone else's 16px, so moving between Monitor and Schedules
+    # changed the title size for no reason a reader could name.
+    #
+    # "New schedule" moves to the header. It used to sit bottom-left *after* the
+    # job list, so the way to create one was found by scrolling past everything
+    # that already existed.
+    act = L.page_header("Schedules", icon=":material/schedule_send:", actions=1,
+                        subtitle="Dashboards run on a clock and mailed as PDF.")
+    if act[0].button("New schedule", icon=":material/add:", key="sched_new",
+                     type="primary", use_container_width=True):
+        st.session_state["_new_report_job"] = True
 
+    L.section("Scheduler process",
+              description="The report jobs below only run while this is up.")
     _render_process(store)
 
     dashboards = schedulable_dashboards(store)
@@ -333,14 +359,33 @@ def render(store, mgr) -> None:
                 "uploaded file cannot be one.", icon=":material/info:")
         return
 
-    st.markdown("**Jobs**")
-    for job in store.list_report_jobs():
-        mark = "✓" if job.enabled else "✗"
-        with st.expander(f"{mark}  {job.name} — "
-                         f"{rec_mod.describe(job.recurrence)}"):
-            st.caption(f"Last run: {job_summary(store, job)}")
-            enabled = st.toggle("Enabled", value=job.enabled,
-                                key=f"job{job.id}_on")
+    jobs = store.list_report_jobs()
+    L.section(f"Jobs ({len(jobs)})")
+
+    if st.session_state.get("_new_report_job"):
+        with L.card():
+            L.section("New schedule", level=5)
+            fresh = ReportJob(id=None, name="", dashboard_id=dashboards[0].id,
+                              recurrence=Recurrence())
+            _render_editor(store, mgr, fresh, dashboards, "jobnew")
+
+    for job in jobs:
+        # The status of a job is said the way status is said everywhere else in
+        # this app — a coloured badge with a material icon — rather than in the
+        # ASCII tick and cross this page had invented for itself.
+        icon = (":material/check_circle:" if job.enabled
+                else ":material/pause_circle:")
+        with st.expander(f"**{job.name}** · {rec_mod.describe(job.recurrence)}",
+                         icon=icon):
+            head = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, align="center",
+                          pad=False)
+            head[0].markdown(
+                (":green-badge[:material/check_circle: Enabled]" if job.enabled
+                 else ":gray-badge[:material/pause_circle: Disabled]")
+                + f"  ·  :gray[Last run: {job_summary(store, job)}]")
+            enabled = head[1].toggle("Enabled", value=job.enabled,
+                                     key=f"job{job.id}_on",
+                                     label_visibility="collapsed")
             if enabled != job.enabled:
                 store.set_report_job_enabled(job.id, enabled)
                 st.rerun()
@@ -349,12 +394,3 @@ def render(store, mgr) -> None:
                 _render_editor(store, mgr, job, dashboards, f"job{job.id}")
             with history:
                 _render_history(store, job)
-
-    if st.button("New schedule", icon=":material/add:", key="sched_new"):
-        st.session_state["_new_report_job"] = True
-    if st.session_state.get("_new_report_job"):
-        with st.container(border=True):
-            st.markdown("**New schedule**")
-            fresh = ReportJob(id=None, name="", dashboard_id=dashboards[0].id,
-                              recurrence=Recurrence())
-            _render_editor(store, mgr, fresh, dashboards, "jobnew")

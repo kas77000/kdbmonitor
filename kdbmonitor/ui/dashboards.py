@@ -12,6 +12,8 @@ from datetime import date, datetime
 
 import streamlit as st
 
+from kdbmonitor.ui import layout as L
+
 from kdbmonitor.core.dashboard_models import Dashboard, FileShape
 from kdbmonitor.core.dashpdf import (
     LANDSCAPE, dashboard_page_png_bytes, dashboard_to_pdf_bytes, pdf_filename,
@@ -628,58 +630,60 @@ def _gallery_card(store, d, open_ids: list[int]) -> None:
     The card does not print its own group: it is already inside that group's
     expander, and when the gallery is flat there is no group to print.
     """
-    with st.container(border=True):
-        c = st.columns([0.35, 2.3, 2.0, 1, 1, 1.15, 1.0, 1.05, 0.8],
-                       vertical_alignment="center")
+    # Six co-equal buttons on one row is what broke this list: at 1024px each
+    # got 34-44px for a 60-90px label and they rendered on top of one another,
+    # while the name column collapsed to 40px. A list row carries the action you
+    # nearly always want — Open — and puts the other five behind the menu at its
+    # end, which is the shape Linear, GitHub, Notion and Stripe all settled on.
+    with L.list_row(spans=L.ROW_SPANS_SELECT) as c:
         c[0].checkbox("Select", key=_selection_key(d.id),
                       label_visibility="collapsed",
                       help=f"Tick to open '{d.name}' with the others")
-        c = c[1:]
         open_flag = (" :green-badge[:material/tab: Open]"
                      if d.id in open_ids else "")
-        c[0].markdown(f"**{d.name}**{open_flag}"
-                      + (f"<br>:gray[{d.description}]" if d.description else ""),
+        c[1].markdown(f"**{d.name}**{open_flag}"
+                      + (f'<div class="kdb-clamp">{d.description}</div>'
+                         if d.description else ""),
                       unsafe_allow_html=True)
         envs = sorted({ds.env for ds in d.datasets if ds.env})
         n_widgets = sum(len(r.widgets) for r in d.rows)
-        c[1].markdown(f":gray[{len(d.datasets)} dataset(s) · {n_widgets} widget(s)]"
+        c[2].markdown(f":gray[{len(d.datasets)} dataset(s) · {n_widgets} widget(s)]"
                       + (f"<br>:gray[env: {', '.join(envs)}]" if envs else ""),
                       unsafe_allow_html=True)
-        if c[2].button("Open", key=f"open_{d.id}", icon=":material/open_in_new:",
-                       use_container_width=True):
+        if c[3].button("Open", key=f"open_{d.id}", icon=":material/open_in_new:"):
             _open(d.id, store)
-        if c[3].button("Edit", key=f"edit_{d.id}", icon=":material/edit:",
-                       use_container_width=True):
-            st.session_state["dash_edit_id"] = d.id
-            st.session_state["dash_mode"] = "edit"
-            st.session_state.pop("dash_draft", None)
-            st.rerun()
-        if c[4].button("Duplicate", key=f"dup_{d.id}",
-                       icon=":material/content_copy:", use_container_width=True):
-            copy = store.get_dashboard(d.id)
-            copy.id = None
-            copy.name = f"{copy.name} (copy)"
-            store.add_dashboard(copy)
-            st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
-            st.rerun()
-        with c[5].popover("Move", icon=":material/drive_file_move:",
-                          use_container_width=True,
-                          help="Move this dashboard to another group"):
-            _move_to_group(store, d)
-        c[6].download_button(
-            "Export", key=f"exp_{d.id}",
-            data=export_dashboards_json([d]),
-            file_name=dashboard_filename(d), mime="application/json",
-            icon=":material/download:", use_container_width=True,
-            help="Download this dashboard as JSON")
-        with c[7].popover("", icon=":material/delete:"):
-            st.warning(f"Delete '{d.name}'?")
-            if st.button("Confirm", key=f"delok_{d.id}", type="primary"):
-                store.delete_dashboard(d.id)
-                # Its tab goes with it — parse_tabs drops an id that no
-                # longer exists, and this drops what it was holding.
-                _forget(d.id)
-                st.rerun()
+        with c[4]:
+            with L.overflow(help=f"More actions for '{d.name}'"):
+                if st.button("Edit", key=f"edit_{d.id}", icon=":material/edit:"):
+                    st.session_state["dash_edit_id"] = d.id
+                    st.session_state["dash_mode"] = "edit"
+                    st.session_state.pop("dash_draft", None)
+                    st.rerun()
+                if st.button("Duplicate", key=f"dup_{d.id}",
+                             icon=":material/content_copy:"):
+                    copy = store.get_dashboard(d.id)
+                    copy.id = None
+                    copy.name = f"{copy.name} (copy)"
+                    store.add_dashboard(copy)
+                    st.toast(f"Duplicated '{d.name}'", icon=":material/check:")
+                    st.rerun()
+                st.download_button(
+                    "Export", key=f"exp_{d.id}",
+                    data=export_dashboards_json([d]),
+                    file_name=dashboard_filename(d), mime="application/json",
+                    icon=":material/download:", 
+                    help="Download this dashboard as JSON")
+                st.divider()
+                _move_to_group(store, d)
+                st.divider()
+                st.warning(f"Delete '{d.name}'?")
+                if st.button("Delete", key=f"delok_{d.id}", type="primary",
+                             icon=":material/delete:"):
+                    store.delete_dashboard(d.id)
+                    # Its tab goes with it — parse_tabs drops an id that no
+                    # longer exists, and this drops what it was holding.
+                    _forget(d.id)
+                    st.rerun()
 
 
 def _manage_groups(store) -> None:
@@ -703,7 +707,7 @@ def _manage_groups(store) -> None:
                    "an existing group merges them.")
         for g in groups:
             with st.container(border=True):
-                gc = st.columns([3, 1.2, 1.1, 1.3], vertical_alignment="bottom")
+                gc = L.grid(L.FIELD, L.FIELD_NARROW, L.BUTTON, L.BUTTON + 1)
                 new_name = gc[0].text_input("Group name", value=g,
                                             key=f"dgrp_ren_{g}")
                 gc[1].markdown(f":gray[{pluralize(counts[g], 'dashboard')}]")
@@ -727,8 +731,33 @@ def _manage_groups(store) -> None:
                         st.rerun()
 
 
+def _share_menu(col, store, saved):
+    """Import/export, behind the header's menu. Returns any pending uploads.
+
+    A page-level action in the page-level action zone. It is a menu rather than
+    a button because it is two actions and neither is the one you came for.
+    """
+    with col:
+        with st.popover("Share", icon=":material/import_export:",
+                        use_container_width=True):
+            st.caption("Dashboards travel as JSON. They reference *environments* "
+                       "by name, not servers, so a file lands cleanly on any "
+                       "machine whose Admin has the same environment names.")
+            st.download_button(
+                f"Export all ({len(saved)})", data=export_dashboards_json(saved),
+                file_name="kdbmonitor_dashboards.json", mime="application/json",
+                icon=":material/download:", disabled=not saved,
+                
+                help="Every dashboard in one file. Use a row's Export action "
+                     "for just one.")
+            return st.file_uploader(
+                "Import from a .json file", type=["json"],
+                accept_multiple_files=True, key="dash_import",
+                help="A name that already exists is suffixed rather than "
+                     "overwritten, so an import never destroys your work.")
+
+
 def _render_gallery(store) -> None:
-    st.subheader(":material/dashboard: Dashboards")
     saved = store.list_dashboards()
     open_ids = _open_ids(store)
 
@@ -758,23 +787,17 @@ def _render_gallery(store) -> None:
     visible = ([d for g, items in buckets if g in visible_names for d in items]
                if grouped else saved)
 
-    head = st.columns([4.4, 1.6, 1.6], vertical_alignment="center")
-    head[0].caption("Saved views built from KDB queries. Tick as many as you "
-                    "want and open them together — each one gets a tab, and "
-                    "only the tab you are looking at runs its queries.")
+    # A menu and a primary, which is all a page header holds. Import/export was
+    # a divider, a bold line and a two-column split at the very bottom of the
+    # page — a page-level action found only by scrolling past everything.
+    head = L.page_header(
+        "Dashboards", icon=":material/dashboard:", actions=2,
+        subtitle="Saved views built from KDB queries. Tick as many as you want "
+                 "and open them together — each gets a tab, and only the tab "
+                 "you are looking at runs its queries.")
+    uploaded = _share_menu(head[0], store, saved)
 
-    # Read from the last run's state, which is current: ticking a box reruns
-    # the page, so the count on the button is always what is ticked below.
-    picked = selected_ids(visible)
-    if head[1].button(f"Open selected ({len(picked)})" if picked
-                      else "Open selected",
-                      icon=":material/open_in_new:", disabled=not picked,
-                      use_container_width=True,
-                      help="Open every ticked dashboard in its own tab"):
-        _clear_selection(saved)
-        _open_many(store, picked)
-
-    if head[2].button("New dashboard", icon=":material/add:", type="primary",
+    if head[1].button("New dashboard", icon=":material/add:", type="primary",
                       use_container_width=True):
         new_id = store.add_dashboard(Dashboard(id=None, name="New dashboard"))
         st.session_state["dash_edit_id"] = new_id
@@ -789,11 +812,29 @@ def _render_gallery(store) -> None:
     if not saved:
         st.info("No dashboards yet. Create one to get started.",
                 icon=":material/dashboard:")
+    # Open selected is a *bulk* action on what is ticked, so it belongs beside
+    # the list it acts on rather than in the page header — which is where every
+    # product with multi-select puts one, and which is also the only place it
+    # has room for its label at 1024px.
+    #
+    # Read from the last run's state, which is current: ticking a box reruns the
+    # page, so the count on the button is always what is ticked below.
+    picked = selected_ids(visible)
+    bar = L.toolbar(L.FIELD_WIDE, L.FIELD)
     if grouped:
-        chosen = st.multiselect(
+        chosen = bar[0].multiselect(
             "Filter groups", names, key="gal_group_filter",
             help="Show only the chosen groups. Collapse a group with its ▸ "
                  "header; filter one out and its ticks go with it.")
+    if bar[1].button(f"Open selected ({len(picked)})" if picked
+                     else "Open selected",
+                     icon=":material/open_in_new:", disabled=not picked,
+                     
+                     help="Open every ticked dashboard in its own tab"):
+        _clear_selection(saved)
+        _open_many(store, picked)
+
+    if grouped:
         visible_names = kept_groups(chosen, names, names)
         for gname, items in buckets:
             if gname not in visible_names:
@@ -807,28 +848,6 @@ def _render_gallery(store) -> None:
             _gallery_card(store, d, open_ids)
 
     _manage_groups(store)
-
-    st.divider()
-    st.markdown("**Share dashboards**")
-    st.caption("Dashboards travel as JSON. They reference *environments* by "
-               "name, not servers, so a file lands cleanly on any machine whose "
-               "Admin has the same environment names.")
-
-    io_cols = st.columns([1.8, 4.2], vertical_alignment="top")
-    with io_cols[0]:
-        st.download_button(
-            f"Export all ({len(saved)})", data=export_dashboards_json(saved),
-            file_name="kdbmonitor_dashboards.json", mime="application/json",
-            icon=":material/download:", disabled=not saved,
-            help="Every dashboard in one file. Use a card's Export button for "
-                 "just one.")
-
-    with io_cols[1]:
-        uploaded = st.file_uploader(
-            "Import dashboards from a .json file", type=["json"],
-            accept_multiple_files=True, key="dash_import",
-            help="A name that already exists is suffixed rather than "
-                 "overwritten, so an import never destroys your work.")
 
     processed = st.session_state.setdefault("dash_imported_ids", set())
     fresh = pending_uploads(uploaded, processed)
@@ -864,7 +883,8 @@ def _render_gallery(store) -> None:
 # --- view ------------------------------------------------------------------
 
 def _render_period(store, dashboard: Dashboard, payload: dict | None) -> None:
-    bar = st.columns([2.2, 1.6, 1.6, 2.6], vertical_alignment="bottom")
+    bar = L.grid(L.FIELD, L.BUTTON, L.BUTTON,
+                 L.GRID - L.FIELD - 2 * L.BUTTON, pad=False)
 
     # Held to what the dashboard offers before the picker is drawn, so a period
     # stored before it was declared one-sided cannot select a missing option.
@@ -1049,10 +1069,14 @@ def _render_tab_strip(store, dashboard: Dashboard, open_ids: list[int]) -> None:
 
     # One row at the top level, not a row inside a column: the tab menu opens
     # columns of its own, and Streamlit allows only one level of nesting.
-    nav = st.columns([1.2, 6.2, 1.6], vertical_alignment="bottom")
-    # Sized to its content — a full-width button here reads as a banner, not a
-    # back control.
+    # Back control, tabs, tab menu — measured on the same grid so the three
+    # pieces share a baseline. They used to be three columns of unrelated
+    # weights whose contents sat 13px apart vertically, under a rule that
+    # started 165px in from the left and stopped 220px short of the right.
+    nav = L.grid(L.FIELD, L.GRID - L.FIELD - L.ACTION_SPAN, L.ACTION_SPAN,
+                 align="center", pad=False)
     if nav[0].button("All dashboards", icon=":material/arrow_back:",
+                     
                      help="Back to the dashboard list"):
         back_to_gallery()
     if not labels:
@@ -1074,12 +1098,14 @@ def _render_tab_menu(store, dashboard: Dashboard, labels: dict[str, int]) -> Non
     tab you want to close may not be the one you can see, and closing has to be
     possible without switching to it first.
     """
+    # Flush with the content's right edge, like the header action below it.
     with st.popover(f"Tabs ({len(labels)})", icon=":material/tab:",
                     use_container_width=True):
         st.caption("Close a tab, or open another. Closing one drops the data "
                    "it was holding — including any file you uploaded to it.")
         for label, did in labels.items():
-            row = st.columns([4, 1], vertical_alignment="center")
+            row = L.grid(L.GRID - L.ICON_SPAN, L.ICON_SPAN, align="center",
+                         pad=False)
             mark = ":material/radio_button_checked:" if did == dashboard.id \
                 else ":material/radio_button_unchecked:"
             row[0].markdown(f"{mark} {label}")
@@ -1101,10 +1127,9 @@ def _render_tab_menu(store, dashboard: Dashboard, labels: dict[str, int]) -> Non
 
         if len(labels) > 1:
             st.divider()
-            close = st.columns(2)
+            close = L.grid(L.FIELD, L.FIELD, pad=False)
             if close[0].button("Close others", key="tabclose_others",
-                               icon=":material/close_fullscreen:",
-                               use_container_width=True):
+                               icon=":material/close_fullscreen:"):
                 for did in list(labels.values()):
                     if did != dashboard.id:
                         _forget(did)
@@ -1112,7 +1137,7 @@ def _render_tab_menu(store, dashboard: Dashboard, labels: dict[str, int]) -> Non
                 st.session_state.pop(TABS_KEY, None)
                 st.rerun()
             if close[1].button("Close all", key="tabclose_all",
-                               icon=":material/close:", use_container_width=True):
+                               icon=":material/close:"):
                 for did in list(labels.values()):
                     _forget(did)
                 _write_tabs([])
@@ -1126,9 +1151,20 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
     # get you out (it keeps ?dash).
     _render_tab_strip(store, dashboard, _open_ids(store))
 
-    top = st.columns([3.5, 1.3, 1.2, 1.0], vertical_alignment="bottom")
-    top[0].subheader(dashboard.name)
+    # The open dashboard is the subject of the page, so its name is the page
+    # title — an h2 like every other page's, rather than an h3 under a page that
+    # had no title of its own at all. Edit is the one action worth a button;
+    # Refresh and the auto-refresh picker are view controls and go in the
+    # toolbar below, with the rest of the view controls.
+    top = L.page_header(dashboard.name, icon=":material/dashboard:", actions=1,
+                        action_span=L.BUTTON_TIGHT, divider=False)
+    if top[0].button("Edit", icon=":material/edit:", use_container_width=True):
+        st.session_state["dash_edit_id"] = dashboard.id
+        st.session_state["dash_mode"] = "edit"
+        st.session_state.pop("dash_draft", None)
+        st.rerun()
 
+    bar = L.toolbar(L.FIELD_NARROW, L.BUTTON)
     if dashboard.source != "file":
         # A control that does nothing is worse than no control: a file
         # dashboard's numbers change only when a new file arrives, never on a
@@ -1136,7 +1172,7 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
         labels = list(REFRESH_OPTIONS)
         current = next((k for k, v in REFRESH_OPTIONS.items()
                         if v == dashboard.refresh_secs), "15s")
-        chosen = top[1].selectbox("Auto-refresh", labels,
+        chosen = bar[0].selectbox("Auto-refresh", labels,
                                   index=labels.index(current),
                                   key=f"rf_{dashboard.id}")
         if REFRESH_OPTIONS[chosen] != dashboard.refresh_secs:
@@ -1148,16 +1184,10 @@ def _render_view(store, mgr, dashboard: Dashboard) -> None:
     # way to ask for new ones without waiting for the next one. For a file
     # dashboard this re-runs the pipeline against the frame already held,
     # rather than asking for the file again.
-    if top[2].button("Refresh", icon=":material/refresh:",
-                     key=f"rf_now_{dashboard.id}",
+    if bar[1].button("Refresh", icon=":material/refresh:",
+                     key=f"rf_now_{dashboard.id}", 
                      help="Run every dataset again now"):
         force_refresh(dashboard.id)
-
-    if top[3].button("Edit", icon=":material/edit:"):
-        st.session_state["dash_edit_id"] = dashboard.id
-        st.session_state["dash_mode"] = "edit"
-        st.session_state.pop("dash_draft", None)
-        st.rerun()
 
     if dashboard.source != "file":
         _render_period(store, dashboard,
@@ -1220,12 +1250,13 @@ def _render_static_note(dashboard: Dashboard, payload: dict | None) -> None:
         return
     since = held_since(dashboard, payload)
     when = f", held since {since:%H:%M}" if since else ""
-    c = st.columns([5, 1.3], vertical_alignment="center")
+    c = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, align="center",
+               pad=False)
     c[0].caption(f":material/lock_clock: **{', '.join(names)}** "
                  f"{'is' if len(names) == 1 else 'are'} fetched once{when} — "
                  f"a refresh leaves {'it' if len(names) == 1 else 'them'} alone.")
     if c[1].button("Reload static", icon=":material/history:",
-                   key=f"rl_static_{dashboard.id}",
+                   key=f"rl_static_{dashboard.id}", 
                    help="Ask the server for these datasets again now."):
         reload_static(dashboard.id)
 
@@ -1233,6 +1264,7 @@ def _render_static_note(dashboard: Dashboard, payload: dict | None) -> None:
 def _render_export(dashboard: Dashboard) -> None:
     payload = st.session_state.get(frames_key(dashboard.id))
     st.divider()
+    L.section("Export")
     # Counted against the rows on screen: a table longer than its slot carries
     # on over further pages, so only the data knows how long the report is.
     sheet, pages = report_plan(dashboard,
@@ -1246,10 +1278,11 @@ def _render_export(dashboard: Dashboard) -> None:
                f"**{pages}** A4 {sheet.orientation} page(s){turned}. A table "
                f"longer than its row continues onto the next one, so the count "
                f"follows the data.")
-    e = st.columns([1.6, 1.5, 1.5, 3], vertical_alignment="center")
+    e = L.grid(L.ACTION_SPAN, L.ACTION_SPAN, L.ACTION_SPAN,
+               L.GRID - 3 * L.ACTION_SPAN, align="center", pad=False)
 
     if e[0].button("Generate PDF", icon=":material/picture_as_pdf:", type="primary",
-                   use_container_width=True, disabled=not payload):
+                   disabled=not payload):
         st.session_state[f"pdf_{dashboard.id}"] = dashboard_to_pdf_bytes(
             dashboard, payload["results"], payload["rt"], payload["as_of"],
             chosen=parameters.chosen_values(dashboard))
@@ -1262,7 +1295,7 @@ def _render_export(dashboard: Dashboard) -> None:
                    else ("Preview pages" if pages > 1 else "Preview page"),
                    icon=":material/visibility_off:" if showing
                    else ":material/preview:",
-                   use_container_width=True, disabled=not payload):
+                   disabled=not payload):
         st.session_state[preview_flag] = not showing
         st.rerun()
 
@@ -1270,8 +1303,7 @@ def _render_export(dashboard: Dashboard) -> None:
     if data and payload:
         e[2].download_button("Download", data=data,
                              file_name=pdf_filename(dashboard, payload["as_of"]),
-                             mime="application/pdf", icon=":material/download:",
-                             use_container_width=True)
+                             mime="application/pdf", icon=":material/download:")
         e[3].caption("The PDF renders the numbers currently on screen — it does "
                      "not re-query.")
 
@@ -1298,22 +1330,28 @@ def _render_dataset_exports(dashboard: Dashboard, payload: dict | None) -> None:
     chosen = parameters.chosen_values(dashboard)
     as_of = (payload or {}).get("as_of") or datetime.now()
 
-    st.caption(":material/table_view: Download a dataset's data as its widgets "
-               "see it — after transforms, after the parameters chosen above.")
+    L.section("Dataset downloads", level=5,
+              description="A dataset's data as its widgets see it — after "
+                          "transforms, after the parameters chosen above.")
     for ds in dashboard.datasets:
         res = results.get(ds.name)
         df = res.df if res is not None else None
-        row = st.columns([2.2, 1.1, 1.1, 3.6], vertical_alignment="center")
+        # The download buttons sit next to the name they belong to instead of
+        # 250px clear of it, and are sized to their labels rather than stretched
+        # to 155px for four letters.
+        row = L.grid(L.FIELD, L.BUTTON_TIGHT, L.BUTTON_TIGHT,
+                     L.GRID - L.FIELD - 2 * L.BUTTON_TIGHT, align="center",
+                     pad=False)
         row[0].markdown(f"`{ds.name}`")
         row[1].download_button(
             "CSV", data=df_to_csv(df) if df is not None else "",
             file_name=export_filename(dashboard.name, ds.name, chosen, as_of, "csv"),
-            mime="text/csv", icon=":material/download:", use_container_width=True,
+            mime="text/csv", icon=":material/download:", 
             disabled=df is None, key=f"dsexp_csv_{dashboard.id}_{ds.name}")
         row[2].download_button(
             "Excel", data=df_to_excel_bytes(df) if df is not None else b"",
             file_name=export_filename(dashboard.name, ds.name, chosen, as_of, "xlsx"),
-            mime=_XLSX_MIME, icon=":material/download:", use_container_width=True,
+            mime=_XLSX_MIME, icon=":material/download:", 
             disabled=df is None, key=f"dsexp_xlsx_{dashboard.id}_{ds.name}")
         if df is None and res is not None and res.waiting:
             row[3].caption(f":gray[Waiting for {ds.file_label or 'a file'} to be "
@@ -1344,7 +1382,8 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
         page_no = 1
         st.session_state[page_key] = 1
 
-    head = st.columns([4.2, 1.3, 1.2], vertical_alignment="center")
+    head = L.grid(L.GRID - 2 * L.ACTION_SPAN, L.ACTION_SPAN, L.ACTION_SPAN,
+                  align="center", pad=False)
     head[0].markdown(f"**Printed page {page_no} of {pages}** "
                      f":gray[— the {payload['as_of']:%H:%M:%S} frames]")
     # Paging holds the report still on purpose, so the way to newer numbers is
@@ -1360,14 +1399,16 @@ def _render_pdf_preview(dashboard: Dashboard, payload: dict, pages: int) -> None
 
     with st.container(border=True):
         if pages > 1:
-            nav = st.columns([1, 1, 5], vertical_alignment="center")
+            nav = L.grid(L.BUTTON_TIGHT, L.BUTTON_TIGHT,
+                         L.GRID - 2 * L.BUTTON_TIGHT, align="center",
+                         pad=False)
             if nav[0].button("Previous", icon=":material/chevron_left:",
-                             use_container_width=True, disabled=page_no <= 1,
+                             disabled=page_no <= 1,
                              key=f"pv_prev_{dashboard.id}"):
                 st.session_state[page_key] = page_no - 1
                 st.rerun()
             if nav[1].button("Next", icon=":material/chevron_right:",
-                             use_container_width=True, disabled=page_no >= pages,
+                             disabled=page_no >= pages,
                              key=f"pv_next_{dashboard.id}"):
                 st.session_state[page_key] = page_no + 1
                 st.rerun()

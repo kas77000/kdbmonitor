@@ -22,6 +22,8 @@ import html
 import json
 
 import streamlit as st
+
+from kdbmonitor.ui import layout as L
 import streamlit.components.v1 as components
 
 from kdbmonitor.core.qhighlight import tokenize
@@ -228,7 +230,7 @@ def q_block(text: str, *, empty: str = "(empty)", copy: bool = False) -> None:
         # Under the block, not over it: the query is what was asked for and the
         # button is what you can do about it, and a control above the thing it
         # acts on reads as a heading for it.
-        _, right = st.columns([3, 1])
+        _, right = L.grid(L.GRID - L.BUTTON, L.BUTTON, align="center", pad=False)
         with right:
             copy_button(text)
 

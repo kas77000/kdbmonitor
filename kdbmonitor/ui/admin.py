@@ -15,7 +15,7 @@ from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.notifiers import parse_address_list, send_report_email
 from kdbmonitor.core.portability import export_connections_json, import_bundle_json
 from kdbmonitor.core.reportrun import ADMIN_EMAIL_KEY
-from kdbmonitor.ui.common import form_area
+from kdbmonitor.ui import layout as L
 
 
 def admin_problems(text: str) -> list[str]:
@@ -105,7 +105,7 @@ def _render_environments(store) -> None:
     a historical server, so a missing side is worth surfacing here rather than as
     a query error later.
     """
-    st.markdown("**Environments**")
+    L.section("Environments")
     envs = store.list_environments()
     if not envs:
         st.caption("None yet — environments appear once you add connections.")
@@ -119,7 +119,7 @@ def _render_environments(store) -> None:
                    "ignore the period.")
         for env, pair in sorted(envs.items()):
             market = pair["marketdata"]
-            e = st.columns([2, 2.5, 2.5], vertical_alignment="center")
+            e = L.grid(L.FIELD, L.FIELD, L.FIELD, align="center")
             e[0].markdown(f"**{env}**")
 
             if market is not None:
@@ -174,9 +174,9 @@ def _render_edit(store, c: Connection) -> None:
     to delete and re-add it.
     """
     key = f"ed{c.id}"
-    st.markdown(f"**Edit `{c.name}`**")
+    L.section(f"Edit `{c.name}`", level=5)
 
-    a = st.columns([2, 2, 1], vertical_alignment="bottom")
+    a = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW + 2)
     name = a[0].text_input("Name", value=c.name, key=f"{key}_name")
     host = a[1].text_input("Host", value=c.host, key=f"{key}_host")
     port = int(a[2].number_input("Port", 1, 65535, c.port, key=f"{key}_port"))
@@ -184,27 +184,30 @@ def _render_edit(store, c: Connection) -> None:
     kinds = list(REGISTERABLE_KINDS)
     if c.kind not in kinds:            # a legacy market-data server keeps its kind
         kinds.append(c.kind)
-    kind = st.selectbox("Kind", kinds, index=kinds.index(c.kind),
-                        format_func=lambda k: KIND_LABELS[k], key=f"{key}_kind")
+    kind = a[3].selectbox("Kind", kinds, index=kinds.index(c.kind),
+                          format_func=lambda k: KIND_LABELS[k], key=f"{key}_kind")
 
     options = _env_options(store, kind)
     current = c.env or c.name
     if current not in options:            # its own env is always a valid choice
         options.insert(0, current)
     options.append(NEW_ENV)
-    picked = st.selectbox("Environment", options, index=options.index(current),
-                          key=f"{key}_env",
-                          help="Put a real-time and a historical server in the "
-                               "same environment to link them.")
+    # The second row of the same form, on the same grid, so its fields sit
+    # directly under the first row's rather than 12, 32 and 54px off them.
+    b = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW * 2)
+    picked = b[0].selectbox("Environment", options, index=options.index(current),
+                            key=f"{key}_env",
+                            help="Put a real-time and a historical server in the "
+                                 "same environment to link them.")
     env = picked
     if picked == NEW_ENV:
-        env = st.text_input("New environment name", key=f"{key}_newenv").strip()
+        env = b[1].text_input("New environment name", key=f"{key}_newenv").strip()
     elif kind != "marketdata" and picked != current:
-        st.caption(_partner_hint(store, picked, kind))
+        b[1].caption(_partner_hint(store, picked, kind))
 
     other = "historical" if kind == "realtime" else "real-time"
-    standalone = st.checkbox(
-        "No counterpart", value=c.standalone, key=f"{key}_solo",
+    standalone = L.check(
+        b[2], "No counterpart", value=c.standalone, key=f"{key}_solo",
         disabled=kind == "marketdata",
         help=f"Tick when this environment will never have a {other} server. "
              f"Untick it to go looking for one: the environment becomes "
@@ -217,8 +220,10 @@ def _render_edit(store, c: Connection) -> None:
         st.caption(":orange[Changing the address clears the cached schema — "
                    "run Introspect afterwards.]")
 
-    if st.button("Save changes", icon=":material/save:", type="primary",
-                 key=f"{key}_save", disabled=not name.strip() or not env):
+    if L.grid(L.ACTION_SPAN)[0].button(
+            "Save changes", icon=":material/save:", type="primary",
+            key=f"{key}_save", 
+            disabled=not name.strip() or not env):
         c.name, c.host, c.port, c.kind, c.env = (
             name.strip(), host.strip(), port, kind, env)
         # A server that just gained a counterpart is not standalone whatever the
@@ -244,11 +249,13 @@ def _render_import_export(store, conns: list[Connection]) -> None:
     connections they need with them — an alert without its server imports to
     nothing, whereas a server stands on its own.
     """
-    with st.expander("Import / export connections",
-                     icon=":material/import_export:"):
-        exp, imp = st.columns(2)
+    # A page-level action, in the page-level action zone — the same menu, with
+    # the same two halves, as the Builder's and the gallery's.
+    with st.popover("Share", icon=":material/import_export:",
+                    use_container_width=True):
+        exp, imp = L.grid(L.FIELD_WIDE, L.FIELD_WIDE, align="top", pad=False)
         with exp:
-            st.markdown("**Export**")
+            L.section("Export", level=5)
             st.caption("The registered servers — host, port, kind and "
                        "environment. Cached schema is left behind: it is "
                        "re-fetched with Introspect on the other machine.")
@@ -257,10 +264,11 @@ def _render_import_export(store, conns: list[Connection]) -> None:
                 data=export_connections_json(conns),
                 file_name="kdbmonitor-connections.json", mime="application/json",
                 disabled=not conns, key="admin_io_export",
+                
                 help=f"{len(conns)} KDB connection(s), no alerts.")
 
         with imp:
-            st.markdown("**Import**")
+            L.section("Import", level=5)
             # The uploader is keyed by a nonce so a completed import clears the
             # file, instead of offering to import the same one again.
             nonce = st.session_state.get("admin_io_nonce", 0)
@@ -300,21 +308,30 @@ def _render_import_export(store, conns: list[Connection]) -> None:
 
 
 def render(store, mgr: ConnectionManager) -> None:
-    st.subheader(":material/settings: Admin")
-
     conns = store.list_connections()
 
+    head = L.page_header(
+        "Admin", icon=":material/settings:", actions=1,
+        subtitle="KDB connections, the environments that pair them, and the "
+                 "mail settings alerts and scheduled reports send through.")
+    with head[0]:
+        _render_import_export(store, conns)
+
     # ---- Demo mode -------------------------------------------------------- #
-    with st.container(border=True):
-        d = st.columns([5, 1.6], vertical_alignment="center")
-        d[0].markdown("**Demo KDB** — try the app with an in-memory mock, no real "
-                      "connection")
+    # The only block on the page that carried no section label at all.
+    L.section("Demo KDB",
+              description="Try the app against an in-memory mock, with no real "
+                          "connection.")
+    with L.card():
+        d = L.grid(L.GRID - L.ACTION_SPAN, L.ACTION_SPAN, align="center",
+                   pad=False)
         d[0].caption("Adds `orders_demo` + `orders_hdb_demo` (a linked "
                      "real-time/historical pair), `kdp_demo` (quotes) and "
                      "`refdata_demo` (market data: instruments).")
         existing = {c.name for c in conns}
         already = existing.issuperset({s.name for s in demo_connection_specs()})
-        if d[1].button("Load demo servers", icon=":material/science:",
+        if d[1].button("Load demo", icon=":material/science:",
+                       
                        disabled=already, type="primary" if not conns else "secondary"):
             added = 0
             for spec in demo_connection_specs():
@@ -327,11 +344,16 @@ def render(store, mgr: ConnectionManager) -> None:
             d[1].caption("Loaded ✓")
 
     # ---- Add connection --------------------------------------------------- #
-    st.markdown("**Add a KDB connection**")
+    L.section("Add a KDB connection")
     # Outside a form: the environment options depend on the kind you pick, and a
     # form would not rerun until submit.
-    with form_area().container(border=True):
-        f = st.columns([2, 2, 1.1, 1.6], vertical_alignment="bottom")
+    #
+    # The two rows are measured in the same units from the same origin, so their
+    # fields line up. They used to be [2, 2, 1.1, 1.6] and then
+    # [2.6, 2.6, 1.8, 1.2] — a form that looked like a grid and was not, with
+    # its columns 12, 32 and 54px out of true down the row.
+    with L.card():
+        f = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW + 2)
         name = f[0].text_input("Name", placeholder="e.g. order-rdb", key="ac_name")
         host = f[1].text_input("Host", value="localhost", key="ac_host")
         port = f[2].number_input("Port", 1, 65535, 5010, key="ac_port")
@@ -341,7 +363,7 @@ def render(store, mgr: ConnectionManager) -> None:
             help="Real-time = today's data. Historical = the partitioned HDB "
                  "(the same tables plus a date column).")
 
-        g = st.columns([2.6, 2.6, 1.8, 1.2], vertical_alignment="bottom")
+        g = L.grid(L.FIELD, L.FIELD, L.FIELD_NARROW, L.FIELD_NARROW + 2)
         options = _env_options(store, kind) + [NEW_ENV]
         picked = g[0].selectbox(
             "Environment", options, key="ac_env",
@@ -355,14 +377,15 @@ def render(store, mgr: ConnectionManager) -> None:
             g[1].caption(_partner_hint(store, picked, kind))
 
         other = "historical" if kind == "realtime" else "real-time"
-        standalone = g[2].checkbox(
-            "No counterpart", key="ac_solo",
+        standalone = L.check(
+            g[2], "No counterpart", key="ac_solo",
             help=f"Tick when this environment will never have a {other} server — "
                  f"a date-partitioned feed with nothing live behind it, say. It "
                  f"stops being reported as half-configured, and dashboards on it "
                  f"are held to the one period it can answer.")
 
-        if g[3].button("Add", icon=":material/add:", type="primary", key="ac_add"):
+        if g[3].button("Add connection", icon=":material/add:", type="primary",
+                       key="ac_add"):
             if not name:
                 st.error("Connection needs a name.", icon=":material/error:")
             elif not env:
@@ -371,25 +394,27 @@ def render(store, mgr: ConnectionManager) -> None:
                 _add_connection(store, name, host, port, kind, env, standalone)
 
     # ---- Registered servers ---------------------------------------------- #
-    st.markdown("**Registered servers**")
+    L.section(f"Registered servers ({len(conns)})")
     if not conns:
         st.caption("None yet. Load the demo servers above or add one.")
     for c in conns:
-        with st.container(border=True):
-            row = st.columns([2, 1.9, 2, 1.2, 1, 0.9], vertical_alignment="center")
+        # The same row shape as the alert list and the dashboard gallery: what
+        # it is, some facts about it, the one action, and a menu for the rest.
+        with L.list_row(spans=L.ROW_SPANS) as row:
             is_demo = c.host == "demo"
-            badge = " :blue-badge[demo]" if is_demo else ""
             _colour = {"historical": "violet", "marketdata": "orange"}.get(
-                c.kind, "gray")
-            badge += f" :{_colour}-badge[{KIND_LABELS.get(c.kind, c.kind)}]"
-            row[0].markdown(f"**{c.name}**{badge}<br>:gray[env: {c.env or c.name}]",
+                c.kind, "green")
+            row[0].badge(KIND_LABELS.get(c.kind, c.kind), color=_colour)
+            row[1].markdown(f"**{c.name}**{' :blue-badge[demo]' if is_demo else ''}"
+                            f"<br>:gray[env: {c.env or c.name}]",
                             unsafe_allow_html=True)
-            row[1].markdown(f"`{c.host}:{c.port}`")
             if c.schema:
-                row[2].markdown(f":green-badge[:material/table: {len(c.schema)} tables] "
+                row[2].markdown(f"`{c.host}:{c.port}`  \n"
+                                f":green-badge[:material/table: {len(c.schema)} tables] "
                                 f":gray[· {_fmt_ts(c.last_introspected_at)}]")
             else:
-                row[2].markdown(":orange-badge[not introspected]")
+                row[2].markdown(f"`{c.host}:{c.port}`  \n"
+                                ":orange-badge[not introspected]")
             if row[3].button("Introspect", key=f"intro_{c.id}",
                              icon=":material/sync:"):
                 try:
@@ -400,28 +425,29 @@ def render(store, mgr: ConnectionManager) -> None:
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Introspect failed: {exc}", icon=":material/error:")
-            with row[4].popover("Edit", icon=":material/edit:",
-                                use_container_width=True):
-                _render_edit(store, c)
-            with row[5].popover("", icon=":material/delete:"):
-                st.warning(f"Delete '{c.name}'?")
-                if st.button("Confirm", key=f"del_{c.id}", type="primary"):
-                    store.delete_connection(c.id)
-                    st.rerun()
+            with row[4]:
+                with L.overflow(help=f"More actions for '{c.name}'"):
+                    _render_edit(store, c)
+                    st.divider()
+                    st.warning(f"Delete '{c.name}'?")
+                    if st.button("Confirm", key=f"del_{c.id}", type="primary",
+                                 icon=":material/delete:"):
+                        store.delete_connection(c.id)
+                        st.rerun()
 
     _render_environments(store)
 
-    # ---- Import / export -------------------------------------------------- #
-    _render_import_export(store, conns)
-
     # ---- SMTP ------------------------------------------------------------- #
-    st.markdown("**Email (SMTP)**")
-    with form_area().container(border=True):
-        st.caption("Used by alerts that select the email channel, and by "
-                   "scheduled reports.")
+    # Full width, like everything above it. This page used to alternate between
+    # a full-width block and a narrow one section by section — measured right
+    # edges of 1207px and 1596px stacked straight on top of each other.
+    L.section("Email (SMTP)",
+              description="Used by alerts that select the email channel, and by "
+                          "scheduled reports.")
+    with L.card():
         # Keyed, because this page carries two boxes labelled "Port" — a KDB
         # server's and this one — and a label is not enough to tell them apart.
-        s = st.columns([2, 1, 2], vertical_alignment="bottom")
+        s = L.grid(L.FIELD, L.FIELD_NARROW, L.FIELD)
         host = s[0].text_input("SMTP host", key="smtp_host",
                                value=store.get_setting("smtp_host", ""))
         port = int(s[1].number_input("Port", 1, 65535,
@@ -430,18 +456,27 @@ def render(store, mgr: ConnectionManager) -> None:
         sender = s[2].text_input("From address", key="smtp_sender",
                                  value=store.get_setting("smtp_sender", ""))
 
-        b = st.columns([1, 1, 3])
-        if b[0].button("Save SMTP settings", icon=":material/save:"):
+        # Verifying a relay by waiting for tomorrow's 07:00 is not a reasonable
+        # way to find out that the port is wrong. The address goes *above* the
+        # button that sends to it — it used to be rendered underneath, so the
+        # input for an action came after the action.
+        test_to = L.field_row(1)[0].text_input(
+            "Send a test email to", key="smtp_test_to",
+            placeholder="you@corp.local")
+
+        # Two of the longest labels in the app, so they get a field's width
+        # rather than an action's — at 1024px an action slot is 115px and
+        # 'Save SMTP settings' came out on three lines.
+        b = L.grid(L.FIELD, L.FIELD)
+        if b[0].button("Save SMTP settings", icon=":material/save:",
+                       type="primary"):
             store.set_setting("smtp_host", host)
             store.set_setting("smtp_port", str(port))
             store.set_setting("smtp_sender", sender)
             st.toast("Saved SMTP settings", icon=":material/check:")
 
-        # Verifying a relay by waiting for tomorrow's 07:00 is not a reasonable
-        # way to find out that the port is wrong.
-        test_to = st.text_input("Send a test email to", key="smtp_test_to",
-                                placeholder="you@corp.local")
         if b[1].button("Send test email", icon=":material/outgoing_mail:",
+                       
                        disabled=not (host and test_to)):
             try:
                 send_report_email(host, port, sender,
@@ -453,12 +488,12 @@ def render(store, mgr: ConnectionManager) -> None:
                 st.error(f"Could not send: {exc}")
 
     # ---- Admin notifications --------------------------------------------- #
-    st.markdown("**Admin notifications**")
-    with form_area().container(border=True):
-        st.caption("Where a failed scheduled report is reported. The people "
-                   "expecting the report are never told it failed — they get "
-                   "the report or they get nothing.")
-        admins_text = st.text_input(
+    L.section("Admin notifications",
+              description="Where a failed scheduled report is reported. The "
+                          "people expecting the report are never told it failed "
+                          "— they get the report or they get nothing.")
+    with L.card():
+        admins_text = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
             "Admin email address(es)", key="scheduler_admin_emails",
             value=store.get_setting(ADMIN_EMAIL_KEY, "") or "",
             placeholder="kdb-support@corp.local; alice@corp.local",
@@ -473,8 +508,10 @@ def render(store, mgr: ConnectionManager) -> None:
             # visible before it costs a notice rather than after.
             st.caption(f"→ {len(parsed)} address(es): {', '.join(parsed)}")
 
-        if st.button("Save admin notifications", icon=":material/save:",
-                     disabled=bool(problems)):
+        if L.grid(L.ACTION_SPAN)[0].button(
+                "Save settings", icon=":material/save:", type="primary",
+                key="admin_notify_commit", 
+                disabled=bool(problems)):
             store.set_setting(ADMIN_EMAIL_KEY, admins_text)
             st.toast("Saved admin notifications", icon=":material/check:")
 
@@ -484,11 +521,12 @@ def render(store, mgr: ConnectionManager) -> None:
                        icon=":material/warning:")
 
     # ---- Result snapshots (reports) -------------------------------------- #
-    st.markdown("**Result snapshots (for reports)**")
-    with form_area().container(border=True):
-        st.caption("Triggered results are stored per alert per day so they appear in "
-                   "reports. Older days are pruned; large results are capped.")
-        r = st.columns([1.4, 1.4, 2], vertical_alignment="bottom")
+    L.section("Result snapshots",
+              description="Triggered results are stored per alert per day so "
+                          "they appear in reports. Older days are pruned; large "
+                          "results are capped.")
+    with L.card():
+        r = L.grid(L.FIELD_NARROW, L.FIELD)
         days = int(r[0].number_input("Keep days", 1, 3650,
                                      store.get_result_retention_days(),
                                      help="Snapshots older than this are deleted."))
@@ -496,7 +534,9 @@ def render(store, mgr: ConnectionManager) -> None:
                                      store.get_result_max_rows(), step=100,
                                      help="Rows beyond this are dropped; the true "
                                           "count is still recorded and reports flag it."))
-        if r[2].button("Save snapshot settings", icon=":material/save:"):
+        if L.grid(L.ACTION_SPAN)[0].button(
+                "Save settings", icon=":material/save:", type="primary",
+                key="snapshot_commit"):
             store.set_result_retention_days(days)   # also prunes existing to the new window
             store.set_result_max_rows(rows)
             st.toast("Saved snapshot settings", icon=":material/check:")
