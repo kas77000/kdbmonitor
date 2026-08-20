@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from kdbmonitor.core import recurrence as rec_mod
+from kdbmonitor.core import reportfile
 from kdbmonitor.core import timectx
 from kdbmonitor.core.notifiers import parse_address_list
 from kdbmonitor.core.recurrence import Recurrence
@@ -273,7 +274,27 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
         "Body", value=job.body, key=f"{key}_body",
         placeholder="(a default is used when this is empty)")
 
-    problems = validate_job(job)
+    # The archive is a second destination, so it belongs in "To whom" — and
+    # under the mail fields, because the mail is the one that always happens.
+    archive_root = (store.get_setting(reportfile.ARCHIVE_DIR_KEY, "")
+                    or "").strip()
+    arch = L.grid(L.FIELD_WIDE, L.FIELD_WIDE, align="center")
+    job.archive = L.switch(
+        arch[0], "Also save a copy to the report archive", job.archive,
+        key=f"{key}_archive",
+        help="A PDF is filed under the folder set in Admin > Report archive, "
+             "in a folder per dashboard. The mail is sent either way.")
+    if job.archive and archive_root and dashboard is not None:
+        # Shown before the first run rather than discovered after it. The
+        # timestamp is the one this run would carry, so the shape is honest
+        # even though the seconds will differ.
+        example = os.path.join(
+            reportfile.dashboard_dir(archive_root, dashboard.name),
+            reportfile.archive_filename(dashboard.name,
+                                        datetime.now(timezone.utc)))
+        arch[1].caption(f"→ {example}")
+
+    problems = validate_job(job, archive_root=archive_root)
     for problem in problems:
         st.warning(problem)
 
@@ -302,8 +323,14 @@ def _render_editor(store, mgr, job: ReportJob, dashboards: list,
         with st.spinner("Running…"):
             outcome = run_job(job, store, mgr, datetime.now(timezone.utc))
         if outcome.ok:
-            st.success(f"Sent {pluralize(outcome.pages, 'page')} to "
-                       f"{pluralize(outcome.recipients, 'recipient')}.")
+            said = (f"Sent {pluralize(outcome.pages, 'page')} to "
+                    f"{pluralize(outcome.recipients, 'recipient')}.")
+            # Send now runs the real path, archive included, which is what
+            # makes it the test of the folder and its permissions. Saying where
+            # the file went is how that test reports its result.
+            if outcome.archived_path:
+                said += f" Saved to {outcome.archived_path}"
+            st.success(said)
         else:
             st.error(outcome.error or "failed")
             for failure in outcome.failures:
@@ -327,6 +354,8 @@ def _render_history(store, job: ReportJob) -> None:
                     f"{pluralize(run['attempts'], 'attempt')}")
         if run["error"]:
             st.caption(run["error"])
+        if run.get("archived_path"):
+            st.caption(f":material/folder: {run['archived_path']}")
         # The same detail the admin was mailed, from the same source: two
         # accounts of one failure is how an hour goes missing.
         for failure in run.get("detail") or []:

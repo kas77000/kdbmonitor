@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from kdbmonitor.core import reportfile
 from kdbmonitor.core.dashboard_models import Dashboard, Dataset, Row, Widget
 from kdbmonitor.core.recurrence import Recurrence
 from kdbmonitor.core.reportjob import ReportJob
@@ -214,3 +215,75 @@ def test_the_page_renders_a_cron_job(tmp_path):
                                            tz="UTC"))
 
     assert not _render(tmp_path, populate).exception
+
+
+# --- the report archive ------------------------------------------------------
+
+def test_a_job_can_be_told_to_file_a_copy(tmp_path):
+    def populate(s):
+        s.set_setting(reportfile.ARCHIVE_DIR_KEY, str(tmp_path / "archive"))
+        did = s.add_dashboard(_dashboard())
+        _job(s, did)
+
+    at = _render(tmp_path, populate)
+    assert not at.exception
+    assert any(t.label.startswith("Also save a copy") for t in at.toggle)
+
+
+def test_the_editor_shows_where_the_copy_would_go(tmp_path):
+    """The destination is worth seeing before the first run, not after."""
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    def populate(s):
+        s.set_setting(reportfile.ARCHIVE_DIR_KEY, str(root))
+        did = s.add_dashboard(_dashboard())
+        _job(s, did, archive=True)
+
+    at = _render(tmp_path, populate)
+    assert not at.exception
+    said = " ".join(c.value for c in at.caption)
+    assert "oms_overview" in said
+    assert said.count("oms_overview") >= 1
+
+
+def test_archiving_with_no_folder_configured_warns_and_blocks_the_save(tmp_path):
+    def populate(s):
+        did = s.add_dashboard(_dashboard())
+        _job(s, did, archive=True)
+
+    at = _render(tmp_path, populate)
+    assert not at.exception
+    assert any("Report archive" in w.value for w in at.warning), \
+        [w.value for w in at.warning]
+    save = [b for b in at.button if b.key == "job1_save"]
+    assert save and save[0].disabled
+
+
+def test_a_configured_folder_lets_an_archiving_job_save(tmp_path):
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    def populate(s):
+        s.set_setting(reportfile.ARCHIVE_DIR_KEY, str(root))
+        did = s.add_dashboard(_dashboard())
+        _job(s, did, archive=True)
+
+    at = _render(tmp_path, populate)
+    save = [b for b in at.button if b.key == "job1_save"]
+    assert save and not save[0].disabled
+
+
+def test_the_history_says_where_a_copy_was_filed(tmp_path):
+    """'Where did Tuesday's go' is answered on the page, not by browsing a
+    share."""
+    def populate(s):
+        did = s.add_dashboard(_dashboard())
+        job = _job(s, did)
+        s.record_report_run(job.id, NOW, NOW, NOW, "ok", pages=2, recipients=1,
+                            archived_path=r"\nas\reports\oms\oms.pdf")
+
+    at = _render(tmp_path, populate)
+    assert not at.exception
+    said = " ".join(c.value for c in at.caption)
+    assert r"\nas\reports\oms\oms.pdf" in said

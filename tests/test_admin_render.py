@@ -7,7 +7,9 @@ duplicate-key crash in the dashboard editor.
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from kdbmonitor.core import reportfile
 from kdbmonitor.core.models import CONNECTION_KINDS, Connection
+from kdbmonitor.core.reportjob import ReportJob
 from kdbmonitor.core.storage import Storage
 from kdbmonitor.ui.admin import _env_options, _partner_hint
 
@@ -197,3 +199,59 @@ def test_editing_other_fields_persists(tmp_path):
     back = s.get_connection(cid)
     assert (back.host, back.port, back.kind, back.env) == \
         ("new", 9, "marketdata", "marketdata")
+
+
+# --- the report archive ------------------------------------------------------
+
+def _archive_db(tmp_path, root=None, job_archives=False) -> str:
+    path = str(tmp_path / "a.db")
+    s = Storage(path)
+    s.init_db()
+    if root is not None:
+        s.set_setting(reportfile.ARCHIVE_DIR_KEY, str(root))
+    if job_archives:
+        s.add_report_job(ReportJob(id=None, name="Morning OMS", dashboard_id=1,
+                                   recipients=["desk@corp.local"],
+                                   archive=True))
+    return path
+
+
+def test_a_usable_archive_folder_is_accepted_and_says_so(tmp_path):
+    root = tmp_path / "archive"
+    root.mkdir()
+    at = AppTest.from_string(_script(_archive_db(tmp_path, root)),
+                             default_timeout=60).run()
+    assert not at.exception
+    save = [b for b in at.button if b.key == "archive_commit"]
+    assert save and not save[0].disabled
+    assert any("writable" in c.value for c in at.caption), \
+        [c.value for c in at.caption]
+
+
+def test_an_archive_folder_that_is_not_there_is_refused_before_it_costs_a_run(
+        tmp_path):
+    at = AppTest.from_string(_script(_archive_db(tmp_path, tmp_path / "nope")),
+                             default_timeout=60).run()
+    assert not at.exception
+    assert any("does not exist" in w.value for w in at.warning), \
+        [w.value for w in at.warning]
+    save = [b for b in at.button if b.key == "archive_commit"]
+    assert save and save[0].disabled
+
+
+def test_no_archive_folder_is_a_fine_state_and_not_a_warning(tmp_path):
+    at = AppTest.from_string(_script(_archive_db(tmp_path)),
+                             default_timeout=60).run()
+    assert not at.exception
+    assert not [w for w in at.warning if "archive" in w.value.lower()]
+
+
+def test_a_job_that_wants_archiving_with_no_folder_set_is_warned_about(tmp_path):
+    """Same shape as the existing 'jobs but no admin address' warning: the hole
+    is visible on the page that can close it."""
+    at = AppTest.from_string(
+        _script(_archive_db(tmp_path, job_archives=True)),
+        default_timeout=60).run()
+    assert not at.exception
+    assert any("archive" in w.value.lower() for w in at.warning), \
+        [w.value for w in at.warning]

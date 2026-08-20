@@ -1,6 +1,7 @@
 # kdbmonitor/ui/admin.py
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -14,6 +15,7 @@ from kdbmonitor.core.schema import introspect
 from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.notifiers import parse_address_list, send_report_email
 from kdbmonitor.core.portability import export_connections_json, import_bundle_json
+from kdbmonitor.core import reportfile
 from kdbmonitor.core.reportrun import ADMIN_EMAIL_KEY
 from kdbmonitor.ui import layout as L
 
@@ -519,6 +521,46 @@ def render(store, mgr: ConnectionManager) -> None:
             st.warning("There are scheduled reports but no admin address — a "
                        "failed run will be silent by mail.",
                        icon=":material/warning:")
+
+    # ---- Report archive --------------------------------------------------- #
+    L.section("Report archive",
+              description="Where a scheduled report leaves a copy of its PDF, "
+                          "beside mailing it. A folder per dashboard is made "
+                          "underneath. Empty means no job can archive.")
+    with L.card():
+        root = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
+            "Folder for scheduled report PDFs", key="report_archive_dir",
+            value=store.get_setting(reportfile.ARCHIVE_DIR_KEY, "") or "",
+            placeholder=r"\\nas\reports\kdbmonitor",
+            help="Must already exist. The per-dashboard folders under it are "
+                 "created on the first run.")
+
+        # Checked as it is typed rather than on Save. check_root writes and
+        # removes a probe file, so this is the same question the 07:00 run
+        # asks — which is the point: a share is verified here, not by waiting
+        # for tomorrow morning and reading a failure notice.
+        problem = reportfile.check_root(root) if root.strip() else None
+        if problem:
+            st.warning(problem, icon=":material/warning:")
+        elif root.strip():
+            example = os.path.join(root.strip(), "equity_orders",
+                                   "equity_orders_20260820_070000.pdf")
+            st.caption(f"→ writable · a report is filed as {example}")
+
+        if L.grid(L.ACTION_SPAN)[0].button(
+                "Save settings", icon=":material/save:", type="primary",
+                key="archive_commit", disabled=bool(problem)):
+            store.set_setting(reportfile.ARCHIVE_DIR_KEY, root.strip())
+            st.toast("Saved report archive", icon=":material/check:")
+
+        # The same shape as the admin-address warning above: the hole is named
+        # on the page that can close it, rather than found in a failed run.
+        wanting = [j.name for j in store.list_report_jobs() if j.archive]
+        if wanting and not root.strip():
+            st.warning(
+                f"{len(wanting)} scheduled report(s) ask to be archived but no "
+                f"folder is set, so those runs will fail: {', '.join(wanting)}.",
+                icon=":material/warning:")
 
     # ---- Result snapshots (reports) -------------------------------------- #
     L.section("Result snapshots",
