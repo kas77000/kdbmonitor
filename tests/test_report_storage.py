@@ -157,3 +157,51 @@ def test_an_older_database_gains_the_new_tables_on_open(tmp_path):
     reopened = Storage(path)
     reopened.init_db()
     assert reopened.list_report_jobs() == []
+
+
+# --- the report archive ------------------------------------------------------
+
+def test_a_run_remembers_where_the_copy_was_filed(store):
+    jid = store.add_report_job(_job(archive=True))
+    store.record_report_run(jid, FIRED, FIRED, FIRED, "ok",
+                            archived_path=r"\nas\reports\oms\oms_20260813.pdf")
+    assert (store.latest_report_run(jid)["archived_path"]
+            == r"\nas\reports\oms\oms_20260813.pdf")
+
+
+def test_a_run_that_filed_nothing_says_nothing(store):
+    jid = store.add_report_job(_job())
+    store.record_report_run(jid, FIRED, FIRED, FIRED, "ok")
+    assert store.latest_report_run(jid)["archived_path"] is None
+
+
+def test_a_database_made_before_the_archive_existed_gains_the_column(tmp_path):
+    """Every installation upgrading to this has a report_job_runs without it."""
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE report_job_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id      INTEGER NOT NULL,
+            fired_for   TEXT NOT NULL,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT,
+            status      TEXT NOT NULL,
+            attempts    INTEGER NOT NULL DEFAULT 1,
+            pages       INTEGER,
+            recipients  INTEGER,
+            error       TEXT,
+            detail_json TEXT
+        );
+        INSERT INTO report_job_runs(job_id, fired_for, started_at, status)
+        VALUES (1, '2026-08-13T07:00:00Z', '2026-08-13T07:00:00Z', 'ok');
+    """)
+    old.commit()
+    old.close()
+
+    s = Storage(str(path))
+    s.init_db()
+    runs = s.list_report_runs(1)
+    assert len(runs) == 1                       # the old row is still there
+    assert runs[0]["archived_path"] is None

@@ -131,7 +131,8 @@ class Storage:
                 pages       INTEGER,
                 recipients  INTEGER,
                 error       TEXT,
-                detail_json TEXT
+                detail_json TEXT,
+                archived_path TEXT
             );
             CREATE INDEX IF NOT EXISTS ix_report_job_runs_job
                 ON report_job_runs (job_id, fired_for DESC);
@@ -160,6 +161,12 @@ class Storage:
         if "standalone" not in ccols:
             self.conn.execute("ALTER TABLE connections ADD COLUMN standalone "
                               "INTEGER NOT NULL DEFAULT 0")
+
+        rcols = {r["name"]
+                 for r in self.conn.execute("PRAGMA table_info(report_job_runs)")}
+        if "archived_path" not in rcols:
+            self.conn.execute(
+                "ALTER TABLE report_job_runs ADD COLUMN archived_path TEXT")
 
     # --- connections ---
     def add_connection(self, c: Connection) -> int:
@@ -728,15 +735,16 @@ class Storage:
                           pages: Optional[int] = None,
                           recipients: Optional[int] = None,
                           error: Optional[str] = None,
-                          detail: Optional[list[dict]] = None) -> int:
+                          detail: Optional[list[dict]] = None,
+                          archived_path: Optional[str] = None) -> int:
         cur = self.conn.execute(
             "INSERT INTO report_job_runs(job_id, fired_for, started_at, "
             "finished_at, status, attempts, pages, recipients, error, "
-            "detail_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "detail_json, archived_path) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (job_id, self._stamp(fired_for), self._stamp(started_at),
              self._stamp(finished_at) if finished_at else None,
              status, attempts, pages, recipients, error,
-             json.dumps(detail) if detail else None))
+             json.dumps(detail) if detail else None, archived_path))
         # Trimmed per job rather than globally: a report running every fifteen
         # minutes must not push a daily one's only failure out of its history.
         self.conn.execute(

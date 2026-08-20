@@ -79,3 +79,39 @@ def test_validate_objects_to_an_address_without_an_at_sign():
 def test_validate_passes_on_what_the_recurrence_says():
     problems = validate_job(_job(recurrence=Recurrence(times=["nope"])))
     assert any("nope" in p for p in problems)
+
+
+# --- the report archive ------------------------------------------------------
+
+def test_a_job_does_not_archive_until_it_is_asked_to():
+    assert _job().archive is False
+
+
+def test_a_job_written_before_the_archive_existed_loads_with_it_off():
+    """Every job already in the database predates this field."""
+    old = {"id": 4, "name": "Morning OMS report", "dashboard_id": 3,
+           "recipients": ["desk@corp.local"]}
+    assert job_from_dict(old).archive is False
+
+
+def test_the_archive_choice_survives_a_round_trip():
+    assert job_from_json(job_to_json(_job(archive=True))).archive is True
+
+
+def test_archiving_with_no_folder_configured_is_refused_with_both_ways_out():
+    problems = validate_job(_job(archive=True), archive_root="")
+    assert len(problems) == 1
+    assert "Admin" in problems[0]
+    assert "Turn off" in problems[0]
+
+
+def test_archiving_with_a_folder_configured_is_fine():
+    assert validate_job(_job(archive=True), archive_root=r"\nas\reports") == []
+
+
+def test_a_job_that_does_not_archive_does_not_care_that_no_folder_is_set():
+    assert validate_job(_job(archive=False), archive_root="") == []
+
+
+def test_a_folder_of_only_whitespace_counts_as_no_folder():
+    assert validate_job(_job(archive=True), archive_root="   ") != []

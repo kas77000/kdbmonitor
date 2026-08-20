@@ -7,12 +7,11 @@ moment later.
 from __future__ import annotations
 
 import io
-import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Optional
 
-from kdbmonitor.core import theme
+from kdbmonitor.core import reportfile, theme
 from kdbmonitor.core.dashboard_models import Dashboard, Row
 from kdbmonitor.core.plotmodel import build_plot_model, slice_table
 from kdbmonitor.core.render_mpl import draw, table_capacity, table_fit_font
@@ -633,5 +632,6 @@ def page_count(dashboard: Dashboard, results: Optional[dict] = None,
 
 
 def pdf_filename(dashboard: Dashboard, as_of: datetime) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", dashboard.name.lower()).strip("_") or "dashboard"
-    return f"{slug}_{as_of:%Y-%m-%d_%H%M}.pdf"
+    # The stem comes from reportfile so the attachment and the folder the same
+    # report is archived in agree about what the dashboard is called.
+    return f"{reportfile.slug(dashboard.name)}_{as_of:%Y-%m-%d_%H%M}.pdf"

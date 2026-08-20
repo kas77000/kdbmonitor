@@ -101,7 +101,8 @@ def _attempt(job: ReportJob, store, mgr, now: datetime, fire: datetime,
         pages=outcome.pages or None,
         recipients=outcome.recipients or None,
         error=None if outcome.ok else outcome.error,
-        detail=[f.as_dict() for f in outcome.failures] or None)
+        detail=[f.as_dict() for f in outcome.failures] or None,
+        archived_path=outcome.archived_path)
     store.set_report_job_fired(job.id, fire)
 
     if not outcome.ok:

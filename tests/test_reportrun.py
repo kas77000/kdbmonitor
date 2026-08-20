@@ -10,6 +10,7 @@ from kdbmonitor.core.client import ConnectionManager
 from kdbmonitor.core.dashboard_models import (
     Dashboard, Dataset, Parameter, Row, Widget,
 )
+from kdbmonitor.core import reportfile
 from kdbmonitor.core.mock import demo_connection_specs
 from kdbmonitor.core.reportjob import ReportJob
 from kdbmonitor.core.reportrun import (
@@ -319,3 +320,115 @@ def test_with_no_admin_address_nothing_is_sent_and_it_says_so():
     assert send_failure_notice(_job(did), store, "OMS", NOW, 3, _failed(),
                                send=send) is False
     assert send.calls == []
+
+
+# --- the report archive ------------------------------------------------------
+#
+# The ordering test below is the load-bearing one. The scheduler retries a
+# failed run, so if the mail went first and the write then failed the run, every
+# retry would post the same PDF again. Writing first means a failed write has
+# sent nothing, and the retry needs no special case.
+
+def _archiving(tmp_path, dashboard: Dashboard = None):
+    store, mgr, did = _env(dashboard)
+    store.set_setting(reportfile.ARCHIVE_DIR_KEY, str(tmp_path))
+    return store, mgr, did
+
+
+def test_a_job_that_does_not_archive_writes_nothing(tmp_path):
+    store, mgr, did = _archiving(tmp_path)
+    outcome = run_job(_job(did), store, mgr, NOW, send=_Sent())
+    assert outcome.ok, outcome.error
+    assert list(tmp_path.iterdir()) == []
+    assert outcome.archived_path is None
+
+
+def test_an_archiving_job_files_the_pdf_under_its_dashboard(tmp_path):
+    store, mgr, did = _archiving(tmp_path)
+    outcome = run_job(_job(did, archive=True), store, mgr, NOW, send=_Sent())
+
+    assert outcome.ok, outcome.error
+    written = tmp_path / "oms_overview" / "oms_overview_20260814_070000.pdf"
+    assert written.exists()
+    assert written.read_bytes()[:4] == b"%PDF"
+    assert outcome.archived_path == str(written)
+
+
+def test_the_archived_file_is_the_one_that_was_attached(tmp_path):
+    """Two renders of one report would be two different documents."""
+    store, mgr, did = _archiving(tmp_path)
+    send = _Sent()
+    outcome = run_job(_job(did, archive=True), store, mgr, NOW, send=send)
+    _, attached, _ = send.calls[0]["attachments"][0]
+    assert open(outcome.archived_path, "rb").read() == attached
+
+
+def test_the_file_is_on_disk_before_the_mail_goes_out(tmp_path):
+    """Retry-safety rests entirely on this: a failed write must not be able to
+    happen after a send that a retry would then repeat."""
+    store, mgr, did = _archiving(tmp_path)
+    seen = {}
+
+    def send(host, port, sender, to, subject, body, attachments=()):
+        seen["already_written"] = any(tmp_path.rglob("*.pdf"))
+
+    run_job(_job(did, archive=True), store, mgr, NOW, send=send)
+    assert seen["already_written"] is True
+
+
+def test_an_archive_folder_that_is_not_there_fails_the_run_and_sends_nothing(
+        tmp_path):
+    store, mgr, did = _archiving(tmp_path)
+    store.set_setting(reportfile.ARCHIVE_DIR_KEY, str(tmp_path / "gone"))
+    send = _Sent()
+    outcome = run_job(_job(did, archive=True), store, mgr, NOW, send=send)
+
+    assert outcome.ok is False
+    assert send.calls == []
+    assert "archive" in outcome.error.lower()
+    assert "does not exist" in outcome.error
+
+
+def test_an_archiving_job_with_no_folder_configured_says_which_setting(tmp_path):
+    store, mgr, did = _archiving(tmp_path)
+    store.set_setting(reportfile.ARCHIVE_DIR_KEY, "")
+    outcome = run_job(_job(did, archive=True), store, mgr, NOW, send=_Sent())
+    assert outcome.ok is False
+    assert "archive" in outcome.error.lower()
+
+
+def test_a_broken_archive_is_found_before_a_single_query_is_run(
+        tmp_path, monkeypatch):
+    """Thirty seconds of KDB time, then a failure notice saying the folder was
+    always wrong, is thirty seconds nobody needed to spend."""
+    store, mgr, did = _archiving(tmp_path)
+    store.set_setting(reportfile.ARCHIVE_DIR_KEY, str(tmp_path / "gone"))
+
+    import kdbmonitor.core.reportrun as reportrun
+
+    def never(*a, **k):
+        raise AssertionError("the datasets must not run")
+
+    monkeypatch.setattr(reportrun, "run_datasets", never)
+    assert run_job(_job(did, archive=True), store, mgr, NOW,
+                   send=_Sent()).ok is False
+
+
+def test_a_write_that_fails_at_the_last_moment_is_a_failed_run_not_a_crash(
+        tmp_path, monkeypatch):
+    """run_job's contract is that an expected failure comes back as an outcome.
+    A share that disappears between the check and the write is expected."""
+    store, mgr, did = _archiving(tmp_path)
+
+    import kdbmonitor.core.reportrun as reportrun
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(reportrun.reportfile, "write_report", boom)
+    send = _Sent()
+    outcome = run_job(_job(did, archive=True), store, mgr, NOW, send=send)
+
+    assert outcome.ok is False
+    assert send.calls == []
+    assert "Access is denied" in outcome.error

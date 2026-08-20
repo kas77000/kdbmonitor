@@ -261,3 +261,25 @@ def test_serve_stops_when_the_desired_state_says_so(store):
     loop.serve(store, None, now_fn=lambda: next(ticks),
                sleep=lambda _s: None, max_ticks=50)
     assert sup.holder(store) is None
+
+
+# --- the report archive ------------------------------------------------------
+
+def test_a_run_that_filed_a_copy_records_where_it_went(store):
+    """The path is how the History tab answers 'where did Tuesday's go'."""
+    job = _add(store, archive=True)
+    archived = r"\nas\reports\oms\oms_20260813_070000.pdf"
+    runner = _Runner(RunOutcome(ok=True, pages=2, recipients=1,
+                                archived_path=archived))
+
+    loop.run_due(store, None, FIRE, run=runner, notify=_Notifier(),
+                 sleep=lambda s: None)
+
+    assert store.latest_report_run(job.id)["archived_path"] == archived
+
+
+def test_a_run_that_filed_nothing_records_no_path(store):
+    job = _add(store)
+    loop.run_due(store, None, FIRE, run=_Runner(), notify=_Notifier(),
+                 sleep=lambda s: None)
+    assert store.latest_report_run(job.id)["archived_path"] is None

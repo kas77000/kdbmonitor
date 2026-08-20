@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Callable, Optional
 
-from kdbmonitor.core import notifiers, timectx
+from kdbmonitor.core import notifiers, reportfile, timectx
 from kdbmonitor.core.dashpdf import (
     dashboard_to_pdf_bytes, page_count, pdf_filename,
 )
@@ -49,6 +49,8 @@ class RunOutcome:
     recipients: int = 0
     failures: list[DatasetFailure] = field(default_factory=list)
     error: Optional[str] = None
+    # Where the copy was filed, when the job asked for one.
+    archived_path: Optional[str] = None
 
 
 def collect_failures(results: dict) -> list[DatasetFailure]:
@@ -109,6 +111,19 @@ def run_job(job: ReportJob, store, mgr, now: datetime,
         return RunOutcome(ok=False, error=(
             "SMTP is not configured — set the host in Admin > Email (SMTP)"))
 
+    # Both destinations are checked before anything is queried. Spending thirty
+    # seconds of KDB time and *then* saying the folder was always wrong wastes
+    # the time and delays the notice by exactly as much.
+    archive_root = ""
+    if job.archive:
+        archive_root = (store.get_setting(reportfile.ARCHIVE_DIR_KEY, "")
+                        or "").strip()
+        problem = reportfile.check_root(archive_root)
+        if problem:
+            return RunOutcome(ok=False, error=(
+                f"the report archive is unusable: {problem} — see "
+                f"Admin > Report archive"))
+
     # The job's period, or the dashboard's own. Held to what the dashboard
     # offers by the same coerce_spec the Dashboards page applies, so a job
     # asking for a historical period from a real-time-only dashboard lands
@@ -140,13 +155,27 @@ def run_job(job: ReportJob, store, mgr, now: datetime,
     body = render_text(job.body or _DEFAULT_BODY, job=job.name,
                        dashboard=dashboard.name, when=now)
 
+    # Filed before it is posted, and the same bytes both ways. The order is not
+    # cosmetic: the scheduler retries a failed run, so a write that failed after
+    # a successful send would put the report in the same inboxes two and three
+    # times. Writing first means a failure has sent nothing yet.
+    archived = None
+    if job.archive:
+        try:
+            archived = reportfile.write_report(archive_root, dashboard.name,
+                                               now, pdf)
+        except OSError as exc:              # a share can go between check and write
+            return RunOutcome(ok=False, error=(
+                f"the report could not be written to the archive: {exc}"))
+
     send(smtp_host, int(store.get_setting("smtp_port", "25") or 25),
          store.get_setting("smtp_sender", "") or "", job.recipients,
          subject, body,
          [(pdf_filename(dashboard, now), pdf, "application/pdf")])
 
     return RunOutcome(ok=True, pages=page_count(dashboard, results, chosen),
-                      bytes_sent=len(pdf), recipients=len(job.recipients))
+                      bytes_sent=len(pdf), recipients=len(job.recipients),
+                      archived_path=archived)
 
 
 # --- telling the admin (spec §6.1) ------------------------------------------

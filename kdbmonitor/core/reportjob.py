@@ -40,6 +40,10 @@ class ReportJob:
     subject: str = DEFAULT_SUBJECT
     body: str = ""
 
+    # Also file the PDF under the archive folder set in Admin. An extra
+    # destination, never an alternative one: the mail goes either way.
+    archive: bool = False
+
     retries: int = 3
     retry_delay_secs: int = 120
     grace_minutes: int = 60
@@ -86,6 +90,7 @@ def job_from_dict(d: dict) -> ReportJob:
         recipients=[str(r) for r in (d.get("recipients") or [])],
         subject=d.get("subject", DEFAULT_SUBJECT),
         body=d.get("body", "") or "",
+        archive=bool(d.get("archive", False)),
         retries=_int(d.get("retries"), 3),
         retry_delay_secs=_int(d.get("retry_delay_secs"), 120),
         grace_minutes=_int(d.get("grace_minutes"), 60),
@@ -116,8 +121,14 @@ def render_text(template: str, *, job: str, dashboard: str,
     return out
 
 
-def validate_job(job: ReportJob) -> list[str]:
-    """Human-readable problems with a job; empty when it is usable."""
+def validate_job(job: ReportJob, *, archive_root: str = "") -> list[str]:
+    """Human-readable problems with a job; empty when it is usable.
+
+    ``archive_root`` is the folder Admin has configured. A job asking to be
+    archived in an app that has nowhere to archive it is genuinely unsaveable,
+    so the rule lives here with the others rather than on the page — which is
+    also how the page gets its Save disabled for free.
+    """
     problems: list[str] = []
     if not (job.name or "").strip():
         problems.append("Give the job a name.")
@@ -128,5 +139,8 @@ def validate_job(job: ReportJob) -> list[str]:
     for address in job.recipients:
         if "@" not in address:
             problems.append(f"{address!r} is not an email address.")
+    if job.archive and not (archive_root or "").strip():
+        problems.append("Turn off saving a copy, or set a report archive "
+                        "folder in Admin > Report archive.")
     problems.extend(validate_recurrence(job.recurrence))
     return problems
