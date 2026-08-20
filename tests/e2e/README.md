@@ -41,8 +41,8 @@ Never point it at `kdbmonitor.db`. It deletes things.
 | Dashboards | open one and see its widgets; **Refresh** re-runs the queries and keeps them; PDF and per-dataset exports are offered; back to the gallery; duplicate then delete without touching the original; the group filter narrows the gallery |
 | Dashboard editor | rename and save; all four sections render; add a row then delete it; leave without saving |
 | Reports | generate a report and see its summary |
-| Schedules | open a job and switch to History; create a schedule; delete it again |
-| Admin | add a connection; edit it from its menu; delete it; save SMTP settings; introspect a demo server |
+| Schedules | open a job and switch to History; create a schedule; delete it again; switch a job to filing a copy |
+| Admin | add a connection; edit it from its menu; delete it; save SMTP settings; set the report archive folder; introspect a demo server |
 
 Each one checks the database afterwards where it should have changed, so a
 button that looks like it worked but wrote nothing is a failure.

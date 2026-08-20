@@ -1,6 +1,6 @@
 # Report archive — design
 
-**Status:** proposed.
+**Status:** built.
 **Date:** 2026-08-20
 
 ---
@@ -194,9 +194,9 @@ it as a keyword.
 That column pays for itself three times:
 
 - **Send now** — `Sent 3 pages to 2 recipients. Saved to \\nas\reports\kdbmonitor\equity_orders\equity_orders_20260820_143012.pdf`
-- **History tab** — the run line gains `· archived` and a caption with the path,
-  so "where did Tuesday's go" is answered on the page rather than by browsing a
-  share.
+- **History tab** — the run gains a caption carrying the path, beside the one
+  that carries an error, so "where did Tuesday's go" is answered on the page
+  rather than by browsing a share.
 - **Admin failure notice** — needs no change. An unusable archive comes back as
   `outcome.error`, which `failure_notice` already prints.
 
@@ -214,9 +214,11 @@ Directly under *Admin notifications*; both are about scheduled reports.
   parsed addresses: `→ writable` or the `check_root` reason.
 - **Save settings**, disabled while the path is bad, mirroring the sections
   around it.
-- **Test write** beside it — writes and deletes a probe file, the same idea as
-  *Send test email*. Verifying a share by waiting for tomorrow's 07:00 is what
-  that button exists to prevent.
+- No *Test write* button. It was in the first draft of this design, as the
+  counterpart to *Send test email*, and it turned out to have nothing to do:
+  ``check_root`` already writes and removes a probe file, and it runs on every
+  render. The live feedback **is** the test, so a button offering to repeat it
+  would only be a second way to ask a question already answered on screen.
 - A warning when jobs have the switch on and this field is empty, parallel to
   the existing "scheduled reports but no admin address" warning.
 
@@ -258,4 +260,9 @@ key still loading.
 created before this migrates.
 
 `tests/test_schedules_page.py` and `tests/test_admin_render.py` — the switch,
-the disabled Save, and the new Admin section rendering.
+the disabled Save, the destination caption, the history line, and the new Admin
+section accepting a good folder and refusing a missing one.
+
+`tests/e2e/run_e2e.py` — two browser scenarios: the folder saved from the Admin
+page, and a job switched to archiving and saved. They run in that order, since
+the switch will not save while there is nowhere to save to.

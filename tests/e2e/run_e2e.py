@@ -7,6 +7,8 @@ once, in isolation, and never presses anything twice in a row.
 
 Run against a throwaway seeded database; several scenarios create and delete.
 """
+import json
+import os
 import sqlite3
 import sys
 import traceback
@@ -191,11 +193,19 @@ def fill_input(pg, label, value):
 
 def toggle_labelled(pg, aria):
     """Click a Streamlit toggle/checkbox by its aria-label (the input is hidden,
-    so the label element is what takes the click)."""
-    el = pg.query_selector(f'[data-testid="stCheckbox"]:has(input[aria-label="{aria}"]) label')
-    if el is None:
-        raise AssertionError(f"no toggle labelled {aria!r}")
-    el.click()
+    so the label element is what takes the click).
+
+    The *visible* one, not the first in the DOM. A collapsed expander still
+    renders its contents, so a page with one editor per job holds one copy of
+    every control per job — and the first is whichever job sorts first, which
+    is not the one that was opened.
+    """
+    els = [e for e in pg.query_selector_all(
+        f'[data-testid="stCheckbox"]:has(input[aria-label="{aria}"]) label')
+        if e.is_visible()]
+    if not els:
+        raise AssertionError(f"no visible toggle labelled {aria!r}")
+    els[0].click()
     settle(pg, 3800)
 
 
@@ -217,6 +227,13 @@ def setting(key):
     with db() as c:
         r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     return r[0] if r else None
+
+
+def job_spec(name):
+    with db() as c:
+        r = c.execute("SELECT spec_json FROM report_jobs WHERE name=?",
+                      (name,)).fetchone()
+    return json.loads(r[0]) if r else {}
 
 
 # --- scenarios --------------------------------------------------------------
@@ -594,6 +611,33 @@ def s_admin_smtp(pg):
     assert setting("smtp_host") == "smtp.e2e.local", "SMTP host was not saved"
 
 
+@scenario("admin: set the report archive folder")
+def s_admin_archive(pg):
+    goto(pg, "/admin", "Admin")
+    folder = os.path.abspath(os.path.join(os.path.dirname(DB) or ".",
+                                          "e2e-archive"))
+    os.makedirs(folder, exist_ok=True)
+    fill_input(pg, "Folder for scheduled report PDFs", folder)
+    # Three sections on this page commit with a button reading "Save settings";
+    # the archive is the second, between admin notifications and snapshots.
+    click(pg, "Save settings", index=1)
+    assert setting("report_archive_dir") == folder,         f"archive folder was not saved (got {setting('report_archive_dir')!r})"
+
+
+@scenario("schedules: a job can be told to file a copy")
+def s_sched_archive(pg):
+    """Runs after the folder is set — the switch is refused without one."""
+    goto(pg, "/schedules", "Schedules")
+    exp = [e for e in pg.query_selector_all('[data-testid="stExpander"] summary')
+           if "Morning risk pack" in (e.inner_text() or "")]
+    assert exp, "the seeded job is not listed"
+    exp[0].click()
+    settle(pg, 3500)
+    toggle_labelled(pg, "Also save a copy to the report archive")
+    click(pg, "Save")
+    assert job_spec("Morning risk pack").get("archive") is True,         "the archive choice was not saved"
+
+
 @scenario("admin: Introspect a demo server")
 def s_admin_introspect(pg):
     goto(pg, "/admin", "Admin")
@@ -612,7 +656,11 @@ SCENARIOS = [
     s_editor_save, s_editor_sections, s_editor_row, s_editor_leave,
     s_reports,
     s_sched_job, s_sched_new, s_sched_delete,
-    s_admin_add, s_admin_edit, s_admin_delete, s_admin_smtp, s_admin_introspect,
+    s_admin_add, s_admin_edit, s_admin_delete, s_admin_smtp,
+    # The archive folder is set before the job that wants to use it: the
+    # switch will not save while there is nowhere to save to.
+    s_admin_archive, s_sched_archive,
+    s_admin_introspect,
 ]
 
 with sync_playwright() as p:

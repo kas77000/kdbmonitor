@@ -72,7 +72,7 @@ The app opens at `http://localhost:8501`. State (connections, alerts, settings) 
 | **Monitor** | The live dashboard. Turn monitoring on/off, set the check granularity, watch statuses, get notifications, open results. |
 | **Builder** | Create, edit, **clone**, delete, enable/disable alerts. Import/export alerts. Preview an alert's result before saving. |
 | **Dashboards** | Build and watch saved dashboards: KPIs, tables and interactive charts over one or more KDB queries (or an uploaded file), refreshing on their own interval, exportable as a PDF. |
-| **Schedules** | Set up dashboards to run on a clock and arrive by email as a PDF, and start/stop/restart the process that runs them. |
+| **Schedules** | Set up dashboards to run on a clock and arrive by email as a PDF — optionally filing a copy in a folder too — and start/stop/restart the process that runs them. |
 | **Admin** | Register KDB connections (host + port + environment), introspect their tables/columns, load the demo servers, pair real-time/historical environments, import/export connections, set SMTP, and say which addresses hear about a failed report. |
 | **Result** | Opened from a **View** button in the Monitor. A full-width page to inspect / export / copy a triggered alert's rows. |
 
@@ -288,6 +288,7 @@ Requirements and gotchas:
 - Browser notifications need a **secure context**. `http://localhost` counts, so running locally is fine. If you open the app via a network IP over plain HTTP (`http://10.x.x.x:8501`), browsers block notifications; use HTTPS for shared/network deployments.
 - If nothing appears, check the tab's site-notification permission in the browser (it may be stuck on "default" or "blocked").
 - **Email** needs SMTP host / port / from-address set in **Admin → Email (SMTP)**.
+- **Filing report PDFs to a folder** needs that folder set in **Admin → Report archive**; leaving it empty turns the option off everywhere.
 - **Webhooks** just need the incoming-webhook URL from Teams or Slack.
 
 ### Bringing the window forward
@@ -956,9 +957,51 @@ Task Scheduler or as a service and have the app leave it alone.
 | **Parameters** | Values for the dashboard's parameters; anything left blank keeps that parameter's default. |
 | **Recipients** | Comma or semicolon separated. |
 | **Subject / body** | `{dashboard}`, `{date}`, `{time}` and `{job}` are substituted. |
+| **Also save a copy** | Off by default. On, the PDF is filed under the folder set in **Admin → Report archive** as well as mailed. The switch cannot be saved while no folder is set. |
 
 **Send now** runs the job immediately without touching its schedule, so you can
-tell whether a new job works without waiting until tomorrow.
+tell whether a new job works without waiting until tomorrow. It runs the whole
+path, archive included, and says where the file went — which makes it the way to
+prove a folder and its permissions before the first real run.
+
+### A copy on disk
+
+A report that only exists in inboxes is archived as well as its recipients file
+it. Set a folder in **Admin → Report archive** and any job can be told to leave
+a copy there too. It is an *extra* destination, never an alternative one: the
+mail goes either way, and a job still needs recipients.
+
+The folder you give is the root, and it must already exist — a typo must not
+quietly become a directory tree nobody is looking in. Everything below it is the
+app's:
+
+```
+\\nas\reports\kdbmonitor\          <- yours, must exist
++-- equity_orders\                 <- made on the first run for that dashboard
+|   +-- equity_orders_20260819_070000.pdf
+|   +-- equity_orders_20260820_070000.pdf
++-- short_sell_monitor\
+    +-- short_sell_monitor_20260820_071500.pdf
+```
+
+The name carries the dashboard and the run's fire time in UTC, to the second, so
+no run can ever overwrite another and there is nothing to configure about it.
+The emailed attachment keeps its own older name (`equity_orders_2026-08-20_0700.pdf`)
+— inbox rules are written against it.
+
+Two behaviours worth knowing:
+
+- **The file is written before the mail is sent.** If the write fails, nothing
+  is sent and the run fails in the usual way, with the usual notice to the admin.
+  That is deliberate: a failed run is retried, and a write that failed *after* a
+  send would put the same PDF in the same inboxes three times.
+- **The folder is checked before any query runs**, and again as you type it in
+  Admin — the check actually writes and removes a probe file, so a share that
+  will refuse the report says so on the page rather than at 07:00 tomorrow.
+
+Nothing is ever pruned from the archive. It is your folder, and the app only
+adds to it. A dashboard renamed after some runs starts a new folder and leaves
+the earlier files where they are.
 
 ### When a run fails
 
