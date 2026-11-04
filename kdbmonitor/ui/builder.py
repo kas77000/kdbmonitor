@@ -9,8 +9,10 @@ from kdbmonitor.core import zones
 
 from kdbmonitor.core.models import (
     Alert, Step, Filter, TriggerCondition, RearmPolicy, Channels, Schedule,
-    Window, DELIVERY_LABELS, STEP_CACHE_PRESETS,
+    Window, DELIVERY_LABELS, STEP_CACHE_PRESETS, SUCCESS_MAIL_INTERVALS,
+    SuccessMail,
 )
+from kdbmonitor.core import successmail
 from kdbmonitor.core.chain import build_step_qsql, preview_chain
 from kdbmonitor.core.conditions import evaluate as eval_condition
 from kdbmonitor.core.portability import (
@@ -33,6 +35,10 @@ _NEW_GROUP = "➕ New group…"
 # come and find you, then the ones that leave the machine.
 _DELIVERY_OPTIONS = ["in_app", "sound", "browser", "focus", "popup",
                      "email", "webhook"]
+
+# The all-clear mail's timing picker: every check, or one of the intervals.
+_SUCCESS_EVERY_CHECK = "With every check"
+_SUCCESS_WHEN = [_SUCCESS_EVERY_CHECK, *SUCCESS_MAIL_INTERVALS]
 
 _OPS = ["=", "<>", "<", "<=", ">", ">=", "in", "like"]
 _CMP_OPS = ["=", "<>", "<", "<=", ">", ">="]
@@ -177,6 +183,8 @@ def _ensure_init(store, servers: list[str]) -> None:
         "b_cval": "", "b_cagg": "max", "b_cn": 1,
         "b_delivery": ["in_app", "sound", "browser"], "b_email": "", "b_hooks": "",
         "b_rmode": "transition", "b_rcd": 900, "b_retention": "latest",
+        "b_succ_on": False, "b_succ_when": "1 hour", "b_succ_subj": "",
+        "b_succ_body": "",
         "b_groupsel": _NO_GROUP, "b_groupnew": "",
         "b_sched_on": False, "b_sched_tz": zones.local_iana(),
         "b_sched_days": [], "b_sched_n": 1,
@@ -209,6 +217,10 @@ def _load_edit(alert: Alert) -> None:
         "b_email": ", ".join(alert.channels.email_to),
         "b_hooks": ", ".join(alert.channels.webhook_urls),
         "b_rmode": alert.rearm.mode, "b_rcd": alert.rearm.cooldown_secs or 900,
+        "b_succ_on": alert.success.enabled,
+        "b_succ_when": _success_when_label(alert.success),
+        "b_succ_subj": alert.success.subject,
+        "b_succ_body": alert.success.body,
         "b_retention": alert.result_retention,
         "b_groupsel": alert.group.strip() if alert.group.strip() else _NO_GROUP,
         "b_groupnew": "",
@@ -425,7 +437,66 @@ def _trigger_block() -> TriggerCondition:
         return trig
 
 
-def _notify_block() -> tuple[Channels, RearmPolicy]:
+def _success_when_label(cfg: SuccessMail) -> str:
+    """The timing picker's value for a saved alert."""
+    if cfg.mode == "every_check":
+        return _SUCCESS_EVERY_CHECK
+    for label, secs in SUCCESS_MAIL_INTERVALS.items():
+        if secs == cfg.interval_secs:
+            return label
+    # Written by hand or by an older picker: the nearest interval not shorter.
+    longer = [l for l, secs in SUCCESS_MAIL_INTERVALS.items()
+              if secs >= cfg.interval_secs]
+    return longer[0] if longer else list(SUCCESS_MAIL_INTERVALS)[-1]
+
+
+def _success_block(email_on: bool) -> SuccessMail:
+    """The all-clear mail: to the same recipients, when the alert stays quiet.
+
+    Only offered with Email picked, because it has nobody else to go to.
+    """
+    for key, default in (("b_succ_on", False), ("b_succ_when", "1 hour"),
+                         ("b_succ_subj", ""), ("b_succ_body", "")):
+        st.session_state.setdefault(key, default)
+    if not email_on:
+        return SuccessMail(enabled=False,
+                           subject=st.session_state["b_succ_subj"],
+                           body=st.session_state["b_succ_body"])
+    on = L.field_row(1, span=L.FIELD_WIDE)[0].checkbox(
+        "Also mail when all clear", key="b_succ_on",
+        help="Send the same recipients a success mail when this alert does "
+             "not trigger.")
+    if not on:
+        return SuccessMail(enabled=False,
+                           subject=st.session_state["b_succ_subj"],
+                           body=st.session_state["b_succ_body"])
+    when = L.field_row(1, span=L.FIELD_WIDE)[0].selectbox(
+        "When", _SUCCESS_WHEN, key="b_succ_when",
+        help="With every check: one mail per clean check. An interval: one "
+             "mail per interval, sent only if every check in it was clean.")
+    secs = SUCCESS_MAIL_INTERVALS.get(when, 3600)
+    poll = int(st.session_state.get("b_interval", 30) or 30)
+    if when != _SUCCESS_EVERY_CHECK and secs <= poll:
+        st.caption(f":orange[:material/info: The alert checks every "
+                   f"{humanize_secs(poll)}, so this mails after every clean "
+                   f"check.]")
+    subject = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
+        "Subject", key="b_succ_subj", placeholder=successmail.DEFAULT_SUBJECT,
+        help="Leave blank for the default.")
+    body = L.field_row(1, span=L.FIELD_WIDE)[0].text_area(
+        "Body", key="b_succ_body",
+        placeholder=(successmail.DEFAULT_BODY_EVERY_CHECK
+                     if when == _SUCCESS_EVERY_CHECK else successmail.DEFAULT_BODY),
+        help="Leave blank for the default.")
+    st.caption(":material/data_object: Placeholders: " + " · ".join(
+        f"`{{{k}}}` {v}" for k, v in successmail.PLACEHOLDERS.items()))
+    return SuccessMail(
+        enabled=True,
+        mode="every_check" if when == _SUCCESS_EVERY_CHECK else "interval",
+        interval_secs=secs, subject=subject, body=body)
+
+
+def _notify_block() -> tuple[Channels, RearmPolicy, SuccessMail]:
     L.section("Notify & re-arm", level=4,
               description="Pick as many as you want; they all happen. Email and "
                           "webhook fields appear once you choose them.")
@@ -453,6 +524,7 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
             email_raw = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
                 "Email recipients", key="b_email",
                 help="Comma-separated. Needs SMTP set in Admin.")
+        success = _success_block("email" in picked)
         if "webhook" in picked:
             hooks_raw = L.field_row(1, span=L.FIELD_WIDE)[0].text_input(
                 "Teams / Slack webhook URLs", key="b_hooks",
@@ -481,9 +553,11 @@ def _notify_block() -> tuple[Channels, RearmPolicy]:
             webhook_urls=([h.strip() for h in hooks_raw.split(",") if h.strip()]
                           if "webhook" in picked else []),
         )
+        if not channels.email_to:
+            success.enabled = False
         st.markdown(f":blue-badge[:material/notifications: Notifies via "
-                    f"{channels_summary(channels)}]")
-        return channels, RearmPolicy(mode=mode, cooldown_secs=cooldown)
+                    f"{channels_summary(channels, success)}]")
+        return channels, RearmPolicy(mode=mode, cooldown_secs=cooldown), success
 
 
 # --------------------------------------------------------------------------- #
@@ -692,7 +766,7 @@ def _manage_alerts(store) -> None:
                         f"every {humanize_secs(a.poll_interval_secs)} · triggers "
                         f"when {condition_summary(a.trigger)}{hours}]")
                     c[2].markdown(f":gray[:material/notifications: "
-                                  f"{channels_summary(a.channels)}]")
+                                  f"{channels_summary(a.channels, a.success)}]")
                     if c[3].button("Edit", key=f"mg_edit_{a.id}",
                                    icon=":material/edit:"):
                         _load_edit(a)
@@ -990,7 +1064,7 @@ def render(store, mgr) -> None:
 
     # 3 · Trigger   4 · Notify & re-arm   5 · Active hours
     trigger = _trigger_block()
-    channels, rearm = _notify_block()
+    channels, rearm, success = _notify_block()
     schedule = _schedule_block()
 
     # 6 · Result capture
@@ -1036,7 +1110,8 @@ def render(store, mgr) -> None:
                           enabled=st.session_state.get("b_edit_enabled", True),
                           poll_interval_secs=interval, steps=steps, trigger=trigger,
                           channels=channels, rearm=rearm, result_retention=retention,
-                          group=group.strip(), schedule=schedule)
+                          group=group.strip(), schedule=schedule,
+                          success=success)
             try:
                 if editing:
                     store.update_alert(alert)

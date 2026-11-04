@@ -386,6 +386,37 @@ def s_builder_delete(pg):
         assert count("alerts") == before - 1, f"{name} was not deleted"
 
 
+@scenario("builder: an all-clear mail is shown, changed and kept on edit")
+def s_builder_success_mail(pg):
+    # Seeded straight into the database: picking Email in a multiselect is
+    # not what is under test here, the all-clear controls are.
+    with db() as c:
+        src = json.loads(c.execute(
+            "SELECT alert_json FROM alerts ORDER BY id LIMIT 1").fetchone()[0])
+        src.update(id=None, name="E2E all clear")
+        src["channels"]["email_to"] = ["desk@example.com"]
+        src["success"] = {"enabled": True, "mode": "interval",
+                          "interval_secs": 3600, "subject": "", "body": ""}
+        c.execute("INSERT INTO alerts(name, enabled, alert_json) VALUES (?,?,?)",
+                  ("E2E all clear", 1, json.dumps(src)))
+    try:
+        goto(pg, "/builder", "Alert builder")
+        assert "all-clear mail every 1 hour" in row(pg, "E2E all clear").inner_text(),             "the list row does not mention the all-clear mail"
+        click_in_row(pg, "E2E all clear", "Edit")
+        assert pg.query_selector("text=Also mail when all clear") is not None,             "the all-clear checkbox is not shown"
+        fill_input(pg, "Subject", "E2E OK {alert}")
+        click(pg, "Update alert")
+        with db() as c:
+            saved = json.loads(c.execute(
+                "SELECT alert_json FROM alerts WHERE name=?",
+                ("E2E all clear",)).fetchone()[0])["success"]
+        assert saved["enabled"] and saved["interval_secs"] == 3600, saved
+        assert saved["subject"] == "E2E OK {alert}", saved
+    finally:
+        with db() as c:
+            c.execute("DELETE FROM alerts WHERE name=?", ("E2E all clear",))
+
+
 @scenario("builder: Share menu opens with an export")
 def s_builder_share(pg):
     goto(pg, "/builder", "Alert builder")
@@ -650,7 +681,7 @@ SCENARIOS = [
     s_monitor_toggle, s_monitor_gran, s_monitor_filter, s_monitor_view,
     s_result_export,
     s_builder_create, s_builder_toggle, s_builder_clone, s_builder_edit,
-    s_builder_delete, s_builder_share,
+    s_builder_delete, s_builder_success_mail, s_builder_share,
     s_dash_open, s_dash_refresh, s_dash_pdf, s_dash_back, s_dash_dup_delete,
     s_dash_filter,
     s_editor_save, s_editor_sections, s_editor_row, s_editor_leave,

@@ -213,6 +213,13 @@ Pick as many deliveries as you want from **How this alert reaches you** — they
 
 The email and webhook boxes appear only once you pick those deliveries, and addresses are dropped if you unpick them — the summary line is the whole truth about who hears.
 
+**All-clear mail.** With **Email** picked, tick **Also mail when all clear** to tell the same recipients when the alert does *not* trigger — so a quiet inbox means "nothing is wrong" rather than "maybe nothing is checking". Choose **When**:
+
+- **With every check** — one mail per clean check.
+- **Every 15 minutes … 1 day** — one mail per interval, for an alert that checks too often for a mail each time. It is sent only if *every* check in that interval was clean: one trigger or error and that interval gets no mail, and the next one starts fresh. Time outside the alert's active hours has no checks and sends nothing.
+
+**Subject** and **Body** are optional — leave them blank for a default mail. Both take placeholders: `{alert}`, `{group}`, `{checks}` (clean checks covered), `{since}`, `{until}` (in the alert's time zone) and `{rows}` (rows in the last check). An unknown `{name}` is sent as typed. With the `on_change` re-arm, a repeat of a result that still meets the condition is not "all clear", even though it does not re-fire.
+
 **Re-arm** controls how often it re-notifies while it stays triggered:
 
 - **transition** — notify once when it goes from not-triggered to triggered (default).
@@ -1088,6 +1095,7 @@ kdbmonitor/
     reportjob.py           # a scheduled report: dashboard, when, to whom
     reportrun.py           # run one report: query -> PDF -> mail, or tell the admin
     notifiers.py           # in-app / email / webhook dispatch, browser payload
+    successmail.py         # the all-clear mail: when a period was clean, and its text
     evaluate.py            # evaluate one alert end-to-end
     portability.py         # export / import bundles
     exporting.py           # Excel / CSV / copy helpers

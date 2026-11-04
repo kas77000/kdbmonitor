@@ -101,6 +101,33 @@ class Channels:
     webhook_urls: list[str] = field(default_factory=list)
 
 
+# --- saying "all clear" ---------------------------------------------------- #
+# A silent inbox means either "nothing is wrong" or "nothing is checking". The
+# success mail says the first one out loud: with every clean check, or once per
+# interval when every check in it was clean. See core.successmail.
+SUCCESS_MAIL_MODES: tuple[str, ...] = ("every_check", "interval")
+
+# Label -> seconds for the interval picker, and for describing a saved alert.
+SUCCESS_MAIL_INTERVALS: dict[str, int] = {
+    "15 minutes": 900, "30 minutes": 1800, "1 hour": 3600, "2 hours": 7200,
+    "4 hours": 14400, "1 day": 86400,
+}
+
+
+@dataclass
+class SuccessMail:
+    """An all-clear mail to the alert's own email recipients.
+
+    ``subject`` and ``body`` blank mean the defaults in core.successmail; both
+    take the placeholders listed there.
+    """
+    enabled: bool = False
+    mode: str = "interval"       # one of SUCCESS_MAIL_MODES
+    interval_secs: int = 3600    # mode == "interval" only
+    subject: str = ""
+    body: str = ""
+
+
 # --- when an alert is allowed to fire -------------------------------------- #
 @dataclass
 class Window:
@@ -141,6 +168,7 @@ class Alert:
     result_retention: str = "latest"   # latest | snapshot (Monitor Result view)
     group: str = ""                    # optional grouping label ("" = Ungrouped)
     schedule: Schedule = field(default_factory=Schedule)
+    success: SuccessMail = field(default_factory=SuccessMail)
 
 
 # The three kinds of KDB server this app talks to.
@@ -224,6 +252,20 @@ def schedule_from_dict(d: Optional[dict]) -> Schedule:
     )
 
 
+def success_mail_from_dict(d: Optional[dict]) -> SuccessMail:
+    """SuccessMail from stored JSON. Anything older, or unreadable, is off —
+    upgrading or importing an alert must not start mailing anybody."""
+    d = d if isinstance(d, dict) else {}
+    mode = d.get("mode", "interval")
+    return SuccessMail(
+        enabled=bool(d.get("enabled", False)),
+        mode=mode if mode in SUCCESS_MAIL_MODES else "interval",
+        interval_secs=max(_int(d.get("interval_secs"), 3600), 1),
+        subject=str(d.get("subject") or ""),
+        body=str(d.get("body") or ""),
+    )
+
+
 def alert_to_dict(alert: Alert) -> dict:
     return asdict(alert)
 
@@ -251,6 +293,7 @@ def alert_from_dict(d: dict) -> Alert:
         result_retention=d.get("result_retention", "latest"),
         group=d.get("group", ""),
         schedule=schedule_from_dict(d.get("schedule")),
+        success=success_mail_from_dict(d.get("success")),
     )
 
 

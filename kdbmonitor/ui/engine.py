@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import streamlit as st
 import streamlit.components.v1 as components
 
-from kdbmonitor.core import schedule
+from kdbmonitor.core import schedule, successmail
 from kdbmonitor.core.evaluate import evaluate_alert
 from kdbmonitor.core.notifiers import (
     InAppSink, delivery_payload, dispatch, send_email, post_webhook,
@@ -217,6 +217,17 @@ def _email_fn(store):
     )
 
 
+def _success_send(store):
+    """The all-clear mailer, or None when no SMTP server is set."""
+    smtp_host = store.get_setting("smtp_host", "")
+    if not smtp_host:
+        return None
+    smtp_port = int(store.get_setting("smtp_port", "25"))
+    smtp_sender = store.get_setting("smtp_sender", "")
+    return lambda to, subject, body: send_email(
+        smtp_host, smtp_port, smtp_sender, to, subject=subject, body=body)
+
+
 def _park_off_hours(store, alert, latest, now) -> None:
     """Record that an alert is outside its active hours — once, not every tick.
 
@@ -251,6 +262,7 @@ def run_tick(store, mgr) -> None:
 
     if monitoring_on(store):
         email_fn = _email_fn(store)
+        success_send = _success_send(store)
         step_cache: QueryCache = st.session_state.setdefault(_STEP_CACHE_KEY,
                                                              QueryCache())
         for a in store.list_alerts():
@@ -278,6 +290,13 @@ def run_tick(store, mgr) -> None:
                     "mode": a.result_retention}
             if res.triggered and res.df is not None:
                 store.save_result(a.id, now.isoformat(), res.df)
+            failed = successmail.after_check(
+                store, a, now,
+                clean=(res.status != "error" and not res.condition_met),
+                rows=res.row_count, send=success_send)
+            if failed:
+                sink.push(failed)
+                toasts.append(failed)
             if res.notify:
                 dispatch(a.channels, res.message, in_app_sink=sink,
                          email_fn=email_fn, webhook_fn=post_webhook)

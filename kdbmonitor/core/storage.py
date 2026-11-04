@@ -99,6 +99,12 @@ class Storage:
                 alert_id INTEGER PRIMARY KEY,   -- last trigger the user has "seen"
                 seen_trigger_ts TEXT            -- ts of that trigger (ISO, UTC)
             );
+            CREATE TABLE IF NOT EXISTS alert_success_state (
+                alert_id     INTEGER PRIMARY KEY, -- the all-clear mail's open period
+                period_start TEXT NOT NULL,       -- ISO, UTC
+                clean_checks INTEGER NOT NULL DEFAULT 0,
+                dirty        INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS dashboards (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -414,6 +420,11 @@ class Storage:
             "UPDATE alerts SET name=?, enabled=?, alert_json=? WHERE id=?",
             (a.name, 1 if a.enabled else 0, alert_to_json(a), a.id),
         )
+        if not a.success.enabled:
+            # Switched off: turning it back on later opens a fresh period
+            # rather than certifying one that nobody was counting.
+            self.conn.execute("DELETE FROM alert_success_state WHERE alert_id=?",
+                              (a.id,))
         self.conn.commit()
 
     def set_alert_enabled(self, aid: int, enabled: bool) -> None:
@@ -422,6 +433,33 @@ class Storage:
 
     def delete_alert(self, aid: int) -> None:
         self.conn.execute("DELETE FROM alerts WHERE id=?", (aid,))
+        self.conn.execute("DELETE FROM alert_success_state WHERE alert_id=?", (aid,))
+        self.conn.commit()
+
+    # --- the all-clear mail's open period (see core.successmail) ---
+    def get_success_state(self, alert_id: int) -> Optional[dict]:
+        r = self.conn.execute(
+            "SELECT period_start, clean_checks, dirty FROM alert_success_state "
+            "WHERE alert_id=?", (alert_id,)).fetchone()
+        if r is None:
+            return None
+        return {"period_start": r["period_start"],
+                "clean_checks": int(r["clean_checks"]),
+                "dirty": bool(r["dirty"])}
+
+    def set_success_state(self, alert_id: int, period_start: str,
+                          clean_checks: int, dirty: bool) -> None:
+        self.conn.execute(
+            "INSERT INTO alert_success_state(alert_id, period_start, clean_checks,"
+            " dirty) VALUES (?,?,?,?) ON CONFLICT(alert_id) DO UPDATE SET"
+            " period_start=excluded.period_start,"
+            " clean_checks=excluded.clean_checks, dirty=excluded.dirty",
+            (alert_id, period_start, int(clean_checks), 1 if dirty else 0))
+        self.conn.commit()
+
+    def clear_success_state(self, alert_id: int) -> None:
+        self.conn.execute("DELETE FROM alert_success_state WHERE alert_id=?",
+                          (alert_id,))
         self.conn.commit()
 
     # --- groups (a group is just the `group` label carried on each alert) ---

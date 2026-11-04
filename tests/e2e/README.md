@@ -37,7 +37,7 @@ Never point it at `kdbmonitor.db`. It deletes things.
 | Navigation | every page loads clean; sidebar links navigate; Result is hidden from the nav but still reachable by URL |
 | Monitor | monitoring toggles on and off and persists; check granularity persists; the group filter narrows the list; **View** opens the Result page |
 | Result | Excel and CSV downloads are offered; the copy popover opens |
-| Builder | create an alert; disable it from its row; clone it; edit it; delete both from their row menus; the Share menu offers an export |
+| Builder | create an alert; disable it from its row; clone it; edit it; delete both from their row menus; an all-clear mail is shown, changed and kept on edit; the Share menu offers an export |
 | Dashboards | open one and see its widgets; **Refresh** re-runs the queries and keeps them; PDF and per-dataset exports are offered; back to the gallery; duplicate then delete without touching the original; the group filter narrows the gallery |
 | Dashboard editor | rename and save; all four sections render; add a row then delete it; leave without saving |
 | Reports | generate a report and see its summary |

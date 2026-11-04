@@ -5,6 +5,7 @@ share one source of truth for how an alert is described to a human.
 """
 from __future__ import annotations
 
+from kdbmonitor.core.successmail import describe as describe_success
 from kdbmonitor.core.models import (
     STEP_CACHE_PRESETS, Channels, Step, TriggerCondition,
 )
@@ -17,7 +18,7 @@ _DELIVERY_SHORT: tuple[tuple[str, str], ...] = (
 )
 
 
-def channels_summary(channels: Channels) -> str:
+def channels_summary(channels: Channels, success=None) -> str:
     """'in-app · sound · result pop-up · 2 emails' — how a fired alert lands.
 
     'nothing' is a real answer: an alert with every delivery off still records
@@ -29,6 +30,8 @@ def channels_summary(channels: Channels) -> str:
     if channels.email_to:
         n = len(channels.email_to)
         parts.append(f"{n} email{'' if n == 1 else 's'}")
+        if success is not None and success.enabled:
+            parts.append(describe_success(success))
     if channels.webhook_urls:
         n = len(channels.webhook_urls)
         parts.append(f"{n} webhook{'' if n == 1 else 's'}")

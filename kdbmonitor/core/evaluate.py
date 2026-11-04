@@ -22,6 +22,10 @@ class EvalResult:
     message: str
     df: Optional[object] = None   # final result rows (pandas DataFrame), None on error
     result_hash: str = ""         # content fingerprint (for the 'on_change' re-arm)
+    # Whether the trigger condition held, whatever the re-arm made of it. An
+    # 'on_change' repeat is armed but not clean, and the all-clear mail
+    # (core.successmail) must not mistake one for the other.
+    condition_met: bool = False
 
 
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -65,4 +69,5 @@ def evaluate_alert(alert: Alert, client_for: Callable[[str], object],
     else:
         message = f"{alert.name}: armed ({len(df)} rows)"
     return EvalResult(status=status, triggered=triggered, notify=notify,
-                      row_count=len(df), message=message, df=df, result_hash=curr_hash)
+                      row_count=len(df), message=message, df=df, result_hash=curr_hash,
+                      condition_met=bool(condition_met))
