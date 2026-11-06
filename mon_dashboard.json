@@ -8,7 +8,7 @@
     {
       "id": null,
       "name": "Target missing market data",
-      "description": "Today's started VWAP/TMX/PART/LINE/IIS/SDMA/DLP targets with no row in target_strike, among those activated in the last 30 seconds. Real-time only.",
+      "description": "Today's started VWAP/TMX/PART/LINE/IIS/SDMA/DLP targets with no row in target_strike, among those activated in the last 30 seconds. Real-time only. Below: targets whose current target_state is activated, counted per instance (the trader column).",
       "refresh_secs": 15,
       "periods": "realtime",
       "time_context": {
@@ -24,6 +24,19 @@
           "table": "",
           "filters": [],
           "raw_qsql": "{[] dataCheck:(select distinct id_target, sym from target where date=.z.D, algo in (`VWAP`TMX`PART`LINE`IIS`SDMA`DLP), t_start<.z.T) except (select distinct id_target, sym from target_strike where date=.z.D); idTgts:exec distinct id_target from dataCheck; activeIds:exec distinct id_target from target_state where date=.z.D, time>.z.T-00:00:30.000, state=`activated, id_target in idTgts; select id_target, trader, basket, sym, side, size, otype, limit_price, algo, ordstart:t_start from target where date=.z.D, id_target in activeIds}[]",
+          "extra_connections": [],
+          "transforms": [],
+          "max_rows": 5000
+        },
+        {
+          "name": "activated_by_trader",
+          "env": "OMS",
+          "time_mode": "realtime",
+          "time_context": null,
+          "mode": "raw",
+          "table": "",
+          "filters": [],
+          "raw_qsql": "{[] live:exec id_target from (0!select last state by id_target from target_state where date=.z.D) where state=`activated; `targets xdesc 0!select targets:count distinct id_target by trader from target where date=.z.D, id_target in live}[]",
           "extra_connections": [],
           "transforms": [],
           "max_rows": 5000
@@ -79,6 +92,18 @@
             }
           ],
           "height_in": 6.5
+        },
+        {
+          "widgets": [
+            {
+              "type": "table",
+              "dataset": "activated_by_trader",
+              "title": "Activated targets per instance (trader)",
+              "spec": {},
+              "width": 1.0
+            }
+          ],
+          "height_in": 3.5
         }
       ]
     }

@@ -31,6 +31,9 @@ ROWS = pd.DataFrame({
     "algo": ["VWAP", "TMX"], "ordstart": ["09:01:02.000", "09:05:00.000"],
 })
 
+BY_TRADER = pd.DataFrame({"trader": ["ALGO_EU_1", "ALGO_EU_2"],
+                          "targets": [14, 3]})
+
 
 @pytest.fixture()
 def dash():
@@ -56,7 +59,8 @@ def sent():
 
 @pytest.fixture()
 def mgr(dash, sent):
-    responses = {dash.datasets[0].raw_qsql: ROWS}
+    responses = {dash.datasets[0].raw_qsql: ROWS,
+                 dash.datasets[1].raw_qsql: BY_TRADER}
 
     class Watching(FakeClient):
         def __init__(self, host):
@@ -78,16 +82,18 @@ def test_the_bundle_holds_this_one_dashboard():
 
 def test_it_is_real_time_only_on_the_oms_environment(dash):
     assert dash.periods == "realtime"
-    [ds] = dash.datasets
-    assert (ds.env, ds.time_mode, ds.mode) == ("OMS", "realtime", "raw")
+    assert [d.name for d in dash.datasets] == ["missing_md",
+                                               "activated_by_trader"]
+    for ds in dash.datasets:
+        assert (ds.env, ds.time_mode, ds.mode) == ("OMS", "realtime", "raw")
 
 
 def test_the_query_reaches_oms_rt_and_nothing_else(dash, store, mgr, sent):
     results = run_datasets(dash, store, mgr, TODAY)
-    assert results["missing_md"].error is None
-    assert [host for host, _ in sent] == ["rt-host"]
-    # Sent exactly as written: no date or reference substitution touched it.
-    assert sent[0][1] == dash.datasets[0].raw_qsql
+    assert all(r.error is None for r in results.values())
+    assert [host for host, _ in sent] == ["rt-host", "rt-host"]
+    # Sent exactly as written: no date or reference substitution touched them.
+    assert [q for _, q in sent] == [ds.raw_qsql for ds in dash.datasets]
 
 
 def test_the_query_keeps_the_logic_it_was_written_with(dash):
@@ -103,15 +109,16 @@ def test_the_query_keeps_the_logic_it_was_written_with(dash):
 def test_it_leaves_no_globals_on_the_live_server(dash):
     """Run every refresh: the intermediate tables are a lambda's locals, not
     top-level assignments that would sit in the OMS server's namespace."""
-    q = dash.datasets[0].raw_qsql
-    assert q.startswith("{[] ") and q.endswith("}[]")
-    assert "\n" not in q and "::" not in q
+    for ds in dash.datasets:
+        q = ds.raw_qsql
+        assert q.startswith("{[] ") and q.endswith("}[]")
+        assert "\n" not in q and "::" not in q
 
 
 def test_the_table_shows_the_columns_the_query_selects(dash, store, mgr):
     results = run_datasets(dash, store, mgr, TODAY)
     table = next(w for row in dash.rows for w in row.widgets
-                 if w.type == "table")
+                 if w.type == "table" and w.dataset == "missing_md")
     model = build_plot_model(table, results)
     assert model.columns == list(ROWS.columns)
     assert len(model.rows) == 2
@@ -123,3 +130,31 @@ def test_every_widget_renders(dash, store, mgr):
         for w in row.widgets:
             model = build_plot_model(w, results)
             assert model.kind != "error" and not model.error, (w.title, model)
+
+
+# --- activated targets per instance -------------------------------------------
+
+def test_activated_means_the_current_state_not_any_state_today(dash):
+    """A target has many target_state rows. One activated this morning and
+    filled since must not be counted, so the state is the last one per target."""
+    q = dash.datasets[1].raw_qsql
+    assert "select last state by id_target from target_state" in q
+    assert "where state=`activated" in q
+    assert "from target_state where state=" not in q
+
+
+def test_it_counts_targets_per_trader_column_busiest_first(dash):
+    q = dash.datasets[1].raw_qsql
+    assert "count distinct id_target by trader from target" in q
+    assert "id_target in live" in q
+    # unkeyed, so trader is a column the table can show
+    assert "`targets xdesc 0!select" in q
+
+
+def test_the_per_instance_table_shows_trader_and_count(dash, store, mgr):
+    results = run_datasets(dash, store, mgr, TODAY)
+    table = next(w for row in dash.rows for w in row.widgets
+                 if w.type == "table" and w.dataset == "activated_by_trader")
+    model = build_plot_model(table, results)
+    assert model.columns == ["trader", "targets"]
+    assert len(model.rows) == 2
